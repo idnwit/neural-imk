@@ -12,7 +12,9 @@ preset = "recommended"
 fail_on = "warning"
 
 [analyzer]
-exclude = ["target/**"]
+# Experiment code under examples/ is outside the product contract (clippy
+# still checks it); see docs/08-coding-standard.md.
+exclude = ["target/**", "crates/*/examples/**"]
 
 # ---------- scopes: one per crate ----------
 [[scopes]]

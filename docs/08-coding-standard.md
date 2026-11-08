@@ -119,3 +119,7 @@ Quy ước test:
 - Seed cố định; `Threading::Inline` cho mọi test cần tất định.
 - Test học nặng (`GruAction`) chỉ chạy ở bản release; `Cargo.toml` gốc bật `opt-level = 3` cho dependency để test debug còn dùng được ([07](07-build-and-install.md)).
 - Đổi hành vi engine phải có golden hoặc test tích hợp tương ứng; hành vi sửa ngược nằm ở `tests/retro.rs`.
+
+## Code thí nghiệm
+
+Code thí nghiệm offline nằm trong `crates/*/examples/` (ví dụ `nimk-synth/examples/right_context.rs`). Thư mục này không thuộc contract sản phẩm nên arch-lint bỏ qua (`[analyzer] exclude`). `cargo clippy --all-targets -D warnings` vẫn kiểm tra nó. Kết quả thí nghiệm được ghi trong `docs/research/`.
