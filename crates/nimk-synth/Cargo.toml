@@ -15,3 +15,8 @@ nimk-storage.workspace = true
 nimk-policy.workspace = true
 nimk-engine.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Only for the offline `right_context` experiment (examples/); the product
+# path reaches burn through nimk-policy.
+burn = { version = "=0.22.1", default-features = false, features = ["std", "flex", "autodiff", "optim"] }

@@ -3974,6 +3974,7 @@ dependencies = [
 name = "nimk-synth"
 version = "0.1.0"
 dependencies = [
+ "burn",
  "nimk-engine",
  "nimk-policy",
  "nimk-storage",
