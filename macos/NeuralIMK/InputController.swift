@@ -51,7 +51,26 @@ class InputController: IMKInputController {
             chars: chars,
             timestamp: event.timestamp)
         apply(out, client: client)
+        if event.type == .flagsChanged, let marked = out.marked {
+            Self.refreshMarked(marked, client: client)
+        }
         return out.consumed
+    }
+
+    /// Many clients (Chromium, winit-based terminals) only repaint marked
+    /// text while handling a keyDown, so a change made on flagsChanged (the
+    /// double-Shift flip) stays invisible until the next key. Re-send it on
+    /// the next run-loop turn, after the app has finished the event, and
+    /// once more a little later for slow clients.
+    private static func refreshMarked(_ marked: String, client: IMKTextInput) {
+        let send = {
+            client.setMarkedText(marked,
+                                 selectionRange: NSRange(location: marked.utf16.count, length: 0),
+                                 replacementRange: notFound)
+        }
+        DispatchQueue.main.async(execute: send)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(40), execute: send)
+        Core.shared.log("flip: deferred marked-text refresh")
     }
 
     override func activateServer(_ sender: Any!) {
