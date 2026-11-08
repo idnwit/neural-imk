@@ -6,6 +6,7 @@ Working memory của quá trình code: quyết định, phát hiện, việc m�
 
 | Ngày | Loại | Ghi chú |
 | --- | --- | --- |
+| 2026-11-09 | phát hiện | Thí nghiệm ngữ cảnh phải ([research](research/right-context-experiment.md)): trên synthetic, thêm từ kế tiếp không giúp (GRU ambiguous 0.976 left so với 0.975 left+right; Bayes +0.3 điểm trên collision) vì generator đổi từng từ độc lập; giả định code-switch thành cụm cho +5–7 điểm trên collision, khoảng +0.5 điểm ambiguous. Chưa làm UX 2 từ. Lệnh: `cargo run --release -p nimk-synth --example right_context` |
 | 2026-11-08 | quyết định | Model mặc định đổi lại sang `GruAction` (người dùng chốt): sau Telex v2, GRU đạt render 0.974 / ambiguous 0.968 so với Linear 0.965 / 0.961, và probe `theme` cho thấy GRU dùng được ngữ cảnh trái (VI: p 0.67, EN: p 0.06) còn Linear thì không. |
 | 2026-11-08 | quyết định | Telex v2 (gõ tự do, [10](10-telex.md)): dấu/`dd` gõ muộn, `ưo` → `ươ`, `uơ` sau `h kh th qu`, huỷ khoá từ, `ToneStyle`; `encode_variants` sinh ≤ 8 thứ tự gõ; `MixProfile::p_w_variant` đổi thành `p_variant`; 110 dòng bảng kiểm trong `tests/conformance.rs` (dòng U/O chưa chạy trên Unikey/OpenKey thật) |
 | 2026-11-08 | phát hiện | Sau Telex v2: `away` sang `en`, `did`/`wrong`/`dad` sang `en_ambiguous`; `nimk-synth` ghép `Decision` với phím theo bản ghi `key` vì ADR 0011 bỏ `Decision` cho phím không gọi model; pretrain lại (Linear 0.965/0.961, GRU 0.974/0.968); `theme` chỉ GRU tách được theo ngữ cảnh ([04](04-engine-ml.md)) |
