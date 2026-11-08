@@ -2,12 +2,16 @@
 //!
 //! The engine is mechanical (ADR 0007): per key it builds an
 //! [`Observation`], asks the action model and applies the chosen edit. The
-//! per-key flow lives in the private submodule `flow`, the hotkey and
-//! retroactive correction (ADR 0008) in `switch`; this file builds the
-//! engine and implements the public entry points.
+//! per-key flow lives in the private submodule `flow`, the hotkey in
+//! `switch`; this file builds the engine and implements the public entry
+//! points. A word the model ends stays "pending" (marked text) until the
+//! user starts the next word (ADR 0011).
 
 mod flow;
+mod model;
 mod switch;
+
+pub use model::CheckpointSource;
 
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -38,7 +42,8 @@ pub enum Overlay {
 pub struct EngineOutput {
     /// `false`: hand the key back to the app untouched.
     pub consumed: bool,
-    /// Text to `insertText` (commits and clears the marked text).
+    /// Text to `insertText` (commits and clears the marked text). The
+    /// pending word plus its boundary characters, or the word being composed.
     pub commit: Option<String>,
     /// New marked text; `Some("")` clears it. Applied after `commit`.
     pub marked: Option<String>,
@@ -47,19 +52,6 @@ pub struct EngineOutput {
     pub mode: Option<Lang>,
     /// Show the mode overlay at the caret; only when the sticky mode changes.
     pub overlay: Option<Overlay>,
-    /// Retroactive correction of the just-committed word (ADR 0008).
-    /// Applied before `commit` and `marked`.
-    pub replace: Option<Replace>,
-}
-
-/// Replace text already inserted before the caret (ADR 0008).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Replace {
-    /// Number of UTF-16 code units to delete immediately before the caret
-    /// (the committed word plus the boundary characters typed after it).
-    pub delete_before: u32,
-    /// Text to insert in their place (new rendering + the same boundary).
-    pub text: String,
 }
 
 /// Engine errors (only from [`Engine::shutdown`]; construction never fails).
@@ -84,11 +76,56 @@ pub struct SessionInfo {
 
 /// Blob key of the latest model snapshot for `kind`.
 fn snapshot_key(kind: ModelKind) -> String {
-    let name = match kind {
-        ModelKind::LinearAction => "linear_action",
-        ModelKind::GruAction => "gru_action",
+    format!("model/{}/latest", kind.name())
+}
+
+/// Builds the learner for `kind`, loading `model/<kind>/latest` when it
+/// exists. A missing blob gives a fresh model silently; an unreadable or
+/// corrupt one gives a fresh model and a note in `diagnostics`.
+fn load_learner(
+    storage: &dyn Storage,
+    kind: ModelKind,
+    seed: u64,
+    diagnostics: &mut Vec<String>,
+) -> Box<dyn ImeLearner> {
+    let key = snapshot_key(kind);
+    let mut learner = build_action(kind, seed);
+    match storage.blobs().get(&key) {
+        Ok(None) => {}
+        Ok(Some(bytes)) => {
+            if let Err(e) = learner.load(&bytes) {
+                diagnostics.push(format!("snapshot {key} unusable ({e}); starting fresh"));
+                learner = build_action(kind, seed);
+            }
+        }
+        Err(e) => diagnostics.push(format!("cannot read snapshot {key} ({e}); starting fresh")),
+    }
+    learner
+}
+
+/// Starts a trainer around `learner`, saving to the key of `kind`.
+fn new_trainer(
+    cfg: &EngineConfig,
+    kind: ModelKind,
+    storage: Arc<dyn Storage>,
+    learner: Box<dyn ImeLearner>,
+) -> Trainer {
+    let params = TrainerParams {
+        correction_window: cfg.correction_window,
+        correction_steps: cfg.correction_steps,
+        replay_capacity: cfg.replay_capacity,
+        replay_every: cfg.replay_every,
+        replay_batch: cfg.replay_batch,
+        seed: cfg.seed,
     };
-    format!("model/{name}/latest")
+    let save = SaveTarget {
+        storage,
+        key: snapshot_key(kind),
+    };
+    Trainer::new(
+        Core::new(learner, params, save),
+        cfg.threading == Threading::Background,
+    )
 }
 
 /// Telex flags of the current raw buffer (features, not rules).
@@ -105,25 +142,37 @@ struct Focus {
     id: u64,
 }
 
-/// The last committed word, kept while only boundary characters were typed
-/// after it so a double Shift can still rewrite it (ADR 0008).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LastWord {
+/// A word the model ended, still shown as marked text (ADR 0011). Its
+/// `WordCommit` record and label are written when it is committed for real,
+/// so a flip or a Backspace into the word can still change it.
+#[derive(Debug, Clone)]
+struct PendingWord {
     id: u64,
     raw: String,
     vi: String,
-    /// Rendering that was committed.
+    /// Rendering shown (and committed).
     lang: Lang,
-    /// Characters typed (and passed to the app) after the word.
+    /// The user flipped the rendering: the word is labelled a correction.
+    locked: bool,
+    /// What ended the word, for the `WordCommit` record.
+    ended_by: nimk_types::Boundary,
+    /// Boundary characters typed after the word (still marked text).
     boundary: String,
+    /// Model calls of the word, for its label.
+    steps: Vec<Step>,
 }
 
-impl LastWord {
-    fn text(&self, lang: Lang) -> &str {
-        match lang {
+impl PendingWord {
+    fn word(&self) -> &str {
+        match self.lang {
             Lang::Vi => &self.vi,
             Lang::En => &self.raw,
         }
+    }
+
+    /// The marked text: rendering plus boundary.
+    fn text(&self) -> String {
+        format!("{}{}", self.word(), self.boundary)
     }
 }
 
@@ -131,6 +180,7 @@ impl LastWord {
 /// the IMK main thread only.
 pub struct Engine {
     cfg: EngineConfig,
+    storage: Arc<dyn Storage>,
     model: Arc<dyn ImeModel>,
     model_id: Arc<str>,
     trainer: Trainer,
@@ -155,7 +205,8 @@ pub struct Engine {
     taught: Vec<Example>,
     /// Previous non-hotkey key-downs, oldest first.
     recent: VecDeque<KeyEvent>,
-    last_word: Option<LastWord>,
+    /// The word the model ended and the user has not moved past yet.
+    pending: Option<PendingWord>,
     focus: Option<Focus>,
     next_focus: u64,
     /// Renderings of up to 3 previous words in this field, most recent first.
@@ -175,19 +226,12 @@ impl Engine {
     /// Writes `SessionStart` as the first record.
     #[must_use]
     pub fn new(cfg: EngineConfig, storage: Arc<dyn Storage>, session: SessionInfo) -> Self {
-        let key = snapshot_key(cfg.policy);
+        let mut cfg = cfg;
         let mut diagnostics = Vec::new();
-        let mut learner = build_action(cfg.policy, cfg.seed);
-        match storage.blobs().get(&key) {
-            Ok(None) => {}
-            Ok(Some(bytes)) => {
-                if let Err(e) = learner.load(&bytes) {
-                    diagnostics.push(format!("snapshot {key} unusable ({e}); starting fresh"));
-                    learner = build_action(cfg.policy, cfg.seed);
-                }
-            }
-            Err(e) => diagnostics.push(format!("cannot read snapshot {key} ({e}); starting fresh")),
+        if let Some(kind) = model::read_setting(storage.as_ref(), &mut diagnostics) {
+            cfg.policy = kind;
         }
+        let learner = load_learner(storage.as_ref(), cfg.policy, cfg.seed, &mut diagnostics);
         let mut engine = Self::with_model(cfg, storage, session, learner);
         diagnostics.append(&mut engine.diagnostics);
         engine.diagnostics = diagnostics;
@@ -218,19 +262,7 @@ impl Engine {
 
         let model = learner.snapshot();
         let model_id: Arc<str> = Arc::from(model.id());
-        let params = TrainerParams {
-            correction_window: cfg.correction_window,
-            correction_steps: cfg.correction_steps,
-            replay_capacity: cfg.replay_capacity,
-            replay_every: cfg.replay_every,
-            replay_batch: cfg.replay_batch,
-            seed: cfg.seed,
-        };
-        let save = SaveTarget {
-            storage,
-            key: snapshot_key(cfg.policy),
-        };
-        let trainer = Trainer::new(Core::new(learner, params, save), background);
+        let trainer = new_trainer(&cfg, cfg.policy, Arc::clone(&storage), learner);
         let labeler = Labeler::new(LabelerParams {
             implicit: cfg.hotkeys,
             correction_words: cfg.correction_words,
@@ -254,6 +286,7 @@ impl Engine {
 
         let mut engine = Self {
             cfg,
+            storage,
             model,
             model_id,
             trainer,
@@ -269,7 +302,7 @@ impl Engine {
             word_steps: Vec::new(),
             taught: Vec::new(),
             recent: VecDeque::with_capacity(nimk_types::RECENT_WINDOW + 1),
-            last_word: None,
+            pending: None,
             focus: None,
             next_focus: 0,
             prev_langs: Vec::with_capacity(3),
@@ -325,7 +358,6 @@ impl Engine {
         });
         self.prev_langs.clear();
         self.recent.clear();
-        self.last_word = None;
         self.committed_since_focus = false;
         self.locked = false;
         self.decide_prior(id, ctx.timestamp, &mut out);
@@ -385,7 +417,8 @@ impl Engine {
         }
     }
 
-    /// Commits the marked text as-is (IMK `commitComposition`, focus loss).
+    /// Commits the marked text as-is: the word being composed, or the pending
+    /// word with its boundary (IMK `commitComposition`, focus loss).
     pub fn commit_pending(&mut self, timestamp: f64) -> EngineOutput {
         let mut out = EngineOutput::default();
         self.tick(timestamp);
@@ -398,10 +431,21 @@ impl Engine {
     /// as if it had been derived from a hotkey or an implicit timeout.
     ///
     /// The target must still be pending (committed or focused, and not yet
-    /// labelled); otherwise the label is dropped with a diagnostic. With
+    /// labelled; a word still shown as marked text is committed first); otherwise the label is dropped with a diagnostic. With
     /// `hotkeys = false` implicit labels are never generated, so every
     /// committed word stays pending until its label is injected.
     pub fn inject_label(&mut self, target: Target, label: Lang, weight: f32, source: LabelSource) {
+        // A label can only follow its word's `WordCommit` record, so a word
+        // still pending here was committed in the source session: commit it
+        // now (offline use; its text is not needed).
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| Target::Word(p.id) == target)
+        {
+            let t = self.last_t;
+            self.finalize_pending(t, &mut EngineOutput::default());
+        }
         match self.labeler.finalize(target, label, weight, source) {
             Some(fl) => {
                 let t = self.last_t;
@@ -440,6 +484,13 @@ impl Engine {
     /// Fails if flushing or saving fails.
     pub fn shutdown(mut self) -> Result<(), EngineError> {
         let t = self.last_t;
+        // The host already committed any marked text; this only settles the
+        // pending word's label.
+        self.commit_word(
+            nimk_types::Boundary::External,
+            t,
+            &mut EngineOutput::default(),
+        );
         self.flush_taught();
         let mut finals = Vec::new();
         self.labeler.flush(&mut finals);

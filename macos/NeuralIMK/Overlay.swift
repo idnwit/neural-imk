@@ -39,24 +39,25 @@ final class Overlay {
 
     /// Shows the badge for `mode` at `caret` (Cocoa screen coordinates).
     /// Auto switches are blue, manual (hotkey) switches orange.
-    func show(mode: UInt8, manual: Bool, skipped: Bool = false, caret: NSRect) {
-        let panel = self.panel
+    func show(mode: UInt8, manual: Bool, caret: NSRect) {
         let name = mode == UInt8(NIMK_MODE_VI) ? "VI" : "EN"
-        let width: CGFloat = skipped ? 150 : size.width
-        let tint: NSColor = skipped ? .systemRed : (manual ? .systemOrange : .systemBlue)
-        if skipped {
-            // Warning style: red tint, struck-through mode, explanation.
-            let text = NSMutableAttributedString(
-                string: name,
-                attributes: [.strikethroughStyle: NSUnderlineStyle.single.rawValue])
-            text.append(NSAttributedString(string: " không sửa được ở app này"))
-            label.attributedStringValue = text
-            label.font = .boldSystemFont(ofSize: 11)
-        } else {
-            label.attributedStringValue = NSAttributedString(string: name)
-            label.stringValue = name
-            label.font = .boldSystemFont(ofSize: 12)
-        }
+        label.attributedStringValue = NSAttributedString(string: name)
+        label.stringValue = name
+        label.font = .boldSystemFont(ofSize: 12)
+        present(width: size.width, tint: manual ? .systemOrange : .systemBlue, caret: caret)
+    }
+
+    /// Shows a short text badge (e.g. the model name) at `caret`, blue.
+    func showText(_ text: String, caret: NSRect) {
+        label.attributedStringValue = NSAttributedString(string: text)
+        label.stringValue = text
+        label.font = .boldSystemFont(ofSize: 12)
+        let width = max(size.width, CGFloat(text.count) * 8 + 20)
+        present(width: width, tint: .systemBlue, caret: caret)
+    }
+
+    private func present(width: CGFloat, tint: NSColor, caret: NSRect) {
+        let panel = self.panel
         label.textColor = .white
         panel.setContentSize(NSSize(width: width, height: size.height))
         background.frame = NSRect(origin: .zero, size: NSSize(width: width, height: size.height))
@@ -107,5 +108,6 @@ final class ModeStatusItem {
     func show(mode: UInt8, auto: Bool) {
         let text = mode == UInt8(NIMK_MODE_VI) ? "VI" : "EN"
         item?.button?.title = auto ? "\(text)·" : text
+        item?.button?.toolTip = "Model: \(Core.modelName(Core.shared.model))"
     }
 }

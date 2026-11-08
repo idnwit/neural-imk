@@ -6,6 +6,12 @@ Working memory của quá trình code: quyết định, phát hiện, việc m�
 
 | Ngày | Loại | Ghi chú |
 | --- | --- | --- |
+| 2026-11-08 | quyết định | Model mặc định đổi lại sang `GruAction` (người dùng chốt): sau Telex v2, GRU đạt render 0.974 / ambiguous 0.968 so với Linear 0.965 / 0.961, và probe `theme` cho thấy GRU dùng được ngữ cảnh trái (VI: p 0.67, EN: p 0.06) còn Linear thì không. |
+| 2026-11-08 | quyết định | Telex v2 (gõ tự do, [10](10-telex.md)): dấu/`dd` gõ muộn, `ưo` → `ươ`, `uơ` sau `h kh th qu`, huỷ khoá từ, `ToneStyle`; `encode_variants` sinh ≤ 8 thứ tự gõ; `MixProfile::p_w_variant` đổi thành `p_variant`; 110 dòng bảng kiểm trong `tests/conformance.rs` (dòng U/O chưa chạy trên Unikey/OpenKey thật) |
+| 2026-11-08 | phát hiện | Sau Telex v2: `away` sang `en`, `did`/`wrong`/`dad` sang `en_ambiguous`; `nimk-synth` ghép `Decision` với phím theo bản ghi `key` vì ADR 0011 bỏ `Decision` cho phím không gọi model; pretrain lại (Linear 0.965/0.961, GRU 0.974/0.968); `theme` chỉ GRU tách được theo ngữ cảnh ([04](04-engine-ml.md)) |
+| 2026-11-08 | phát hiện | `w` đứng riêng phải ra `ư` như Unikey/EVKey (trước đó để nguyên `w`): sửa trong `nimk-telex` (`w` trước nguyên âm đầu → `ư`, `ww` → `w`), thêm `encode_variants` và `MixProfile::p_w_variant` (0.5); `was`, `war` chuyển sang `en_ambiguous`; `dwowngf` ra `dường` chứ không phải `đường` (xem [04](04-engine-ml.md)); pretrain lại 2 model |
+| 2026-11-08 | xong | Vị trí lưu trữ do SDK định nghĩa (`FileManager`: Application Support/<bundle id>, Library/Logs/<bundle id>.log) và model pretrain đóng gói trong `Contents/Resources/models` (~0.8 MB); `LayeredStorage`, `ReadOnlyDirBlobs`, `BlobStore::delete`, `Engine::reset_model`, FFI `nimk_reset_model`/`nimk_checkpoint_source`; kiểm chứng `make models`, `./scripts/build-app.sh`, `make check` ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)) |
+| 2026-11-08 | quyết định | Model chọn được trên GUI (menu IME `Model`), checkpoint riêng từng model (`model/<kind>/latest`), lựa chọn lưu ở blob `settings/model`; `Engine::switch_model`, event `model_switch`, FFI `nimk_set_model`/`nimk_model`/`nimk_checkpoint_source` |
 | 2026-11-08 | quyết định | Model mặc định của engine đổi sang `LinearAction` (người dùng chốt): độ chính xác ngang `GruAction` (render@commit 0.975), `score` p99 0.5 µs so với khoảng 170 µs; `GruAction` vẫn giữ để so sánh qua replay. |
 | 2026-11-08 | xong | Đồng bộ `docs/` 00–09 và ADR 0005/0007/0008/0009 với code hiện tại; kiểm tra mọi sơ đồ `text` là ASCII thuần và ≤ 100 cột bằng script ngoài repo |
 | 2026-11-08 | phát hiện | Snapshot nằm ở `<root>/blobs/model/<kind>/latest` (`PlainFsStorage` đặt blob dưới `blobs/`), không phải `<root>/model/<kind>/latest`; docs 05/07 ghi đúng đường dẫn thật |
@@ -33,6 +39,7 @@ Working memory của quá trình code: quyết định, phát hiện, việc m�
 | 2026-11-08 | xong | Viết `docs/` 00–08, ADR 0001–0006 theo chuẩn `docs/README.md`, khớp contract sau review kiến trúc |
 | 2026-11-08 | phát hiện | arch-lint không quy `use other_crate::…` về scope; ràng buộc giữa crate dùng `restrict-use` deny theo đường dẫn crate, kết hợp dependency trong `Cargo.toml` |
 | 2026-11-08 | xong | M0: workspace skeleton build được, contract `arch-lint.toml` (arch-lint 0.11) đã kiểm chứng: probe `use nimk_engine` trong `nimk-policy` bị chặn với lỗi `ALD001` (`make arch`) |
+| 2026-11-08 | quyết định | `switch_margin` 0.2 -> 0.02: hiển thị giữa từ bám model; mid-word accuracy GRU 0.9004 -> 0.9063, 0.26 flips/từ, render@commit không đổi (bảng ở [04](04-engine-ml.md)); thêm `nimk-synth eval` và các metric mid-word |
 | 2026-11-08 | quyết định | Học có giám sát online, không exploration (ε = 0), hysteresis 0.2 ([ADR 0005](adr/0005-online-supervised-not-exploratory-rl.md)) |
 | 2026-11-08 | quyết định | Storage đi qua trait để sau này thêm `EncryptedStorage` dạng decorator ([ADR 0004](adr/0004-storage-behind-trait.md)) |
 | 2026-11-08 | quyết định | Hotkey mặc định = gõ nhanh Shift trái, dự phòng Ctrl+Space; không dùng ⌘+Space ([ADR 0003](adr/0003-shift-tap-hotkey.md)) |

@@ -4,6 +4,9 @@
 //! Independent of the other engine modules; `engine.rs` decides what a hit
 //! does and whether the key is consumed.
 //!
+//! A flagsChanged event that repeats the previous modifier state (apps such
+//! as VS Code send each one twice) is ignored.
+//!
 //! A tap is a press and release of either Shift key with nothing else held
 //! or typed, shorter than `tap_secs`. Two taps whose releases are at most
 //! `double_secs` apart fire the hotkey on the second release. Any other key
@@ -54,7 +57,13 @@ enum State {
 pub(crate) struct HotkeyDetector {
     params: HotkeyParams,
     state: State,
+    /// Keycode and shift/ctrl/opt/cmd bits of the last flagsChanged event.
+    last_flags: Option<(u16, u32)>,
 }
+
+/// The modifier bits that define the modifier state.
+const STATE_MASK: u32 =
+    Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::OPTION | Modifiers::COMMAND;
 
 /// Modifiers other than Shift; any of them held makes a Shift press a chord.
 const NON_SHIFT: u32 = Modifiers::CONTROL | Modifiers::OPTION | Modifiers::COMMAND;
@@ -66,6 +75,7 @@ impl HotkeyDetector {
         Self {
             params,
             state: State::Idle,
+            last_flags: None,
         }
     }
 
@@ -95,6 +105,14 @@ impl HotkeyDetector {
     }
 
     fn flags_changed(&mut self, key: &KeyEvent) -> Option<HotkeyHit> {
+        // Electron/Chromium delivers every flagsChanged twice a few ms
+        // apart: an event that repeats the previous modifier state is not a
+        // change and must not reach the tap logic.
+        let seen = (key.keycode, key.mods.0 & STATE_MASK);
+        if self.last_flags == Some(seen) {
+            return None;
+        }
+        self.last_flags = Some(seen);
         if !self.params.double_shift {
             return None;
         }
@@ -435,5 +453,58 @@ mod tests {
         });
         assert_eq!(det.feed(&down(keycode::SPACE, " ", C, 2.0)), None);
         assert_eq!(hits(&mut det, &evs), vec![(3, HotkeyHit::DoubleShift)]);
+    }
+
+    /// Every event twice, a few ms apart (VS Code).
+    fn doubled(events: &[KeyEvent]) -> Vec<KeyEvent> {
+        events
+            .iter()
+            .flat_map(|e| {
+                let mut again = e.clone();
+                again.timestamp += 0.004;
+                [e.clone(), again]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn doubled_events_real_vscode_trace() {
+        let mut det = detector();
+        let trace = [
+            flags(LS, S, 0.384),
+            flags(LS, S, 0.391),
+            flags(LS, 0, 0.473),
+            flags(LS, 0, 0.476),
+            flags(LS, S, 0.551),
+            flags(LS, S, 0.555),
+            flags(LS, 0, 0.675),
+            flags(LS, 0, 0.679),
+        ];
+        let got = hits(&mut det, &trace);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].1, HotkeyHit::DoubleShift);
+    }
+
+    #[test]
+    fn doubled_events_keep_the_timing_windows() {
+        let tap = |t: f64, hold: f64| [flags(LS, S, t), flags(LS, 0, t + hold)];
+        // Second release too late.
+        let mut late = Vec::from(tap(1.0, 0.1));
+        late.extend(tap(1.6, 0.1));
+        assert!(hits(&mut detector(), &doubled(&late)).is_empty());
+        // Tap held too long.
+        let mut held = Vec::from(tap(1.0, 0.6));
+        held.extend(tap(1.7, 0.1));
+        assert!(hits(&mut detector(), &doubled(&held)).is_empty());
+        // In time.
+        let mut ok = Vec::from(tap(1.0, 0.1));
+        ok.extend(tap(1.2, 0.1));
+        assert_eq!(hits(&mut detector(), &doubled(&ok)).len(), 1);
+    }
+
+    #[test]
+    fn doubled_single_tap_does_not_fire() {
+        let single = [flags(LS, S, 1.0), flags(LS, 0, 1.1)];
+        assert!(hits(&mut detector(), &doubled(&single)).is_empty());
     }
 }

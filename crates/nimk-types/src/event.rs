@@ -117,6 +117,13 @@ pub enum Event {
         /// Mean weighted log-loss of the batch before the update.
         loss: f32,
     },
+    /// The user switched the action model (additive; replay ignores it).
+    ModelSwitch {
+        /// Policy id before the switch (e.g. `linear_action@v3`).
+        from: String,
+        /// Policy id after the switch.
+        to: String,
+    },
 }
 
 /// Subject of a decision or label. Ids are per session, assigned by the

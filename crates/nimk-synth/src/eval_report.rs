@@ -43,6 +43,13 @@ pub struct EvalReport {
     /// `(keys, correct)` of the model's render decision on `Append` keys by
     /// word length after the key (`[0]` = first letter, last bucket = 8+).
     pub append_by_pos: [(u64, u64); POS_BUCKETS],
+    /// `Append` keys, i.e. keystrokes whose shown (post-hysteresis)
+    /// rendering was visible mid-word.
+    pub mid_keys: u64,
+    /// `Append` keys whose shown rendering equals the word's final label.
+    pub mid_correct: u64,
+    /// Visible rendering changes between consecutive `Append` keys of a word.
+    pub display_flips: u64,
 }
 
 fn ratio(n: u64, d: u64) -> f64 {
@@ -99,6 +106,38 @@ impl EvalReport {
     #[must_use]
     pub fn script_exact_rate(&self) -> f64 {
         ratio(self.scripts_exact, self.scripts)
+    }
+
+    /// Fraction of mid-word keystrokes whose shown rendering equals the
+    /// word's final label.
+    #[must_use]
+    pub fn mid_word_accuracy(&self) -> f64 {
+        ratio(self.mid_correct, self.mid_keys)
+    }
+
+    /// Visible rendering changes per word.
+    #[must_use]
+    pub fn flips_per_word(&self) -> f64 {
+        ratio(self.display_flips, self.words)
+    }
+
+    /// Counts the mid-word display of one key. `prev` is the rendering shown
+    /// after the previous `Append` key of the same word; it is cleared when
+    /// the word ends.
+    pub(crate) fn count_display(
+        &mut self,
+        d: Decided,
+        target: nimk_types::Action,
+        prev: &mut Option<Lang>,
+    ) {
+        if target.edit == EditAction::Append && d.edit == EditAction::Append {
+            self.mid_keys += 1;
+            self.mid_correct += u64::from(d.chosen == target.render);
+            self.display_flips += u64::from(prev.is_some_and(|p| p != d.chosen));
+            *prev = Some(d.chosen);
+        } else if target.edit == EditAction::Commit {
+            *prev = None;
+        }
     }
 
     /// Render accuracy on `Append` keys per position bucket.
@@ -198,5 +237,29 @@ mod tests {
         assert_eq!(r.append_by_pos[0], (1, 1));
         assert_eq!(r.append_by_pos[POS_BUCKETS - 1], (1, 0));
         assert!((r.render_fresh_accuracy() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn counts_mid_word_display_and_flips() {
+        let mut r = EvalReport::default();
+        let (vi, en) = (Lang::Vi, Lang::En);
+        let mut prev = None;
+        for (chosen, at) in [(en, 1), (vi, 2), (vi, 3)] {
+            r.count_display(
+                d(EditAction::Append, chosen, 0.5, at),
+                t(EditAction::Append, vi),
+                &mut prev,
+            );
+        }
+        r.count_display(
+            d(EditAction::Commit, vi, 0.9, 3),
+            t(EditAction::Commit, vi),
+            &mut prev,
+        );
+        assert_eq!(prev, None);
+        r.words = 1;
+        assert_eq!((r.mid_keys, r.mid_correct, r.display_flips), (3, 2, 1));
+        assert!((r.mid_word_accuracy() - 2.0 / 3.0).abs() < 1e-9);
+        assert!((r.flips_per_word() - 1.0).abs() < 1e-9);
     }
 }

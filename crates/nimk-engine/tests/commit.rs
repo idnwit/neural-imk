@@ -28,7 +28,8 @@ fn commit_uses_the_fresh_decision_not_the_held_display() {
     let mut t = 0.0;
     let outs = type_str(&mut e, "as ", &mut t);
     assert_eq!(outs[1].marked.as_deref(), Some("\u{e1}"), "display Vi");
-    assert_eq!(outs[2].commit.as_deref(), Some("as"), "committed En");
+    assert_eq!(outs[2].marked.as_deref(), Some("as "), "pending En");
+    assert_eq!(e.commit_pending(t + 1.0).commit.as_deref(), Some("as "));
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn held_display_does_not_flip_mid_word() {
     let mut t = 0.0;
     let outs = type_str(&mut e, "as ", &mut t);
     assert_eq!(outs[1].marked.as_deref(), Some("\u{e1}"), "0.35 held at Vi");
-    assert_eq!(outs[2].commit.as_deref(), Some("\u{e1}"));
+    assert_eq!(outs[2].marked.as_deref(), Some("\u{e1} "));
 }
 
 #[test]
@@ -56,5 +57,5 @@ fn manual_lock_beats_the_fresh_decision() {
     double_shift(&mut e, &mut t);
     double_shift(&mut e, &mut t);
     let outs = type_str(&mut e, " ", &mut t);
-    assert_eq!(outs[0].commit.as_deref(), Some("\u{e1}"), "lock wins");
+    assert_eq!(outs[0].marked.as_deref(), Some("\u{e1} "), "lock wins");
 }

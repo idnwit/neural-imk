@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Builds build/NeuralIMK.app: Rust staticlib + cbindgen header + swiftc link.
+# Bundles pretrained models from target/models/bundle (runs `make models` if missing).
 # Env: ARCHS="arm64 x86_64" for a universal binary (default: host arch only).
 set -euo pipefail
 
@@ -26,6 +27,12 @@ rust_triple() {
 echo "==> header"
 mkdir -p target
 cbindgen --config crates/nimk-ffi/cbindgen.toml --crate nimk-ffi --output target/nimk_ffi.h
+
+MODELS="target/models/bundle"
+if [[ ! -f "$MODELS/model/linear_action/latest" || ! -f "$MODELS/model/gru_action/latest" ]]; then
+  echo "==> models (make models)"
+  make models
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/obj
@@ -61,6 +68,10 @@ if [[ ${#SLICES[@]} -gt 1 ]]; then
 else
   cp "${SLICES[0]}" "$APP/Contents/MacOS/$BIN_NAME"
 fi
+
+echo "==> bundled models"
+mkdir -p "$APP/Contents/Resources/models"
+cp -R "$MODELS/." "$APP/Contents/Resources/models/"
 
 cp "$SRC/Info.plist" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null

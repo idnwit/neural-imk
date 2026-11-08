@@ -56,6 +56,25 @@ pub struct Example {
 `ActionMask` chỉ chặn action vô nghĩa về vật lý (xem [02](02-keyboard-io.md)), không phải luật ngôn ngữ; `Pass` luôn hợp lệ.
 Telex và các cờ `valid_vi`/`viable_vi` là feature do công cụ cấp; model tự quyết có tin chúng hay không.
 
+### Telex v2 và kiểu gõ trong dữ liệu học
+
+Quy tắc đầy đủ và bảng kiểm thử của Telex nằm ở [10-telex.md](10-telex.md); mục này chỉ nêu phần ảnh hưởng tới model. Telex v2 cho gõ dấu và `dd` muộn (`theme` → thêm, `dungd` → đung), nên cùng một chuỗi phím như `theme` vừa có thể là EN vừa là VI; model phải phân biệt bằng ngữ cảnh.
+
+### Luật Telex liên quan tới `w`
+
+| Gõ | Kết quả | Ghi chú |
+| --- | --- | --- |
+| `aw` `ow` `uw` `uow` | `ă` `ơ` `ư` `ươ` | Không đổi |
+| `w` | `ư` | `w` không tác động lên `a`/`o`/`u` đứng trước và từ chưa có nguyên âm nào (đầu từ, hoặc sau phụ âm đầu): `tw` → `tư`, `nhwng` → `nhưng`, `twowng` → `tương` |
+| `W` | `Ư` | Giữ hoa thường theo từng chữ |
+| `ww` | `w` | Phím thứ hai huỷ và gõ `w` thật; `w` tắt cho tới hết từ (`www` → `ww`) |
+| `dwowngf` | `dường` | `dw` là `d` + `ư`, không phải `đ`; muốn `đường` gõ `ddwowngf` hoặc `dduwowngf` |
+| `when` | `ưhen` | `has_telex` đúng nhưng không viable, nên model xem như EN |
+| `new`, `show` | `new`, `show` | `w` không áp khi kết quả không còn khả dĩ (`sh` không là onset) hoặc không có nguyên âm nhận móc |
+
+`encode` luôn trả dạng chuẩn (`uw`, thanh ở cuối); `encode_variants` trả tối đa 8 cách gõ thực tế khác: thanh ngay sau nguyên âm (`toasn`), dấu gõ muộn (`theme`, `vietej`, `tuongw`), `w` đứng riêng (`nhw`), `d` muộn (`dungd`) và tổ hợp của chúng.
+Synthetic chọn ngẫu nhiên một biến thể với xác suất `p_variant` (thay cho `p_w_variant`), để pretrain thấy nhiều thứ tự gõ.
+
 ## Điểm quyết định
 
 Model được hỏi ở hai thời điểm; quyết định "chốt" của một từ là rendering tại bước `Commit`.
@@ -138,7 +157,7 @@ pub fn decide(scores: &ActionScores, mask: ActionMask) -> Action;
 | Neutral init | Model chưa train cho `p_vi` trong 0.5 +- 0.05 và edit gần đều; vì vậy IME phải đi kèm snapshot đã pretrain |
 | `decide` | Edit xác suất cao nhất trong số các edit mask cho phép (hoà thì edit đứng trước trong `EditAction::ALL`, `Pass` luôn hợp lệ); `Vi` nếu `p_vi >= 0.5` |
 
-`ModelKind` có hai giá trị, tên `FromStr` lần lượt `linear_action` và `gru_action`; mặc định của engine là `LinearAction` (độ chính xác ngang `GruAction` trên dữ liệu tổng hợp, latency thấp hơn khoảng 300 lần; xem devlog).
+`ModelKind` có hai giá trị, tên `FromStr` lần lượt `linear_action` và `gru_action`; mặc định của engine là `GruAction`: sau Telex v2 nó chính xác hơn (render 0.974 so với 0.965) và phân biệt được ngữ cảnh (`theme` sau "Tôi muốn" ra thêm, sau "change the dark" giữ theme), điều `LinearAction` không làm được; xem devlog.
 
 | | `LinearAction` | `GruAction` |
 | --- | --- | --- |
@@ -173,10 +192,22 @@ Mỗi phím có một quyết định `edit` từ `decide`; rendering qua ba nh�
 | --- | --- |
 | Từ đã bị khoá bởi hotkey giữa từ | Rendering hiện tại, không đổi đến hết từ |
 | Action là `Commit` | `Vi` iff `p_vi >= 0.5` của chính model tại bước commit (quyết định mới, không qua hysteresis) |
-| Còn lại (giữa từ) | Hysteresis: chỉ rời rendering đang hiện khi `\|p - 0.5\| > switch_margin` (mặc định 0.2) |
+| Còn lại (giữa từ) | Hysteresis: chỉ rời rendering đang hiện khi `\|p - 0.5\| > switch_margin` (mặc định 0.02) |
 | Prior lúc focus | Hysteresis quanh sticky mode |
 
 Hysteresis chỉ áp giữa từ vì thực đo cho thấy giữ rendering cũ lúc commit làm hỏng từ kết thúc ở vùng mập mờ (khoảng 1 điểm).
+Hiển thị giữa từ nên bám dự đoán của model theo từng phím, nên margin được giữ rất nhỏ. Đo bằng `nimk-synth eval --model K --init target/models/K --seed 42 --sessions 200 --words 500 --margins ...` trên 20 script giữ lại (snapshot đóng gói). `mid_word_acc` = tỉ lệ phím giữa từ mà rendering đang hiện bằng nhãn cuối của từ; `flips/từ` = số lần rendering hiện đổi giữa các phím của một từ; `render@commit` không phụ thuộc margin vì commit dùng quyết định mới.
+
+| margin | GRU mid_word_acc | GRU flips/từ | Linear mid_word_acc | Linear flips/từ | render@commit (GRU / Linear) |
+| --- | --- | --- | --- | --- | --- |
+| 0.0 | 0.9062 | 0.274 | 0.8565 | 0.382 | 0.9736 / 0.9652 |
+| 0.02 | 0.9063 | 0.259 | 0.8569 | 0.367 | 0.9736 / 0.9652 |
+| 0.05 | 0.9061 | 0.239 | 0.8569 | 0.347 | 0.9736 / 0.9652 |
+| 0.1 | 0.9049 | 0.214 | 0.8574 | 0.318 | 0.9736 / 0.9652 |
+| 0.2 | 0.9004 | 0.187 | 0.8611 | 0.271 | 0.9736 / 0.9652 |
+
+Chọn 0.02 cho model mặc định (GRU): độ chính xác cao nhất, flips/từ 0.26 (dưới ngưỡng 0.3), bỏ dao động quanh đúng 0.5. Chênh lệch giữa các margin nhỏ (dưới 1 điểm); Linear (không phải mặc định) lại nhỉnh hơn với margin lớn.
+
 Sticky mode đổi ở hai nơi: lúc commit (theo rendering của từ) và lúc focus; hotkey đổi ngay. `overlay = Auto` chỉ khi sticky mode đổi do model.
 Không exploration (ε = 0).
 
@@ -223,6 +254,19 @@ Mỗi lần bật tắt tiếp theo của cùng từ phát một nhãn mới. Nh
 
 Sửa ngược trong cửa sổ thay nhãn ngầm bằng nhãn sửa; ngoài cửa sổ nhưng còn trong cache 4 từ, nó vẫn ghi đè.
 
+## Chọn model
+
+Người dùng chọn `LinearAction` hoặc `GruAction` trên menu IME ([06](06-gui.md)); mỗi model giữ checkpoint riêng.
+
+| Mục | Nội dung |
+| --- | --- |
+| Checkpoint | `model/<kind>/latest`, trên đĩa `<data>/blobs/model/<kind>/latest`; không bao giờ dùng chung giữa hai model |
+| Lựa chọn | Blob `settings/model`, JSON `{"model":"linear_action"}`; `Engine::new` đọc nó trước, hợp lệ thì ghi đè `cfg.policy`, hỏng thì bỏ qua và báo diagnostic |
+| `switch_model` | Lưu checkpoint model cũ, thay trainer, nạp checkpoint model mới, publish snapshot; checkpoint thiếu hoặc hỏng thì dùng model mới chưa train kèm diagnostic |
+| Replay, pretrain | Không đọc `settings/model`: replay chỉ chép blob `model/<kind>/latest` của model đang đánh giá, pretrain dùng `with_model` |
+
+Model chưa pretrain là trung tính ([07](07-build-and-install.md#pretrain-model)); menu ghi "(chưa pre-train)" khi chưa có checkpoint.
+
 ## Online learning
 
 Trainer chạy nền (thread chỉ nằm trong `trainer` và `logger`), cập nhật model rồi publish snapshot; hot path chỉ đọc snapshot.
@@ -260,13 +304,13 @@ pub fn pretrain(
 
 | Bước | Nội dung |
 | --- | --- |
-| Corpus | `Corpus::builtin()`: 3090 từ VI, 1674 từ EN, 243 từ EN mập mờ (`has`, `for`, `user`); ba danh sách rời nhau |
-| Trộn | `MixProfile` mặc định: `p_vi_sentence` 0.7, `p_en_in_vi` 0.15, `p_vi_in_en` 0.05, `p_ambiguous` 0.4, `p_typo` 0, `p_shortcut` 0 |
+| Corpus | `Corpus::builtin()`: 3090 từ VI, 1672 từ EN, 245 từ EN mập mờ (`has`, `for`, `user`); ba danh sách rời nhau |
+| Trộn | `MixProfile` mặc định: `p_vi_sentence` 0.7, `p_en_in_vi` 0.15, `p_vi_in_en` 0.05, `p_ambiguous` 0.4, `p_typo` 0, `p_shortcut` 0, `p_variant` 0.5 |
 | Phím và đích | Mỗi `Script` có `keys` và `targets` cùng chỉ số: chữ → `Append`, phím kết từ → `Commit`, ranh giới khi buffer rỗng và ⌘+phím → `Pass`, Backspace sau gõ nhầm → `Pop`; `render` là ngôn ngữ của từ (hoặc từ trước với `Pass`) |
 | Train | Một engine inline, `hotkeys = false`; mỗi phím qua `Engine::teach` với `edit_weight = render_weight = 1.0`; mỗi script bắt đầu bằng đổi focus sang field mới |
 | Tham số | `PretrainOptions { epochs: 2, eval_frac: 0.1, batch: 128 }` mặc định; trainer replay tắt, snapshot chỉ lưu một lần lúc kết thúc |
 | Đầu ra | Chỉ blob `model/<kind>/latest` được giữ, event bị bỏ; `PretrainReport { epochs, train_scripts, train_keys, eval }` |
-| Đánh giá | Engine mới nạp snapshot đã lưu, chạy `on_key` trên script giữ lại (mô hình tự quyết, không học), đọc `Decision` đã log |
+| Đánh giá | Engine mới nạp snapshot đã lưu, chạy `on_key` trên script giữ lại (mô hình tự quyết, không học), đọc `Decision` đã log. Phím không gọi model (ranh giới nối vào từ pending, Return, phím tắt; ADR 0011) không có `Decision`, nên quyết định được ghép với phím qua bản ghi `key`; text commit mang cả ranh giới (`tiếng `) nên được cắt trước khi so |
 
 `SynthConfig` mặc định: `seed` 42, 100 session x 500 từ, `key_interval_secs` 0.12.
 `EvalReport` gồm độ chính xác edit, render tại commit (kể cả quyết định mới trước hysteresis), riêng từ mập mờ và từ EN mập mờ, histogram `p_vi` tại commit, độ chính xác theo vị trí phím, và tỉ lệ text khớp.
@@ -285,6 +329,28 @@ Pretrain: render@commit là độ chính xác rendering tại phím commit, amb 
 | `LinearAction`, 200 x 500 x 2 | 0.975 | 0.971 | 0.944 | 0.979 | 97.5% | — |
 | `GruAction`, trước tuning (100 x 500 x 1, 414 s) | 0.673 | 0.671 | — | 0.733 | 55.3%, chỉ 5746 trên 10 000 từ được commit | — |
 | `GruAction`, 200 x 500 x 2 (102 s) | 0.975 | 0.969 | 0.909 | 0.978 | 97.3%, đủ 10 000 từ | 97.4% |
+| `LinearAction`, 200 x 500 x 2, sau `w` → `ư` (2026-11-08) | 0.968 | 0.964 | 0.984 | 0.974 | — | — |
+| `GruAction`, như trên | 0.968 | 0.962 | 0.967 | 0.973 | — | — |
+
+Hai dòng đó: dữ liệu có thêm kiểu gõ `w` đứng riêng nên khó hơn (thêm từ mập mờ kiểu `was`, `war`, `walk`).
+
+Sau Telex v2 và pending-word commit (ADR 0011), cùng cấu hình 200 x 500 x 2, `p_variant` 0.5, từ `did`, `wrong`, `dad` chuyển sang `en_ambiguous`, `away` sang `en`:
+
+| Model | render@commit | amb | amb EN | match | lát "gõ biến thể" (`p_variant` 1.0): render / amb |
+| --- | --- | --- | --- | --- | --- |
+| `LinearAction` | 0.965 | 0.961 | 0.880 | 0.972 | 0.958 / 0.952 |
+| `GruAction` | 0.974 | 0.968 | 0.940 | 0.977 | 0.969 / 0.961 |
+
+Lát "gõ biến thể" là 10 session x 300 từ chưa thấy, mọi từ VI gõ bằng biến thể (CLI in `variant_*`).
+Thăm dò `theme` sau ngữ cảnh (CLI in `probe ...`; `p_vi` là đầu ra trước hysteresis):
+
+| Ngữ cảnh | `LinearAction` | `GruAction` |
+| --- | --- | --- |
+| "Tôi muốn" + `theme` (kỳ vọng thêm) | p_vi 0.347, ra EN | p_vi 0.671, ra VI |
+| "change the dark" + `theme` (kỳ vọng EN) | p_vi 0.500, ra VI (sai) | p_vi 0.057, ra EN |
+| "Tôi muốn" + `theem` (kỳ vọng thêm) | 0.986, VI | 0.790, VI |
+
+`LinearAction` chưa tách được `theme` theo ngữ cảnh (đặc trưng tuyến tính ít dùng từ trước); `GruAction` tách đúng. Đây là lý do GRU vẫn được giữ để so sánh.
 
 Độ chính xác edit đạt 1.000 ở mọi cấu hình đã tuning; các lỗi còn lại là phím giống hệt nhau ở hai ngôn ngữ (`in`, `ten`, `an`, `hang`, `me`, `no`).
 Online learning hầu như không cải thiện trên log synthetic (97.3% so với 97.4% frozen cho GRU) vì nhãn synthetic cùng phân phối với pretrain; lợi ích thật chỉ đo được trên log thật.
@@ -319,9 +385,9 @@ Giá trị lấy từ `impl Default for EngineConfig`; đổi mặc định ph�
 
 | Trường | Kiểu | Mặc định | Ý nghĩa |
 | --- | --- | --- | --- |
-| `policy` | `ModelKind` | `GruAction` | Model dựng khi chưa có snapshot |
+| `policy` | `ModelKind` | `GruAction` | Model dựng khi chưa có snapshot; `settings/model` (lựa chọn trên GUI) ghi đè khi `Engine::new` |
 | `seed` | `u64` | `0x5eed` | Seed khởi tạo model |
-| `switch_margin` | `f32` | `0.2` | Hysteresis giữa từ |
+| `switch_margin` | `f32` | `0.02` | Hysteresis giữa từ |
 | `hotkeys` | `bool` | `true` | Nhận diện hotkey; replay và pretrain đặt `false` |
 | `shift_tap_secs` | `f64` | `0.3` | Giữ Shift tối đa để tính là một nháy |
 | `double_shift` | `bool` | `true` | Bật hotkey nháy Shift hai lần |

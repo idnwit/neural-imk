@@ -26,15 +26,16 @@ pub enum Overlay {
 
 | `Overlay` | Nghĩa | Hiển thị |
 | --- | --- | --- |
-| `Auto` | Model đổi sticky mode (lúc commit hoặc focus) | Xanh dương |
+| `Auto` | Model đổi sticky mode lúc kết thúc từ (prior khi focus chỉ đổi mode và status item, không overlay) | Xanh dương |
 | `Manual` | Người dùng nháy Shift hai lần hoặc Ctrl+Space | Cam |
-| `Manual` + sửa ngược bị bỏ qua | `replace` không áp được ([09](09-app-compat.md)) | Đỏ, chữ mode gạch ngang, kèm "không sửa được ở app này" |
 
 `NimkOut::overlay` mang cả hai giá trị (`uint8_t`: 0 none, 1 auto, 2 manual).
 
-Vị trí overlay dùng lại rect con trỏ Cocoa đã đọc cho context ([03](03-context-io.md)), không cần đổi sang Quartz vì `NSPanel` cũng dùng toạ độ Cocoa.
+Overlay dò con trỏ ngay lúc hiện; rect rỗng thì dò lại một lần sau 80 ms, vẫn rỗng mới dùng vị trí chuột. Vị trí overlay dùng lại rect con trỏ Cocoa đã đọc cho context ([03](03-context-io.md)), không cần đổi sang Quartz vì `NSPanel` cũng dùng toạ độ Cocoa.
 
 ## Status item
+
+Tooltip của status item hiện model đang dùng (`Model: GRU`).
 
 Thử tạo `NSStatusItem` ngay trong process IME trước; nếu không hiện được thì tách agent app.
 
@@ -45,18 +46,18 @@ Thử tạo `NSStatusItem` ngay trong process IME trước; nếu không hiện 
 
 ## Menu IME
 
-Menu dựng trong `InputController.menu()`; mục thông tin không bấm được.
+Menu dựng trong `InputController.menu()`; mục thông tin không bấm được. IMK gọi action với `sender` là dictionary chứa `NSMenuItem` dưới khoá `kIMKCommandMenuItemName`, nên mọi action khai báo `(_ sender: Any?)` và mỗi lần chọn đều ghi một dòng `menu: ...` vào log.
 
 | Mục | Nguồn |
 | --- | --- |
 | `Mode: Tiếng Việt (VI)` / `English (EN)` | `nimk_mode` |
 | `Policy: <id>`, ví dụ `gru_action@v1` | `nimk_policy_id` |
-| `Last replace issue: ...` (chỉ khi có) | Chẩn đoán sửa ngược gần nhất |
-| `Retro-correction in this app: on/off` | `ReplaceCompat.allows(bundle)`; bấm để đảo override ([09](09-app-compat.md)) |
-| `Open data folder` | Mở `~/Library/Application Support/NeuralIMK/` trong Finder |
-| `Show diagnostics log` | Mở `~/Library/Logs/NeuralIMK.log` |
+| `Model: Linear (nhanh) (gốc)`, `Model: GRU (chưa pre-train)` | Hai mục cùng cấp (không submenu: IMK không đảm bảo giao action của submenu); dấu `✓` ở model đang dùng (`nimk_model`); hậu tố theo `nimk_checkpoint_source`: `(gốc)` model đóng gói, `(đã học thêm)` checkpoint của người dùng, `(chưa pre-train)` khi không có. Chọn → `nimk_set_model`, áp `NimkOut` (commit từ đang gõ), cập nhật status item, hiện overlay tên model |
+| `Khôi phục model gốc` | `nimk_reset_model`: xoá checkpoint người dùng của model đang dùng và nạp lại model gốc; áp `NimkOut`, hiện overlay |
+| `Open data folder` | Mở data dir (`<Application Support>/<bundle id>`, do `FileManager` trả về) trong Finder |
+| `Show diagnostics log` | Mở `<Library>/Logs/<bundle id>.log` (đường dẫn do `FileManager` trả về) |
 
-Mục "Reset model" trong thiết kế cũ chưa có; muốn reset thì xoá `blobs/model/<kind>/latest` trong thư mục dữ liệu ([07](07-build-and-install.md)).
+Không còn phải xoá file thủ công ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
 
 ## Dashboard (sau M4)
 

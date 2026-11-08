@@ -3,7 +3,7 @@ use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::validate::{blob_key_segments, check_record, check_segment_id, sanitize_session};
-use crate::{BlobStore, EventSink, EventSource, RecordIter, SegmentId, Storage};
+use crate::{BlobOrigin, BlobStore, EventSink, EventSource, RecordIter, SegmentId, Storage};
 
 /// Locks a mutex, recovering from poisoning: the maps hold plain data that a
 /// panicking writer cannot leave half-updated in a harmful way.
@@ -139,5 +139,17 @@ impl BlobStore for MemBlobStore {
             .filter(|k| k.starts_with(prefix))
             .cloned()
             .collect())
+    }
+
+    fn delete(&self, key: &str) -> io::Result<bool> {
+        blob_key_segments(key)?;
+        Ok(lock(&self.map).remove(key).is_some())
+    }
+
+    fn origin(&self, key: &str) -> io::Result<Option<BlobOrigin>> {
+        blob_key_segments(key)?;
+        Ok(lock(&self.map)
+            .contains_key(key)
+            .then_some(BlobOrigin::User))
     }
 }

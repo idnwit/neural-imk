@@ -31,15 +31,20 @@ fn labels(events: &[Event]) -> Vec<(Target, Lang, f32, LabelSource)> {
 fn vietnamese_words_commit_with_diacritics() {
     let (mut e, storage) = const_engine(0.9, inline_cfg());
     let mut t = 100.0;
-    let outs = type_str(&mut e, "tieengs Vieetj ", &mut t);
-    assert_eq!(commits(&outs), vec!["tiếng", "Việt"]);
+    let mut outs = type_str(&mut e, "tieengs Vieetj ", &mut t);
+    // Each word stays pending until the next word starts (ADR 0011).
+    assert_eq!(commits(&outs), vec!["tiếng "]);
+    outs.push(e.commit_pending(t + 1.0));
+    assert_eq!(commits(&outs), vec!["tiếng ", "Việt "]);
     assert!(outs[0].consumed, "Append consumes the key");
     assert_eq!(outs[0].marked.as_deref(), Some("t"));
     assert_eq!(outs[6].marked.as_deref(), Some("tiếng"));
     let space = &outs[7];
-    assert!(!space.consumed, "Commit hands the key to the app");
-    assert_eq!(space.marked, None);
-    assert!(!outs[14].consumed);
+    assert!(space.consumed, "the boundary joins the marked text");
+    assert_eq!(space.marked.as_deref(), Some("tiếng "));
+    // The first letter of the next word commits the pending one.
+    assert_eq!(outs[8].commit.as_deref(), Some("tiếng "));
+    assert_eq!(outs[8].marked.as_deref(), Some("V"));
     assert_eq!(e.mode(), Lang::Vi);
     let evs = events(&storage);
     assert!(matches!(evs.first(), Some(Event::SessionStart { .. })));
@@ -70,10 +75,12 @@ fn vietnamese_words_commit_with_diacritics() {
 fn english_stays_english_and_moves_the_sticky_mode() {
     let (mut e, _s) = const_engine(0.1, inline_cfg());
     let mut t = 0.0;
-    let outs = type_str(&mut e, "has string, test ", &mut t);
-    assert_eq!(commits(&outs), vec!["has", "string", "test"]);
+    let mut outs = type_str(&mut e, "has string, test ", &mut t);
+    outs.push(e.commit_pending(t + 1.0));
+    assert_eq!(commits(&outs), vec!["has ", "string, ", "test "]);
     assert_eq!(e.mode(), Lang::En);
-    let first = outs.iter().find(|o| o.commit.is_some()).unwrap();
+    // The mode moves when the model ends the word (the space), not later.
+    let first = outs.iter().find(|o| o.mode.is_some()).unwrap();
     assert_eq!(first.mode, Some(Lang::En), "mode moves at the commit");
     assert_eq!(first.overlay, Some(Overlay::Auto));
 }
@@ -129,8 +136,8 @@ fn backspace_pops_and_passes_when_buffer_is_empty() {
         "empty buffer: Pop is masked, key reaches the app"
     );
     let mut t = 2.0;
-    let outs = type_str(&mut e, "x ", &mut t);
-    assert_eq!(commits(&outs), vec!["x"]);
+    type_str(&mut e, "x ", &mut t);
+    assert_eq!(e.commit_pending(t + 1.0).commit.as_deref(), Some("x "));
 }
 
 /// Model that always wants `edit`, whatever the key.
@@ -266,12 +273,12 @@ fn manual_switch_in_word_flips_marked_text_and_locks_render() {
     assert_eq!(o.marked.as_deref(), Some("há"));
     assert_eq!(o.mode, Some(Lang::Vi));
     assert_eq!(o.overlay, Some(Overlay::Manual));
-    assert_eq!(o.replace, None);
     // The model still says En (0.1) but the user's choice is locked.
     let o = e.on_key(&char_key('f', t + 0.1));
     assert_eq!(o.marked.as_deref(), Some("hà"));
     let outs = type_str(&mut e, " ", &mut t);
-    assert_eq!(commits(&outs), vec!["hà"]);
+    assert_eq!(outs[0].marked.as_deref(), Some("hà "));
+    assert_eq!(e.commit_pending(t + 1.0).commit.as_deref(), Some("hà "));
     let evs = events(&storage);
     assert!(evs.contains(&Event::ManualSwitch {
         scope: nimk_types::SwitchScope::InWord,
@@ -317,6 +324,7 @@ fn edit_online_weight_reaches_the_examples() {
     let mut t = 0.0;
     type_str(&mut e, "ab ", &mut t);
     double_shift(&mut e, &mut t);
+    e.commit_pending(t + 1.0);
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty());
     assert!(seen.iter().all(|x| (x.edit_weight - 0.5).abs() < 1e-6));
@@ -326,7 +334,7 @@ fn edit_online_weight_reaches_the_examples() {
 fn implicit_labels_after_window_carry_implicit_weight() {
     let (mut e, storage, seen) = scripted_engine(const_typist(0.1), inline_cfg());
     let mut t = 0.0;
-    type_str(&mut e, "a b c ", &mut t);
+    type_str(&mut e, "a b c d", &mut t);
     let ls = labels(&events(&storage));
     assert_eq!(
         ls,
@@ -412,7 +420,8 @@ fn word_ids_do_not_depend_on_render() {
     };
     let vi = run(0.95);
     assert_eq!(vi, run(0.05));
-    assert_eq!(vi.len(), 6);
+    // The last word ("." is a boundary) is still pending.
+    assert_eq!(vi.len(), 5);
 }
 
 #[test]

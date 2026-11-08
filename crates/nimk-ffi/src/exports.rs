@@ -9,8 +9,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use crate::abi::{
-    NIMK_MODE_EN, NimkCtx, NimkKey, NimkOut, ctx_from_c, key_from_c, mode_code, read_cstr,
+    NIMK_CHECKPOINT_BUNDLED, NIMK_CHECKPOINT_NONE, NIMK_CHECKPOINT_USER, NIMK_MODE_EN,
+    NIMK_MODEL_LINEAR, NimkCtx, NimkKey, NimkOut, ctx_from_c, key_from_c, mode_code, model_code,
+    model_from_code, read_cstr,
 };
+use nimk_engine::CheckpointSource;
+
 use crate::handle::NimkCore;
 
 /// Best-effort text of a panic payload.
@@ -72,24 +76,31 @@ unsafe fn answer(
     }
 }
 
-/// Creates the IME core. `data_dir` is the storage root (created if needed);
-/// `app_version` is the IME build version. Returns null if the engine could
-/// not be built; every other function accepts null and passes keys through.
+/// Creates the IME core. `data_dir` is the user storage root (created if
+/// needed; the host resolves it from the OS, e.g. Application Support).
+/// `models_dir` is the read-only directory of bundled pretrained models
+/// (`<models_dir>/model/<kind>/latest`), or null: the core then starts
+/// untrained and says so in its diagnostics. `app_version` is the IME build
+/// version. Returns null if the engine could not be built; every other
+/// function accepts null and passes keys through.
 ///
 /// # Safety
-/// Both arguments must be null or NUL-terminated strings valid for the call.
+/// All arguments must be null or NUL-terminated strings valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nimk_new(
     data_dir: *const c_char,
+    models_dir: *const c_char,
     app_version: *const c_char,
 ) -> *mut NimkCore {
     let built = catch_unwind(|| {
         // SAFETY: null or NUL-terminated, valid for this call (contract).
         let dir = unsafe { read_cstr(data_dir) };
         // SAFETY: as above.
+        let models = unsafe { read_cstr(models_dir) };
+        // SAFETY: as above.
         let version = unsafe { read_cstr(app_version) }
             .map_or_else(|| "unknown".to_owned(), |v| v.into_owned());
-        NimkCore::new(dir.as_deref(), version)
+        NimkCore::new(dir.as_deref(), models.as_deref(), version)
     });
     built.map_or(ptr::null_mut(), |core| Box::into_raw(Box::new(core)))
 }
@@ -153,7 +164,7 @@ pub unsafe extern "C" fn nimk_context(core: *mut NimkCore, ctx: *const NimkCtx, 
     }
 }
 
-/// Handles one key. Apply `replace`, then `commit`, then `marked`; return `consumed` from
+/// Handles one key. Apply `commit`, then `marked`; return `consumed` from
 /// `handle(_:client:)`.
 ///
 /// # Safety
@@ -172,7 +183,8 @@ pub unsafe extern "C" fn nimk_key(core: *mut NimkCore, key: *const NimkKey, out:
     }
 }
 
-/// Commits the marked text as-is (focus loss, `commitComposition`).
+/// Commits the marked text as-is: the word being composed or the pending word
+/// with its boundary characters (focus loss, `commitComposition`).
 ///
 /// # Safety
 /// `core`: null or live from `nimk_new`. `out`: null or writable.
@@ -188,6 +200,99 @@ pub unsafe extern "C" fn nimk_commit_pending(
             let output = core.engine.commit_pending(timestamp);
             Some(core.out.fill(output))
         });
+    }
+}
+
+/// Switches the action model (`NIMK_MODEL_*`). Commits a word being composed
+/// (apply `out` like `nimk_commit_pending`), saves the old model's checkpoint,
+/// loads the new one and remembers the choice. An unknown `kind` passes through.
+///
+/// # Safety
+/// `core`: null or live from `nimk_new`. `out`: null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_set_model(
+    core: *mut NimkCore,
+    kind: u8,
+    timestamp: f64,
+    out: *mut NimkOut,
+) -> bool {
+    let mut switched = false;
+    // SAFETY: pointer contracts forwarded from this function's.
+    unsafe {
+        answer(core, out, "nimk_set_model", |core| {
+            let kind = model_from_code(kind)?;
+            let output = core.engine.switch_model(kind, timestamp);
+            switched = true;
+            Some(core.out.fill(output))
+        });
+    }
+    switched
+}
+
+/// Active model: `NIMK_MODEL_LINEAR` or `NIMK_MODEL_GRU` (`LINEAR` for a null core).
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_model(core: *const NimkCore) -> u8 {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return NIMK_MODEL_LINEAR;
+    };
+    match catch_unwind(AssertUnwindSafe(|| model_code(core.engine.model_kind()))) {
+        Ok(code) => code,
+        // Shared access only, so the panic cannot be recorded.
+        Err(_) => NIMK_MODEL_LINEAR,
+    }
+}
+
+/// Resets the active model: commits a word being composed (apply `out` like
+/// `nimk_commit_pending`), deletes the user checkpoint and reloads the
+/// bundled pretrained model (untrained if the app ships none). Returns
+/// `false` for a null core.
+///
+/// # Safety
+/// `core`: null or live from `nimk_new`. `out`: null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_reset_model(
+    core: *mut NimkCore,
+    timestamp: f64,
+    out: *mut NimkOut,
+) -> bool {
+    let mut done = false;
+    // SAFETY: pointer contracts forwarded from this function's.
+    unsafe {
+        answer(core, out, "nimk_reset_model", |core| {
+            let output = core.engine.reset_model(timestamp);
+            done = true;
+            Some(core.out.fill(output))
+        });
+    }
+    done
+}
+
+/// Where model `kind` would be loaded from: `NIMK_CHECKPOINT_NONE`,
+/// `NIMK_CHECKPOINT_BUNDLED` or `NIMK_CHECKPOINT_USER` (`NONE` for a null
+/// core or an unknown kind).
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_checkpoint_source(core: *const NimkCore, kind: u8) -> u8 {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return NIMK_CHECKPOINT_NONE;
+    };
+    // Shared access only, so a panic cannot be recorded; it reads as "none".
+    match catch_unwind(AssertUnwindSafe(|| {
+        match model_from_code(kind).map(|k| core.engine.checkpoint_source(k)) {
+            Some(CheckpointSource::User) => NIMK_CHECKPOINT_USER,
+            Some(CheckpointSource::Bundled) => NIMK_CHECKPOINT_BUNDLED,
+            Some(CheckpointSource::None) | None => NIMK_CHECKPOINT_NONE,
+        }
+    })) {
+        Ok(code) => code,
+        Err(_) => NIMK_CHECKPOINT_NONE,
     }
 }
 
@@ -253,13 +358,12 @@ mod tests {
     use std::ffi::{CStr, CString};
 
     use super::*;
-    use crate::abi::{NIMK_KIND_KEY_DOWN, NIMK_MODE_UNCHANGED, NIMK_OVERLAY_NONE};
+    use crate::abi::{NIMK_KIND_KEY_DOWN, NIMK_MODE_UNCHANGED, NIMK_MODEL_GRU, NIMK_OVERLAY_NONE};
+    use nimk_storage::{PlainFsStorage, Storage};
 
     fn garbage_out() -> NimkOut {
         NimkOut {
             consumed: true,
-            replace_delete: 3,
-            replace_text: c"junk".as_ptr(),
             commit: c"junk".as_ptr(),
             marked: c"junk".as_ptr(),
             mode: 1,
@@ -271,8 +375,6 @@ mod tests {
         assert!(!out.consumed);
         assert!(out.commit.is_null());
         assert!(out.marked.is_null());
-        assert!(out.replace_text.is_null());
-        assert_eq!(out.replace_delete, 0);
         assert_eq!(out.mode, NIMK_MODE_UNCHANGED);
         assert_eq!(out.overlay, NIMK_OVERLAY_NONE);
     }
@@ -323,6 +425,10 @@ mod tests {
             assert_eq!(nimk_mode(ptr::null()), NIMK_MODE_EN);
             assert!(nimk_take_diagnostics(ptr::null_mut()).is_null());
             assert!(nimk_policy_id(ptr::null_mut()).is_null());
+            assert!(!nimk_set_model(ptr::null_mut(), 1, 0.0, ptr::null_mut()));
+            assert_eq!(nimk_model(ptr::null()), NIMK_MODEL_LINEAR);
+            assert_eq!(nimk_checkpoint_source(ptr::null(), 0), NIMK_CHECKPOINT_NONE);
+            assert!(!nimk_reset_model(ptr::null_mut(), 0.0, ptr::null_mut()));
             assert!(!nimk_shutdown(ptr::null_mut()));
             nimk_free(ptr::null_mut());
         }
@@ -345,15 +451,26 @@ mod tests {
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         // SAFETY: valid strings; the result is null or a live core freed once.
         unsafe {
-            let core = nimk_new(path.as_ptr(), c"test".as_ptr());
+            let core = nimk_new(path.as_ptr(), ptr::null(), c"test".as_ptr());
             nimk_free(core);
         }
+    }
+
+    /// ABI code of the product default model and of the other one.
+    fn default_and_other() -> (u8, u8) {
+        let default = model_code(nimk_engine::EngineConfig::default().policy);
+        let other = if default == NIMK_MODEL_GRU {
+            NIMK_MODEL_LINEAR
+        } else {
+            NIMK_MODEL_GRU
+        };
+        (default, other)
     }
 
     fn new_core(dir: &tempfile::TempDir) -> *mut NimkCore {
         let path = CString::new(dir.path().to_str().unwrap()).unwrap();
         // SAFETY: valid strings for the call.
-        let core = unsafe { nimk_new(path.as_ptr(), c"test".as_ptr()) };
+        let core = unsafe { nimk_new(path.as_ptr(), ptr::null(), c"test".as_ptr()) };
         assert!(!core.is_null(), "engine failed to build");
         core
     }
@@ -386,6 +503,46 @@ mod tests {
     }
 
     #[test]
+    fn set_model_switches_and_reports_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = new_core(&dir);
+        let ctx = NimkCtx {
+            bundle_id: c"com.apple.TextEdit".as_ptr(),
+            field_id: 1,
+            caret_rel_x: 0.5,
+            caret_rel_y: 0.5,
+            timestamp: 1.0,
+        };
+        let (default, other) = default_and_other();
+        let mut out = NimkOut::pass_through();
+        // SAFETY: live core and pointers.
+        unsafe {
+            assert_eq!(nimk_model(core), default);
+            assert_eq!(nimk_checkpoint_source(core, other), NIMK_CHECKPOINT_NONE);
+            nimk_context(core, &ctx, &mut out);
+            nimk_key(core, &key(c"a", 1.1), &mut out);
+            assert!(nimk_set_model(core, other, 1.2, &mut out));
+            assert_eq!(CStr::from_ptr(out.commit).to_str().unwrap(), "a");
+            assert_eq!(nimk_model(core), other);
+            assert_eq!(nimk_checkpoint_source(core, default), NIMK_CHECKPOINT_USER);
+            assert_eq!(nimk_checkpoint_source(core, other), NIMK_CHECKPOINT_NONE);
+            assert_eq!(nimk_checkpoint_source(core, 9), NIMK_CHECKPOINT_NONE);
+            // Unknown kind: passed through, nothing changes.
+            let mut out = garbage_out();
+            assert!(!nimk_set_model(core, 9, 1.3, &mut out));
+            assert_pass_through(&out);
+            assert_eq!(nimk_model(core), other);
+            assert!(nimk_shutdown(core));
+        }
+        let core = new_core(&dir);
+        // SAFETY: live core.
+        unsafe {
+            assert_eq!(nimk_model(core), other, "choice persisted");
+            nimk_free(core);
+        }
+    }
+
+    #[test]
     fn unknown_key_kind_passes_through_with_live_core() {
         let dir = tempfile::tempdir().unwrap();
         let core = new_core(&dir);
@@ -401,6 +558,92 @@ mod tests {
         unsafe {
             nimk_key(core, &bad, &mut out);
             assert_pass_through(&out);
+            nimk_free(core);
+        }
+    }
+
+    #[test]
+    fn bundled_models_load_and_reset_restores_them() {
+        // Produce a checkpoint with one core, then bundle it for another.
+        let seed_dir = tempfile::tempdir().unwrap();
+        let core = new_core(&seed_dir);
+        // SAFETY: live core.
+        assert!(unsafe { nimk_shutdown(core) });
+        let kind = nimk_engine::EngineConfig::default().policy;
+        let (default, other) = default_and_other();
+        let key = format!("model/{}/latest", kind.name());
+        let ckpt = PlainFsStorage::open(seed_dir.path())
+            .unwrap()
+            .blobs()
+            .get(&key)
+            .unwrap()
+            .unwrap();
+        let models_root = tempfile::tempdir().unwrap();
+        PlainFsStorage::open(models_root.path())
+            .unwrap()
+            .blobs()
+            .put(&key, &ckpt)
+            .unwrap();
+        let models = models_root.path().join("blobs");
+
+        let dir = tempfile::tempdir().unwrap();
+        let data = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let models_c = CString::new(models.to_str().unwrap()).unwrap();
+        // SAFETY: valid strings; the core is live until shut down.
+        unsafe {
+            let core = nimk_new(data.as_ptr(), models_c.as_ptr(), c"test".as_ptr());
+            assert!(!core.is_null());
+            assert_eq!(
+                nimk_checkpoint_source(core, default),
+                NIMK_CHECKPOINT_BUNDLED
+            );
+            assert_eq!(nimk_checkpoint_source(core, other), NIMK_CHECKPOINT_NONE);
+            assert!(
+                nimk_take_diagnostics(core).is_null(),
+                "bundled loads cleanly"
+            );
+            assert!(nimk_shutdown(core));
+
+            let core = nimk_new(data.as_ptr(), models_c.as_ptr(), c"test".as_ptr());
+            assert_eq!(nimk_checkpoint_source(core, default), NIMK_CHECKPOINT_USER);
+            let mut out = NimkOut::pass_through();
+            assert!(nimk_reset_model(core, 2.0, &mut out));
+            assert_eq!(
+                nimk_checkpoint_source(core, default),
+                NIMK_CHECKPOINT_BUNDLED
+            );
+            nimk_free(core);
+        }
+    }
+
+    /// The models produced by `make models` load without diagnostics.
+    /// Skipped when they have not been built.
+    #[test]
+    fn built_bundle_loads_cleanly() {
+        let bundle =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/models/bundle");
+        // arch-lint: allow(no-sync-io) reason="test skips when the bundle was not built"
+        if !bundle.is_dir() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let data = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let models = CString::new(bundle.to_str().unwrap()).unwrap();
+        // SAFETY: valid strings; the core is live until freed.
+        unsafe {
+            let core = nimk_new(data.as_ptr(), models.as_ptr(), c"test".as_ptr());
+            assert!(!core.is_null());
+            // Check every source first: switching away saves the old model as
+            // a user checkpoint, which is not a bundle problem.
+            for kind in [NIMK_MODEL_LINEAR, NIMK_MODEL_GRU] {
+                assert_eq!(nimk_checkpoint_source(core, kind), NIMK_CHECKPOINT_BUNDLED);
+            }
+            assert!(nimk_take_diagnostics(core).is_null());
+            for kind in [NIMK_MODEL_LINEAR, NIMK_MODEL_GRU] {
+                let mut out = NimkOut::pass_through();
+                assert!(nimk_set_model(core, kind, 1.0, &mut out));
+                assert!(nimk_take_diagnostics(core).is_null());
+            }
             nimk_free(core);
         }
     }

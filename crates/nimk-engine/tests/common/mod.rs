@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use nimk_engine::{Engine, EngineConfig, EngineOutput, Threading};
-use nimk_policy::{ImeLearner, ImeModel, PolicyError};
+use nimk_policy::{ImeLearner, ImeModel, ModelKind, PolicyError};
 use nimk_storage::{MemStorage, Storage};
 use nimk_types::{
     ActionScores, AppContext, Event, Example, KeyEvent, KeyKind, Modifiers, Observation, Record,
@@ -118,6 +118,8 @@ pub fn inline_cfg() -> EngineConfig {
     EngineConfig {
         threading: Threading::Inline,
         replay_every: 0,
+        // Tests pin the fast model; the product default is `GruAction`.
+        policy: ModelKind::LinearAction,
         ..EngineConfig::default()
     }
 }

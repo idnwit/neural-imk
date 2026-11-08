@@ -125,6 +125,9 @@ fn feed(engine: &mut Engine, record: &Record, frozen: bool) {
         } => {
             engine.commit_pending(record.t);
         }
+        // The logged session switched models; replay evaluates the models
+        // given on the CLI, so the switch itself is not reproduced.
+        Event::ModelSwitch { .. } => {}
         _ => {}
     }
 }

@@ -9,7 +9,7 @@ use common::*;
 use nimk_engine::EngineOutput;
 use nimk_types::{Action, EditAction, Event, KeyEvent, Lang, Modifiers, Observation, keycode};
 
-const TEXT: &str = "tieengs Vieetj, ab \u{7f}\u{7f} c ";
+const TEXT: &str = "tieengs Vieetj, abx\u{7f}\u{7f} c ";
 
 /// The edit a typist wants for `key` with `len` keys buffered.
 fn want(key: &KeyEvent, len: usize) -> EditAction {
@@ -80,7 +80,9 @@ fn teach_matches_on_key_and_queues_examples() {
 
     let seen_b = seen_b.lock().unwrap();
     let obs_a = seen_obs.lock().unwrap();
-    assert_eq!(seen_b.len(), keys().len(), "one example per teach call");
+    // Keys handled by the pending word (the second boundary character of
+    // "Vieetj, ") never reach the model, so they leave no example.
+    assert_eq!(seen_b.len(), keys().len() - 1, "one example per model call");
     assert_eq!(obs_a.len(), seen_b.len());
     for (x, o) in seen_b.iter().zip(obs_a.iter()) {
         assert_eq!(&x.obs, o, "observation built exactly as on_key does");
@@ -165,7 +167,10 @@ fn teach_words_still_take_injected_labels() {
     };
     e.teach(&char_key('a', 1.0), a, 0.0, 1.0);
     let o = e.teach(&char_key(' ', 1.1), c, 0.0, 1.0);
-    assert_eq!(o.commit.as_deref(), Some("a"));
+    assert_eq!(o.marked.as_deref(), Some("a "));
+    // The next word's first key commits the pending one.
+    let o = e.teach(&char_key('b', 1.2), a, 0.0, 1.0);
+    assert_eq!(o.commit.as_deref(), Some("a "));
     e.inject_label(
         nimk_types::Target::Word(0),
         Lang::En,

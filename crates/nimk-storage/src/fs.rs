@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs_sink::FsEventSink;
 use crate::validate::{blob_key_segments, check_segment_id};
-use crate::{BlobStore, EventSink, EventSource, RecordIter, SegmentId, Storage};
+use crate::{BlobOrigin, BlobStore, EventSink, EventSource, RecordIter, SegmentId, Storage};
 
 /// Extension of event segment files.
 const SEGMENT_EXT: &str = "jsonl";
@@ -141,10 +141,52 @@ struct FsBlobStore {
 
 impl FsBlobStore {
     fn path_of(&self, key: &str) -> io::Result<PathBuf> {
-        let mut path = self.dir.clone();
-        path.extend(blob_key_segments(key)?);
-        Ok(path)
+        key_path(&self.dir, key)
     }
+}
+
+/// Maps a validated blob key to its file under `dir`.
+pub(crate) fn key_path(dir: &Path, key: &str) -> io::Result<PathBuf> {
+    let mut path = dir.to_path_buf();
+    path.extend(blob_key_segments(key)?);
+    Ok(path)
+}
+
+/// Reads a blob file; a missing file (or a directory in its place) is `None`.
+pub(crate) fn read_blob(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::IsADirectory
+                    | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `path` is an existing regular file.
+pub(crate) fn blob_exists(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|m| m.is_file())
+}
+
+/// Lists the sorted keys under `dir` that start with `prefix`. A missing
+/// `dir` lists nothing.
+pub(crate) fn list_keys(dir: &Path, prefix: &str) -> io::Result<Vec<String>> {
+    let mut keys = Vec::new();
+    match collect_keys(dir, "", &mut keys) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(keys),
+        Err(e) => return Err(e),
+    }
+    keys.retain(|k| k.starts_with(prefix));
+    keys.sort();
+    Ok(keys)
 }
 
 /// Writes `bytes` to `path` atomically via a hidden temp file in the same dir.
@@ -210,8 +252,16 @@ impl BlobStore for FsBlobStore {
     }
 
     fn get(&self, key: &str) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.path_of(key)?) {
-            Ok(bytes) => Ok(Some(bytes)),
+        read_blob(&self.path_of(key)?)
+    }
+
+    fn list(&self, prefix: &str) -> io::Result<Vec<String>> {
+        list_keys(&self.dir, prefix)
+    }
+
+    fn delete(&self, key: &str) -> io::Result<bool> {
+        match fs::remove_file(self.path_of(key)?) {
+            Ok(()) => Ok(true),
             Err(e)
                 if matches!(
                     e.kind(),
@@ -220,18 +270,14 @@ impl BlobStore for FsBlobStore {
                         | io::ErrorKind::NotADirectory
                 ) =>
             {
-                Ok(None)
+                Ok(false)
             }
             Err(e) => Err(e),
         }
     }
 
-    fn list(&self, prefix: &str) -> io::Result<Vec<String>> {
-        let mut keys = Vec::new();
-        collect_keys(&self.dir, "", &mut keys)?;
-        keys.retain(|k| k.starts_with(prefix));
-        keys.sort();
-        Ok(keys)
+    fn origin(&self, key: &str) -> io::Result<Option<BlobOrigin>> {
+        Ok(blob_exists(&self.path_of(key)?).then_some(BlobOrigin::User))
     }
 }
 

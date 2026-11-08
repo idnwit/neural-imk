@@ -10,6 +10,16 @@ const INITIALS: [&str; 27] = [
     "h", "k", "l", "m", "n", "p", "r", "s", "t", "v", "x",
 ];
 
+/// Where the tone goes in open `oa oe uy` pairs (`ue`, `oă` follow them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToneStyle {
+    /// Kiểu mới: on the second vowel (`hoà`, `thuỷ`). Default.
+    #[default]
+    Modern,
+    /// Kiểu cũ: on the first vowel (`hòa`, `thủy`).
+    Old,
+}
+
 /// Final consonants (empty final is handled separately).
 const FINALS: [&str; 8] = ["c", "ch", "m", "n", "ng", "nh", "p", "t"];
 
@@ -127,11 +137,11 @@ pub(crate) fn initial_len(letters: &[char]) -> usize {
 
 /// Index of the letter that carries the tone, or `None` if there is no vowel.
 ///
-/// Rules ("new style" placement): a marked vowel wins (the last one in
+/// Rules (`ToneStyle::Modern` placement): a marked vowel wins (the last one in
 /// `ươ`); otherwise with a final consonant the last vowel; in an open
 /// syllable the second vowel of `oa oă oe ue uy`, the first of other pairs,
 /// and the middle of triples.
-pub(crate) fn tone_position(letters: &[char]) -> Option<usize> {
+pub(crate) fn tone_position(letters: &[char], style: ToneStyle) -> Option<usize> {
     let from = initial_len(letters);
     let start = (from..letters.len()).find(|&i| is_vowel(letters[i]))?;
     let end = vowel_run_end(letters, start);
@@ -143,7 +153,11 @@ pub(crate) fn tone_position(letters: &[char]) -> Option<usize> {
     let pos = match (run.len(), has_final) {
         (1, _) => start,
         (_, true) => end - 1,
-        (2, false) if SECOND_VOWEL_PAIRS.iter().any(|p| matches(run, p)) => start + 1,
+        (2, false)
+            if style == ToneStyle::Modern && SECOND_VOWEL_PAIRS.iter().any(|p| matches(run, p)) =>
+        {
+            start + 1
+        }
         (2, false) => start,
         _ => start + 1,
     };
@@ -185,18 +199,19 @@ pub(crate) fn is_valid(letters: &[char], tone: Tone) -> bool {
 }
 
 /// Returns true if `letters` (lowercase, toneless) is a prefix of some valid
-/// syllable. Letters are compared without marks, because Telex can still add
-/// a mark later (`tieng` + `e` -> `tiêng`); the tone is ignored.
+/// syllable. A typed letter without a mark may still gain one later
+/// (`tieng` then `e` gives `tiêng`), but a typed mark must match exactly;
+/// the tone is ignored.
 pub(crate) fn is_viable(letters: &[char]) -> bool {
     if !letters.iter().all(|c| is_vi_letter(*c)) {
         return false;
     }
-    let typed: Vec<char> = letters.iter().map(|c| plain(*c)).collect();
+    let typed = letters;
     let mut cand: Vec<char> = Vec::with_capacity(8);
     for ini in core::iter::once("").chain(INITIALS) {
         cand.clear();
         cand.extend(ini.chars());
-        if !prefix_compatible(&typed, &cand) {
+        if !prefix_compatible(typed, &cand) {
             continue;
         }
         if typed.len() <= cand.len() {
@@ -206,14 +221,14 @@ pub(crate) fn is_viable(letters: &[char]) -> bool {
         for (group, _) in GROUPS {
             cand.truncate(ini_len);
             cand.extend(group.chars());
-            if !prefix_compatible(&typed, &cand) {
+            if !prefix_compatible(typed, &cand) {
                 continue;
             }
             let group_end = cand.len();
             for fin in core::iter::once("").chain(FINALS) {
                 cand.truncate(group_end);
                 cand.extend(fin.chars());
-                let fits = typed.len() <= cand.len() && prefix_compatible(&typed, &cand);
+                let fits = typed.len() <= cand.len() && prefix_compatible(typed, &cand);
                 if fits && (is_valid(&cand, Tone::Acute) || is_valid(&cand, Tone::Level)) {
                     return true;
                 }
@@ -223,9 +238,12 @@ pub(crate) fn is_viable(letters: &[char]) -> bool {
     false
 }
 
-/// Whether the overlapping part of `typed` (plain letters) and `cand` agree.
+/// Whether the overlapping part of `typed` and `cand` agree.
 fn prefix_compatible(typed: &[char], cand: &[char]) -> bool {
-    typed.iter().zip(cand).all(|(t, c)| *t == plain(*c))
+    typed
+        .iter()
+        .zip(cand)
+        .all(|(t, c)| t == c || (mark_of(*t).is_none() && *t == plain(*c)))
 }
 
 /// Spelling constraints between the initial and the first nucleus letter.
@@ -313,9 +331,16 @@ mod tests {
             ("ue", 1),
         ];
         for (w, p) in cases {
-            assert_eq!(tone_position(&chars(w)), Some(p), "{w}");
+            assert_eq!(tone_position(&chars(w), ToneStyle::Modern), Some(p), "{w}");
         }
-        assert_eq!(tone_position(&chars("str")), None);
+        assert_eq!(tone_position(&chars("str"), ToneStyle::Modern), None);
+    }
+
+    #[test]
+    fn old_style_tone_position() {
+        assert_eq!(tone_position(&chars("hoa"), ToneStyle::Old), Some(1));
+        assert_eq!(tone_position(&chars("thuy"), ToneStyle::Old), Some(2));
+        assert_eq!(tone_position(&chars("toan"), ToneStyle::Old), Some(2));
     }
 
     #[test]

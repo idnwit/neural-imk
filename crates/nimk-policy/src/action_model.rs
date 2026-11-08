@@ -60,6 +60,17 @@ pub enum ModelKind {
     GruAction,
 }
 
+impl ModelKind {
+    /// Stable snake_case name (blob keys, settings, `FromStr`).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LinearAction => "linear_action",
+            Self::GruAction => "gru_action",
+        }
+    }
+}
+
 impl FromStr for ModelKind {
     type Err = PolicyError;
 

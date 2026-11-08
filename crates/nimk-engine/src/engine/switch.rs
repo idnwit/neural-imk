@@ -1,21 +1,16 @@
-//! The switch hotkey (double Shift / Ctrl+Space) and retroactive correction
-//! of the last committed word (ADR 0008).
+//! The switch hotkey (double Shift / Ctrl+Space), including the flip of a
+//! pending word (ADR 0011).
 
 use nimk_types::{Event, LabelSource, SwitchScope, Target};
 
-use super::{Engine, EngineOutput, Overlay, Replace};
-
-/// UTF-16 code units of `s` (the unit of `NSString` ranges).
-fn utf16_len(s: &str) -> u32 {
-    // Saturating: the cast cannot truncate after `min`.
-    s.encode_utf16().count().min(u32::MAX as usize) as u32
-}
+use super::{Engine, EngineOutput, Overlay};
 
 impl Engine {
     /// Hotkey, by when it is pressed:
     /// - mid-word: flips the current word's rendering and locks it;
-    /// - right after a commit, with only boundary characters typed since:
-    ///   rewrites that word (and keeps the boundary) in the other rendering;
+    /// - while a word is pending: flips the pending word's rendering inside
+    ///   the marked text and marks it a correction (labelled when it is
+    ///   committed);
     /// - before any typing after focus: flips the sticky mode (focus prior
     ///   correction);
     /// - otherwise (typed past the last word): flips the sticky mode only.
@@ -30,20 +25,12 @@ impl Engine {
             self.locked = true;
             out.marked = Some(self.composer.rendering(to).to_owned());
             (SwitchScope::InWord, Some(self.composer.word_id()), to)
-        } else if let Some(w) = self.last_word.as_mut() {
-            let to = w.lang.flip();
-            let old = format!("{}{}", w.text(w.lang), w.boundary);
-            let new = format!("{}{}", w.text(to), w.boundary);
-            out.replace = Some(Replace {
-                delete_before: utf16_len(&old),
-                text: new,
-            });
-            w.lang = to;
-            let id = w.id;
-            if let Some(first) = self.prev_langs.first_mut() {
-                *first = to;
-            }
-            label = Some((Target::Word(id), 1.0));
+        } else if let Some(p) = self.pending.as_mut() {
+            let to = p.lang.flip();
+            p.lang = to;
+            p.locked = true;
+            out.marked = Some(p.text());
+            let id = p.id;
             (SwitchScope::AfterCommit, Some(id), to)
         } else if self.committed_since_focus {
             (

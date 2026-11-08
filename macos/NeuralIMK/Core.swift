@@ -1,11 +1,10 @@
 import Foundation
+import os
 
 /// Swift copy of `NimkOut`: strings are copied out of Rust-owned buffers
 /// immediately, so they stay valid after the next FFI call.
 struct CoreOutput {
     var consumed = false
-    var replaceDelete = 0
-    var replaceText: String?
     var commit: String?
     var marked: String?
     var mode = UInt8(NIMK_MODE_UNCHANGED)
@@ -15,8 +14,6 @@ struct CoreOutput {
 
     init(_ raw: NimkOut) {
         consumed = raw.consumed
-        replaceDelete = Int(raw.replace_delete)
-        replaceText = raw.replace_text.map { String(cString: $0) }
         commit = raw.commit.map { String(cString: $0) }
         marked = raw.marked.map { String(cString: $0) }
         mode = raw.mode
@@ -29,21 +26,54 @@ struct CoreOutput {
 final class Core {
     static let shared = Core()
 
+    /// Fallback when the bundle has no identifier (never in the shipped app).
+    private static let defaultBundleId = "com.giangndm.inputmethod.NeuralIMK"
+
+    let bundleId: String
+    /// User data (checkpoints, event log): `<Application Support>/<bundle id>`,
+    /// both resolved by `FileManager`, never spelled out.
     let dataDir: URL
+    /// Diagnostics file: `<Library>/Logs/<bundle id>.log`.
     let logURL: URL
+    /// Read-only pretrained models shipped in `Contents/Resources/models`.
+    let bundledModelsDir: URL?
+    private let osLog: Logger
     private var handle: OpaquePointer?
 
-    private init() {
-        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    /// Resolves a system directory through the SDK.
+    private static func systemDir(_ dir: FileManager.SearchPathDirectory) -> URL {
         let fm = FileManager.default
-        dataDir = home.appendingPathComponent("Library/Application Support/NeuralIMK", isDirectory: true)
-        logURL = home.appendingPathComponent("Library/Logs/NeuralIMK.log")
+        if let url = try? fm.url(for: dir, in: .userDomainMask, appropriateFor: nil, create: true) {
+            return url
+        }
+        return fm.temporaryDirectory
+    }
+
+    private init() {
+        let fm = FileManager.default
+        let id = Bundle.main.bundleIdentifier ?? Core.defaultBundleId
+        bundleId = id
+        osLog = Logger(subsystem: id, category: "core")
+        dataDir = Core.systemDir(.applicationSupportDirectory).appendingPathComponent(id, isDirectory: true)
+        logURL = Core.systemDir(.libraryDirectory)
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("\(id).log")
         try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let res = Bundle.main.resourceURL {
+            bundledModelsDir = res.appendingPathComponent("models", isDirectory: true)
+        } else {
+            bundledModelsDir = nil
+        }
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         handle = dataDir.path.withCString { dir in
-            version.withCString { ver in nimk_new(dir, ver) }
+            version.withCString { ver in
+                if let models = bundledModelsDir?.path {
+                    return models.withCString { nimk_new(dir, $0, ver) }
+                }
+                return nimk_new(dir, nil, ver)
+            }
         }
         log(handle == nil
             ? "nimk_new failed: engine unavailable, passing every key through"
@@ -51,13 +81,40 @@ final class Core {
         drainDiagnostics()
     }
 
-    /// Last replace failure/mismatch, shown in the IME menu.
-    var lastReplaceDiagnostic: String?
-
     var isLive: Bool { handle != nil }
 
     /// Current mode code (`NIMK_MODE_EN` / `NIMK_MODE_VI`).
     var mode: UInt8 { nimk_mode(handle) }
+
+    /// Active model code (`NIMK_MODEL_LINEAR` / `NIMK_MODEL_GRU`).
+    var model: UInt8 { nimk_model(handle) }
+
+    /// Display name of a model code.
+    static func modelName(_ kind: UInt8) -> String {
+        kind == UInt8(NIMK_MODEL_GRU) ? "GRU" : "Linear (nhanh)"
+    }
+
+    /// Where a model would load from: `NIMK_CHECKPOINT_NONE` / `_BUNDLED` / `_USER`.
+    func checkpointSource(_ kind: UInt8) -> UInt8 { nimk_checkpoint_source(handle, kind) }
+
+    /// Drops what the active model learned and reloads the bundled one; the
+    /// output commits any word being composed.
+    func resetModel(timestamp: Double) -> CoreOutput {
+        var out = NimkOut()
+        let ok = nimk_reset_model(handle, timestamp, &out)
+        drainDiagnostics()
+        log(ok ? "model reset to the bundled default" : "model reset rejected")
+        return handle == nil ? CoreOutput() : CoreOutput(out)
+    }
+
+    /// Switches the model; the output commits any word being composed.
+    func setModel(_ kind: UInt8, timestamp: Double) -> CoreOutput {
+        var out = NimkOut()
+        let ok = nimk_set_model(handle, kind, timestamp, &out)
+        drainDiagnostics()
+        log(ok ? "model switched to \(Core.modelName(kind))" : "model switch to \(kind) rejected")
+        return handle == nil ? CoreOutput() : CoreOutput(out)
+    }
 
     var policyId: String? {
         nimk_policy_id(handle).map { String(cString: $0) }
@@ -107,6 +164,7 @@ final class Core {
     }
 
     func log(_ message: String) {
+        osLog.notice("\(message, privacy: .public)")
         let stamp = ISO8601DateFormatter().string(from: Date())
         let text = message.split(separator: "\n", omittingEmptySubsequences: false)
             .map { "\(stamp) \($0)\n" }.joined()

@@ -12,7 +12,7 @@ PoC phải chứng minh ba điều: auto-switch theo ngữ cảnh khả thi, h�
 | # | Mục tiêu | Tài liệu |
 | --- | --- | --- |
 | 1 | Một input source (IMK), VI/EN là chế độ nội bộ, Telex là kiểu gõ duy nhất | [02](02-keyboard-io.md), [ADR 0001](adr/0001-single-imk-input-source.md) |
-| 2 | Hotkey chuyển nhận ngay trong IME: nháy Shift hai lần (sửa ngược từ vừa commit), dự phòng Ctrl+Space | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
+| 2 | Hotkey chuyển nhận ngay trong IME: nháy Shift hai lần (lật từ pending), dự phòng Ctrl+Space | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
 | 3 | Context chỉ gồm `bundle_id` và vị trí con trỏ tương đối trong cửa sổ app | [03](03-context-io.md) |
 | 4 | Neural action model (`LinearAction`, `GruAction`) học online, thay qua trait; pretrain bằng dữ liệu synthetic | [04](04-engine-ml.md), [ADR 0007](adr/0007-neural-action-model.md), [ADR 0009](adr/0009-burn-nn-backend.md) |
 | 5 | Ghi toàn bộ sự kiện để replay offline và so sánh model | [05](05-storage-and-log.md), [ADR 0004](adr/0004-storage-behind-trait.md) |
@@ -26,7 +26,7 @@ Phase research cố ý bỏ qua các mục sau; mỗi mục có đường mở r
 | --- | --- |
 | Mã hoá log, blocklist app nhạy cảm | Log plaintext; mã hoá sau bằng decorator `EncryptedStorage<S: Storage>` |
 | Ẩn gạch chân marked text | Chấp nhận gạch chân ([ADR 0002](adr/0002-swift-shim-rust-core.md)) |
-| Backspace giả qua `CGEvent` để sửa từ đã commit | App không hỗ trợ `replacementRange` thì chỉ đổi mode và học ([ADR 0008](adr/0008-double-shift-retro-correction.md), [09](09-app-compat.md)) |
+| Backspace giả qua `CGEvent` hay `replacementRange` để sửa từ đã chèn | Từ model kết thúc ở lại marked text nên lật được tại chỗ ([ADR 0011](adr/0011-pending-word-commit.md)) |
 | VNI, gõ tắt, macro | Chỉ Telex |
 | Codesign/notarize | Chỉ chạy máy dev, ad-hoc sign (`codesign -s -`) |
 | Đa người dùng, đồng bộ model | Một máy, một model |
@@ -64,5 +64,5 @@ Milestone chạy tuần tự; mỗi milestone chỉ xong khi đạt tiêu chí v
 | manual switch | Người dùng nháy Shift hai lần hoặc bấm Ctrl+Space; là nguồn nhãn chắc chắn |
 | `Observation` / `Action` | Input và output của model cho mỗi phím ([04](04-engine-ml.md)); `Action` gồm `edit` và `render` |
 | `p_vi` | Xác suất người dùng muốn rendering VI, đầu ra render của `ActionScores` |
-| sửa ngược (retro-correction) | Nháy Shift hai lần ngay sau commit: thay từ vừa commit bằng rendering kia ([02](02-keyboard-io.md)) |
+| từ pending | Từ model đã kết thúc nhưng còn là marked text; nháy Shift hai lần lật rendering của nó ([02](02-keyboard-io.md)) |
 | `DecisionRule` | Luật cứng cũ; chỉ còn để đọc log cũ, log mới ghi `null` ([ADR 0007](adr/0007-neural-action-model.md)) |

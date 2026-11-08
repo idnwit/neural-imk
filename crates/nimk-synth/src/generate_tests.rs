@@ -170,3 +170,44 @@ fn empty_corpus_yields_empty_sessions() {
             .all(|w| w.lang == Lang::Vi)
     );
 }
+
+#[test]
+fn variant_probability_controls_the_typing_style() {
+    let corpus = Corpus::builtin();
+    let with = |p: f32| {
+        let cfg = SynthConfig {
+            mix: MixProfile {
+                p_variant: p,
+                ..MixProfile::default()
+            },
+            ..small_cfg(3)
+        };
+        generate(&cfg, &corpus)
+    };
+    let (off, on) = (with(0.0), with(1.0));
+    for (scripts, expect_variants) in [(&off, false), (&on, true)] {
+        let (mut variants, mut vi) = (0, 0);
+        for w in scripts.iter().flat_map(|s| &s.words) {
+            if w.lang == Lang::Vi {
+                vi += 1;
+                assert_eq!(nimk_telex::transform(&w.raw).text, w.text, "{}", w.raw);
+                if nimk_telex::encode_variants(&w.text).contains(&w.raw) {
+                    variants += 1;
+                }
+            }
+        }
+        assert_eq!(variants > 0, expect_variants, "variant words: {variants}");
+        if expect_variants {
+            // Most words have at least one variant.
+            assert!(variants * 2 > vi, "{variants} of {vi}");
+        }
+    }
+}
+
+#[test]
+fn script_of_types_the_given_words() {
+    let s = script_of(&[(Lang::Vi, "thêm", "theme"), (Lang::En, "app", "app")]);
+    assert_eq!(s.keys.len(), s.targets.len());
+    assert_eq!(s.keys.len(), "theme app ".len());
+    assert_eq!(s.words.len(), 2);
+}

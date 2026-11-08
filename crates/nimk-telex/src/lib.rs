@@ -16,19 +16,33 @@
 //!
 //! Repeating a transform key that is in effect undoes it and types the key
 //! (`ass` -> `as`, `aaa` -> `aa`); that transform is then off for the word.
-//! A lone `w` is a literal `w` (no `w` -> `ư`).
 //!
-//! Tones use "new style" placement: `hoà`, `hoè`, `thuý` (second vowel of
-//! open `oa oă oe ue uy`), `múa`, `tài` (first vowel of other open pairs),
-//! a marked vowel always wins (`đường`), and with a final consonant the
-//! last vowel (`toán`).
+//! A `w` that modifies no preceding `a o u` and comes before any vowel of
+//! the word (word start, or after the initial consonants) is `ư`: `w` -> `ư`,
+//! `nhw` -> `như`, `dwowngf` -> `dường`, `twowng` -> `tương`. `ww` -> `w`
+//! (and the transform is off for the word). After a vowel that cannot take
+//! a horn (`new`, `show`'s `h`...) `w` stays literal; `when` -> `ưhen`
+//! (not viable, so it is treated as English).
+//!
+//! Tones use modern placement by default: `hoà`, `hoè`, `thuý` (second vowel
+//! of open `oa oă oe ue uy`), `múa`, `tài` (first vowel of other open
+//! pairs), a marked vowel always wins (`đường`), and with a final consonant
+//! the last vowel (`toán`). [`ToneStyle::Old`] gives `hòa`, `thủy`.
+//!
+//! v2 (docs/10-telex.md): marks and `dd` may come late (`theme` -> `thêm`,
+//! `dungd` -> `đung`), `ưo` completes to `ươ` (`tuwong`), a mark is applied
+//! only when the result is a viable syllable, and an undo locks the word as
+//! raw (`assf` -> `asf`).
 #![forbid(unsafe_code)]
 
+mod encode;
 mod letters;
 mod syllable;
+
+pub use syllable::ToneStyle;
 mod telex;
 
-use letters::{Mark, Tone, mark_of, plain, split_tone, to_lower};
+use letters::{Tone, split_tone, to_lower};
 
 /// Result of interpreting a raw key sequence as Telex.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +75,13 @@ pub struct Transformed {
 /// ```
 #[must_use]
 pub fn transform(raw: &str) -> Transformed {
-    let mut composer = telex::Composer::default();
+    transform_with(raw, ToneStyle::Modern)
+}
+
+/// [`transform`] with an explicit tone placement style (`hoà` or `hòa`).
+#[must_use]
+pub fn transform_with(raw: &str, style: ToneStyle) -> Transformed {
+    let mut composer = telex::Composer::new(style);
     for key in raw.chars() {
         composer.push(key);
     }
@@ -78,41 +98,29 @@ pub fn transform(raw: &str) -> Transformed {
 }
 
 /// Inverse of [`transform`]: the canonical Telex keys that type `word`
-/// (tone key last, e.g. `tiếng` -> `tieengs`, `đường` -> `dduwowngf`).
-/// Words without diacritics are returned unchanged. Invariant (tested):
-/// `transform(&encode(w)).text == w` for every valid syllable `w`.
+/// (marks right after their letter, tone key last, e.g. `tiếng` ->
+/// `tieengs`, `đường` -> `dduwowngf`). Words without diacritics are returned
+/// unchanged. Invariant (tested): `transform(&encode(w)).text == w` for every
+/// valid syllable `w`.
 ///
 /// Mark keys and the tone key are lowercase; letters keep their case.
-/// A literal double vowel is typed with three keys (`xoong` -> `xooong`).
-/// Exception: `uơ` without `q` (`thuở`) has no Telex spelling here, since
-/// `uow` always gives `ươ`.
+/// A literal double vowel is typed with three keys and the tone before the
+/// third (`xoóng` -> `xoosong`). `uơ` is typeable after `h kh th qu` only
+/// (`thuở` -> `thuowr`); elsewhere `uow` gives `ươ`.
 #[must_use]
 pub fn encode(word: &str) -> String {
-    let mut out = String::with_capacity(word.len() + 4);
-    let mut tone = Tone::Level;
-    let mut prev: Option<char> = None;
-    for c in word.chars() {
-        let upper = c.is_uppercase();
-        let (base, t) = split_tone(to_lower(c));
-        if t != Tone::Level {
-            tone = t;
-        }
-        let p = plain(base);
-        let typed = if upper { letters::to_upper(p) } else { p };
-        out.push(typed);
-        match mark_of(base) {
-            Some(Mark::Hat) => out.push(p),
-            Some(Mark::Breve | Mark::Horn) => out.push('w'),
-            Some(Mark::Stroke) => out.push('d'),
-            None if matches!(p, 'a' | 'e' | 'o') && prev == Some(p) => out.push(typed),
-            None => {}
-        }
-        prev = mark_of(base).is_none().then_some(p);
-    }
-    if let Some(k) = tone.key() {
-        out.push(k);
-    }
-    out
+    encode::keys(word, encode::Style::default())
+}
+
+/// Other realistic key orders that type `word` (at most 8, deterministic
+/// order, never containing [`encode`]'s): tone right after the vowels
+/// (`toasn`), late marks (`theme` = thêm, `vietej`, `tuongw`), a lone `w`
+/// for an initial `ư` (`nhw`), a late `d` (`dungd`), and their combinations.
+/// Empty when there is no alternative. Invariant (tested): every variant
+/// transforms to `word`.
+#[must_use]
+pub fn encode_variants(word: &str) -> Vec<String> {
+    encode::variants(word, |keys| transform(keys).text == word)
 }
 
 /// Returns true if `word` (already rendered, with diacritics) is a valid
@@ -204,6 +212,7 @@ mod tests {
         check("user", "uẻ", true, false);
         check("string", "string", false, false);
         check("class", "clas", true, false);
+        check("status", "status", false, false);
         check("test", "tét", true, true);
         check("mod", "mod", false, false);
         check("hoaf", "hoà", true, true);
@@ -225,7 +234,78 @@ mod tests {
         check("asz", "a", true, true);
         check("z", "z", false, false);
         check("add", "add", false, false);
-        check("w", "w", false, false);
+        check("ww", "w", true, false);
+        check("www", "ww", true, false);
+    }
+
+    #[test]
+    fn lone_w() {
+        check("w", "ư", true, true);
+        check("W", "Ư", true, true);
+        check("tw", "tư", true, true);
+        check("nhw", "như", true, true);
+        check("nhwng", "nhưng", true, true);
+        check("twowng", "tương", true, true);
+        check("dwowngf", "dường", true, true);
+        check("dduwowngf", "đường", true, true);
+        check("ddwowngf", "đường", true, true);
+        check("NHWNG", "NHƯNG", true, true);
+        check("Nhwngj", "Nhựng", true, true);
+        check("ws", "ứ", true, true);
+        check("mwa", "mưa", true, true);
+        check("Tww", "Tw", true, false);
+        check("twww", "tww", true, false);
+        check("aw", "ă", true, false);
+        check("ow", "ơ", true, true);
+        check("uw", "ư", true, true);
+        check("uow", "ươ", true, false);
+        check("new", "new", false, false);
+        // `w` after a non-viable onset stays literal (R6: marks need a viable result).
+        check("show", "show", false, false);
+        let when = transform("when");
+        assert_eq!(when.text, "ưhen");
+        assert!(when.has_telex && !when.viable_vi && !when.valid_vi);
+        assert!(transform("w").viable_vi);
+    }
+
+    #[test]
+    fn variants() {
+        let has = |w: &str, k: &str| {
+            let v = encode_variants(w);
+            assert!(v.iter().any(|x| x == k), "{w}: {v:?} lacks {k}");
+        };
+        has("như", "nhw");
+        has("đường", "ddwowngf");
+        has("Ư", "W");
+        has("thêm", "theme");
+        has("việt", "vietej");
+        has("tương", "tuongw");
+        has("đung", "dungd");
+        has("toán", "toasn");
+        has("hoàn", "hoafn");
+        assert!(encode_variants("deploy").is_empty());
+        assert!(encode_variants("aư").is_empty());
+        for w in ["đường", "thuở", "Việt", "nguời", "quốc"] {
+            let v = encode_variants(w);
+            assert!(v.len() <= 8 && !v.contains(&encode(w)), "{w}: {v:?}");
+            assert_eq!(v, encode_variants(w), "deterministic");
+        }
+    }
+
+    #[test]
+    fn v2_flexible_typing() {
+        check("thuowr", "thuở", true, true);
+        check("thuowng", "thương", true, true);
+        check("tuwong", "tương", true, true);
+        check("dungd", "đung", true, true);
+        check("toio", "tôi", true, true);
+        // Undo locks the rest of the word as raw.
+        check("assf", "asf", true, false);
+        check("tooss", "tôs", true, false);
+        check("bacr", "bacr", false, false);
+        check("giw", "gư", true, true);
+        let old = transform_with("hoaf", ToneStyle::Old);
+        assert_eq!(old.text, "hòa");
     }
 
     #[test]
