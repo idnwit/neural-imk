@@ -6,9 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nimk_engine::{AppContext, Engine, EngineConfig, KeyEvent, SessionInfo, Threading};
-use nimk_policy::PolicyKind;
-use nimk_replay::{ReplayConfig, ReplayError, Report, render_table, replay, replay_dir};
-use nimk_storage::{MemStorage, PlainFsStorage, Storage};
+use nimk_policy::ModelKind;
+use nimk_replay::{ReplayConfig, ReplayError, Report, render_table, replay_dir};
+use nimk_storage::{PlainFsStorage, Storage};
 use nimk_types::{KeyKind, Modifiers, keycode};
 
 fn key(chars: &str, keycode: u16, t: f64) -> KeyEvent {
@@ -34,7 +34,7 @@ fn shift(down: bool, t: f64) -> KeyEvent {
 /// Types `words` (space-separated, `^` = Left-Shift tap) into a hotkey-enabled engine.
 fn write_session(storage: Arc<dyn Storage>, session: &str, script: &str, t0: f64) {
     let cfg = EngineConfig {
-        policy: PolicyKind::Baseline,
+        policy: ModelKind::LinearAction,
         threading: Threading::Inline,
         ..EngineConfig::default()
     };
@@ -72,16 +72,41 @@ fn write_session(storage: Arc<dyn Storage>, session: &str, script: &str, t0: f64
 const SCRIPT: &str = "vieetj hello ^ xin chaof the world toi ddi hocj";
 const WORDS: u64 = 9;
 
-fn baseline() -> ReplayConfig {
+fn linear(root: &Path) -> ReplayConfig {
     ReplayConfig {
-        policies: vec![PolicyKind::Baseline],
+        models: vec![ModelKind::LinearAction],
         from: None,
         seed: None,
+        init: Some(root.to_path_buf()),
+        frozen: false,
     }
+}
+
+/// Behaviour-clones a small `linear_action` model into `storage` (an
+/// untrained model never commits words).
+fn pretrain_linear(storage: &Arc<dyn Storage>) {
+    let synth = nimk_synth::SynthConfig {
+        seed: 9,
+        sessions: 6,
+        words_per_session: 80,
+        ..nimk_synth::SynthConfig::default()
+    };
+    let scripts = nimk_synth::generate(&synth, &nimk_synth::Corpus::builtin());
+    let cfg = EngineConfig {
+        policy: ModelKind::LinearAction,
+        ..EngineConfig::default()
+    };
+    let opts = nimk_synth::PretrainOptions {
+        epochs: 1,
+        eval_frac: 0.0,
+        ..nimk_synth::PretrainOptions::default()
+    };
+    nimk_synth::pretrain(&scripts, cfg, opts, Arc::clone(storage)).unwrap();
 }
 
 fn write_fs_log(root: &Path) {
     let storage: Arc<dyn Storage> = Arc::new(PlainFsStorage::open(root).unwrap());
+    pretrain_linear(&storage);
     write_session(Arc::clone(&storage), "s1", SCRIPT, 100.0);
     write_session(storage, "s2", SCRIPT, 200.0);
 }
@@ -91,12 +116,12 @@ fn replays_engine_log_deterministically() {
     let dir = tempfile::tempdir().unwrap();
     write_fs_log(dir.path());
 
-    let report = replay_dir(dir.path(), &baseline()).unwrap();
+    let report = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     assert_eq!(report.meta.sessions, 2);
     assert_eq!(report.meta.malformed, 0);
     assert_eq!(report.meta.warning_count, 0, "{:?}", report.meta.warnings);
-    assert_eq!(report.policies.len(), 1);
-    let m = &report.policies[0].overall;
+    assert_eq!(report.models.len(), 1);
+    let m = &report.models[0].overall;
     let c = &m.counts;
     assert_eq!(c.words, 2 * WORDS);
     assert_eq!(c.labelled_words, 2 * WORDS, "{report:#?}");
@@ -111,36 +136,49 @@ fn replays_engine_log_deterministically() {
         Some(wrong * 1000.0 / c.words as f64)
     );
     assert_eq!(
-        report.policies[0].by_bundle.keys().collect::<Vec<_>>(),
+        report.models[0].by_bundle.keys().collect::<Vec<_>>(),
         ["com.test.app"]
     );
 
-    let again = replay_dir(dir.path(), &baseline()).unwrap();
+    // Replaying the model that wrote the log reproduces its edits.
+    assert!(c.edits_compared > 0);
+    assert!(
+        m.edit_accuracy.is_some_and(|a| a > 0.95),
+        "{:?}",
+        m.edit_accuracy
+    );
+
+    let again = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     assert_eq!(report, again);
     let table = render_table(&report);
-    assert!(table.contains("baseline"), "{table}");
+    assert!(table.contains("linear_action"), "{table}");
     assert!(table.contains("com.test.app"), "{table}");
 }
 
 #[test]
-fn all_policies_and_json_roundtrip() {
-    let storage = MemStorage::new();
-    let shared: Arc<dyn Storage> = Arc::new(storage.clone());
+fn all_models_and_json_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared: Arc<dyn Storage> = Arc::new(PlainFsStorage::open(dir.path()).unwrap());
+    pretrain_linear(&shared);
     write_session(shared, "s1", SCRIPT, 100.0);
     let cfg = ReplayConfig {
-        policies: vec![
-            PolicyKind::Baseline,
-            PolicyKind::Linear,
-            PolicyKind::TinyMlp,
-        ],
-        from: None,
+        models: vec![ModelKind::LinearAction, ModelKind::GruAction],
         seed: Some(3),
+        ..linear(dir.path())
     };
-    let report = replay(&storage, &cfg).unwrap();
-    assert_eq!(report.policies.len(), 3);
-    for p in &report.policies {
-        assert_eq!(p.overall.counts.words, WORDS, "{}", p.policy);
-    }
+    let report = replay_dir(dir.path(), &cfg).unwrap();
+    assert_eq!(report.models.len(), 2);
+    assert_eq!(report.models[0].overall.counts.words, WORDS);
+    // No gru snapshot: starts untrained, with a warning.
+    assert!(
+        report
+            .meta
+            .warnings
+            .iter()
+            .any(|w| w.contains("gru_action")),
+        "{:?}",
+        report.meta.warnings
+    );
     let json = serde_json::to_string(&report).unwrap();
     let back: Report = serde_json::from_str(&json).unwrap();
     assert_eq!(back, report);
@@ -150,7 +188,7 @@ fn all_policies_and_json_roundtrip() {
 fn malformed_lines_are_skipped() {
     let dir = tempfile::tempdir().unwrap();
     write_fs_log(dir.path());
-    let clean = replay_dir(dir.path(), &baseline()).unwrap();
+    let clean = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     let events = dir.path().join("events");
     let first = fs::read_dir(&events)
         .unwrap()
@@ -161,25 +199,25 @@ fn malformed_lines_are_skipped() {
     text.push_str("this is not json\n{\"v\":1}\n");
     fs::write(&first, text).unwrap();
 
-    let report = replay_dir(dir.path(), &baseline()).unwrap();
+    let report = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     assert_eq!(report.meta.malformed, 2);
     assert_eq!(report.meta.records, clean.meta.records);
-    assert_eq!(report.policies, clean.policies);
+    assert_eq!(report.models, clean.models);
 }
 
 #[test]
 fn empty_dir_reports_no_sessions() {
     let dir = tempfile::tempdir().unwrap();
-    let report = replay_dir(dir.path(), &baseline()).unwrap();
+    let report = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     assert_eq!(report.meta.sessions, 0);
-    assert!(report.policies.is_empty());
+    assert!(report.models.is_empty());
     assert!(render_table(&report).contains("no sessions found"));
 }
 
 #[test]
 fn missing_dir_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let err = replay_dir(&dir.path().join("nope"), &baseline()).unwrap_err();
+    let err = replay_dir(&dir.path().join("nope"), &linear(dir.path())).unwrap_err();
     assert!(matches!(err, ReplayError::MissingData(_)));
 }
 
@@ -192,17 +230,39 @@ fn replays_synthetic_log() {
         ..nimk_synth::SynthConfig::default()
     };
     let scripts = nimk_synth::generate(&cfg, &nimk_synth::Corpus::builtin());
-    let storage = MemStorage::new();
-    nimk_synth::write_log(&scripts, &storage).unwrap();
-    let report = replay(&storage, &baseline()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let fs: Arc<dyn Storage> = Arc::new(PlainFsStorage::open(dir.path()).unwrap());
+    pretrain_linear(&fs);
+    nimk_synth::write_log(&scripts, fs.as_ref()).unwrap();
+    let report = replay_dir(dir.path(), &linear(dir.path())).unwrap();
     assert_eq!(report.meta.sessions, 2);
-    let c = &report.policies[0].overall.counts;
+    let c = &report.models[0].overall.counts;
     let words: u64 = scripts.iter().map(|s| s.words.len() as u64).sum();
     assert_eq!(c.words, words);
     assert_eq!(c.labelled_words, words);
+    // Synthetic logs carry no decisions, so there is nothing to compare.
+    assert_eq!(report.models[0].overall.edit_accuracy, None);
     assert!(
-        report.policies[0]
+        report.models[0]
             .by_bundle
             .contains_key(nimk_synth::SYNTHETIC_BUNDLE_ID)
     );
+}
+
+#[test]
+fn frozen_replay_scores_without_learning() {
+    let dir = tempfile::tempdir().unwrap();
+    write_fs_log(dir.path());
+    let cfg = ReplayConfig {
+        frozen: true,
+        ..linear(dir.path())
+    };
+    let report = replay_dir(dir.path(), &cfg).unwrap();
+    assert_eq!(report.meta.warning_count, 0, "{:?}", report.meta.warnings);
+    let c = &report.models[0].overall.counts;
+    assert_eq!(c.words, 2 * WORDS);
+    assert_eq!(c.labelled_words, 2 * WORDS, "labels still score");
+    // Both sessions type the same script into the same frozen model.
+    assert_eq!(c.correct_words % 2, 0, "{c:?}");
+    assert_eq!(c.priors_labelled, 2);
 }

@@ -4,7 +4,7 @@
 //! The same [`Core`] logic runs either on a background thread (production)
 //! or synchronously on the caller's thread (`Inline`, deterministic). The
 //! engine submits samples and drains [`TrainerOut`] messages at word
-//! boundaries; new policies arrive as `Arc<dyn Policy>` snapshots, so the
+//! boundaries; new models arrive as `Arc<dyn ImeModel>` snapshots, so the
 //! hot path never takes a lock.
 
 use std::collections::VecDeque;
@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
-use nimk_policy::{Learner, Policy};
+use nimk_policy::{ImeLearner, ImeModel};
 use nimk_storage::Storage;
-use nimk_types::Sample;
+use nimk_types::Example;
 
 /// Publish a snapshot after this many learner updates (and after every
 /// correction).
@@ -45,13 +45,13 @@ pub(crate) enum TrainerOut {
     Update {
         /// Learner id after the update.
         policy_id: String,
-        /// Samples in the update.
+        /// Examples in the update.
         n_samples: u32,
         /// Mean weighted loss before the update.
         loss: f32,
     },
-    /// New read-only policy to serve predictions.
-    Snapshot(Arc<dyn Policy>),
+    /// New read-only model to serve predictions.
+    Snapshot(Arc<dyn ImeModel>),
     /// Human-readable warning.
     Diagnostic(String),
 }
@@ -67,20 +67,24 @@ pub(crate) struct SaveTarget {
 
 /// Training state; owned by exactly one thread.
 pub(crate) struct Core {
-    learner: Box<dyn Learner>,
+    learner: Box<dyn ImeLearner>,
     params: TrainerParams,
     save: SaveTarget,
-    replay: VecDeque<Sample>,
+    replay: VecDeque<Example>,
     rng: u64,
     since_replay: usize,
     since_publish: usize,
-    batch: Vec<Sample>,
+    batch: Vec<Example>,
 }
 
 impl Core {
     /// Wraps a learner.
     #[must_use]
-    pub(crate) fn new(learner: Box<dyn Learner>, params: TrainerParams, save: SaveTarget) -> Self {
+    pub(crate) fn new(
+        learner: Box<dyn ImeLearner>,
+        params: TrainerParams,
+        save: SaveTarget,
+    ) -> Self {
         let cap = params.replay_capacity.min(1024);
         Self {
             learner,
@@ -120,21 +124,35 @@ impl Core {
         });
     }
 
-    /// Learns from one finalized sample.
-    pub(crate) fn on_sample(
+    /// Learns from the examples of one finalized word (all its steps):
+    /// one update over the whole word, then the correction and replay
+    /// schedule as for a single sample. Render-only examples that are not a
+    /// correction are dropped when the learner does not learn from
+    /// confirmations ([`ImeLearner::learns_from_confirmations`]).
+    pub(crate) fn on_examples(
         &mut self,
-        sample: Sample,
+        examples: Vec<Example>,
         correction: bool,
         out: &mut Vec<TrainerOut>,
     ) {
+        if examples.is_empty() {
+            return;
+        }
+        let confirmation = !correction && examples.iter().all(|ex| ex.edit_weight <= 0.0);
+        if confirmation && !self.learner.learns_from_confirmations() {
+            return;
+        }
+        let new = examples.len();
         if self.params.replay_capacity > 0 {
-            if self.replay.len() >= self.params.replay_capacity {
-                self.replay.pop_front();
+            for ex in &examples {
+                if self.replay.len() >= self.params.replay_capacity {
+                    self.replay.pop_front();
+                }
+                self.replay.push_back(ex.clone());
             }
-            self.replay.push_back(sample.clone());
         }
         self.batch.clear();
-        self.batch.push(sample);
+        self.batch.extend(examples);
         self.update_batch(out);
 
         if correction && self.params.correction_steps > 0 && self.params.correction_window > 0 {
@@ -166,7 +184,7 @@ impl Core {
             }
         }
 
-        self.since_replay += 1;
+        self.since_replay += new;
         if self.params.replay_every > 0
             && self.since_replay >= self.params.replay_every
             && !self.replay.is_empty()
@@ -209,7 +227,7 @@ fn count(n: usize) -> u32 {
 }
 
 enum Msg {
-    Sample(Sample, bool),
+    Examples(Vec<Example>, bool),
     Save,
 }
 
@@ -217,7 +235,7 @@ fn worker(mut core: Core, rx: Receiver<Msg>, tx: Sender<TrainerOut>) -> io::Resu
     let mut out = Vec::new();
     for msg in rx {
         match msg {
-            Msg::Sample(s, correction) => core.on_sample(s, correction, &mut out),
+            Msg::Examples(xs, correction) => core.on_examples(xs, correction, &mut out),
             Msg::Save => {
                 if let Err(e) = core.save() {
                     out.push(TrainerOut::Diagnostic(format!("snapshot save failed: {e}")));
@@ -302,12 +320,12 @@ impl Trainer {
         }
     }
 
-    /// Submits one finalized sample.
-    pub(crate) fn submit(&mut self, sample: Sample, correction: bool) {
+    /// Submits the examples of one finalized word.
+    pub(crate) fn submit(&mut self, examples: Vec<Example>, correction: bool) {
         match &mut self.backend {
-            Backend::Inline { core, queue } => core.on_sample(sample, correction, queue),
+            Backend::Inline { core, queue } => core.on_examples(examples, correction, queue),
             Backend::Background { tx, .. } => {
-                if tx.send(Msg::Sample(sample, correction)).is_err() {
+                if tx.send(Msg::Examples(examples, correction)).is_err() {
                     self.notes
                         .push("trainer thread gone; sample dropped".into());
                 }

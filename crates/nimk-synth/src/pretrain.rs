@@ -1,55 +1,59 @@
-//! Synthetic pre-training through an inline engine (`pretrain`).
+//! Behaviour-cloning pre-training of the neural action model through an
+//! inline engine, plus held-out evaluation (`pretrain`).
 
 use std::io;
 use std::sync::Arc;
 
 use nimk_engine::{Engine, EngineConfig, EngineError, SessionInfo, Threading};
-use nimk_policy::{Model, PolicyKind};
-use nimk_storage::{BlobStore, EventSink, EventSource, Storage};
-use nimk_types::{LabelSource, Lang, Target};
+use nimk_policy::{ModelKind, build_action};
+use nimk_storage::{BlobStore, EventSink, EventSource, MemStorage, Storage};
+use nimk_types::{Action, EditAction, Event, Lang, Record, Target};
 
+use crate::eval_report::{Decided, EvalReport};
 use crate::log::{APP_VERSION, synthetic_context};
 use crate::{Script, ScriptWord};
 
 /// Engine session id used while pre-training (its events are discarded).
 const PRETRAIN_SESSION: &str = "nimk-synth-pretrain";
+/// Engine session id of the evaluation engine.
+const EVAL_SESSION: &str = "nimk-synth-eval";
 
-/// Outcome of a pre-training run, measured prequentially: the mode the
-/// engine committed for a word is compared with its label before the label
-/// is learned.
-///
-/// Accuracy only counts ambiguous words: Telex rendering differs from the
-/// raw keys and is a valid syllable, so the model (not a hard rule) decided.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PretrainReport {
-    /// Words seen (committed and labelled), ambiguous or not.
-    pub words: u64,
-    /// Ambiguous words, the denominator of the accuracies.
-    pub ambiguous: u64,
-    /// Ambiguous words where the committed mode matched the label.
-    pub correct: u64,
-    /// Accuracy over the first 10% of ambiguous words (cold start).
-    pub head_accuracy: f64,
-    /// Accuracy over the last 10% of ambiguous words (after warm-up).
-    pub tail_accuracy: f64,
+/// Pre-training knobs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PretrainOptions {
+    /// Passes over the training scripts. 1 is enough for `LinearAction`;
+    /// the GRU benefits from 2-3.
+    pub epochs: usize,
+    /// Fraction of scripts (the last ones) held out for evaluation, in
+    /// `[0, 1)`. With 2 or more scripts and a positive fraction at least one
+    /// script is held out and at least one trains.
+    pub eval_frac: f64,
+    /// Teacher-forced examples per learner update
+    /// (`EngineConfig::teach_batch`).
+    pub batch: usize,
 }
 
-impl PretrainReport {
-    /// Overall accuracy on ambiguous words (0 if there were none).
-    #[must_use]
-    pub fn accuracy(&self) -> f64 {
-        ratio(self.correct, self.ambiguous)
+impl Default for PretrainOptions {
+    fn default() -> Self {
+        Self {
+            epochs: 2,
+            eval_frac: 0.1,
+            batch: 128,
+        }
     }
 }
 
-fn ratio(n: u64, d: u64) -> f64 {
-    if d == 0 { 0.0 } else { n as f64 / d as f64 }
-}
-
-/// Accuracy over a slice of outcomes (0 if empty).
-fn slice_accuracy(outcomes: &[bool]) -> f64 {
-    let correct = outcomes.iter().filter(|&&ok| ok).count();
-    ratio(correct as u64, outcomes.len() as u64)
+/// Outcome of a pre-training run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PretrainReport {
+    /// Passes made.
+    pub epochs: usize,
+    /// Scripts trained on per epoch.
+    pub train_scripts: u64,
+    /// Teacher-forced keys over all epochs.
+    pub train_keys: u64,
+    /// Evaluation of the saved model on the held-out scripts.
+    pub eval: EvalReport,
 }
 
 /// Storage view that keeps the model snapshot (blobs) but discards events,
@@ -82,178 +86,255 @@ impl Storage for ModelOnly {
     }
 }
 
-/// Name prefix of the learner ids of `kind` (`tiny_mlp@v1`).
-fn kind_name(kind: PolicyKind) -> &'static str {
-    match kind {
-        PolicyKind::Baseline => "baseline",
-        PolicyKind::Linear => "linear",
-        PolicyKind::TinyMlp => "tiny_mlp",
-    }
+/// Snapshot blob key the engine uses for `kind`.
+fn snapshot_key(kind: ModelKind) -> String {
+    let name = match kind {
+        ModelKind::LinearAction => "linear_action",
+        ModelKind::GruAction => "gru_action",
+    };
+    format!("model/{name}/latest")
 }
 
 fn invalid_data(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-/// Prequential outcome of one committed word.
-struct Outcome {
-    /// Counts towards accuracy.
-    ambiguous: bool,
-    /// Committed mode matched the label (always true if both renderings
-    /// are equal).
-    right: bool,
+fn engine_err(e: EngineError) -> io::Error {
+    match e {
+        EngineError::Storage(io) => io,
+    }
 }
 
-/// Compares the committed text of `word` with its label.
-fn judge(word: &ScriptWord, committed: &str, session: &str) -> io::Result<Outcome> {
-    let tr = nimk_telex::transform(&word.raw);
-    let equal = tr.text == word.raw;
-    let mode = if committed == word.raw {
-        Lang::En
-    } else if committed == tr.text {
-        Lang::Vi
-    } else {
-        return Err(invalid_data(format!(
-            "{session}: word {} committed {committed:?}, expected {:?} or {:?}",
-            word.word_id, word.raw, tr.text
-        )));
-    };
-    Ok(Outcome {
-        ambiguous: !equal && tr.valid_vi,
-        right: equal || mode == word.lang,
-    })
+fn session(id: &str) -> SessionInfo {
+    SessionInfo {
+        id: id.to_owned(),
+        wall_unix_ms: 0,
+        app_version: APP_VERSION.to_owned(),
+    }
 }
 
-/// Feeds scripts through one inline engine and saves the trained model as
-/// the engine's snapshot (`model/<kind>/latest`) in `storage`, the key the
-/// IME loads at start.
+/// Number of scripts held out of `n` for `eval_frac`.
+fn eval_count(n: usize, eval_frac: f64) -> usize {
+    if n < 2 || eval_frac.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return 0;
+    }
+    let k = (n as f64 * eval_frac.min(1.0)).round() as usize;
+    k.clamp(1, n - 1)
+}
+
+/// Behaviour-clones `scripts` into a fresh `cfg.policy` model, saves it as
+/// the engine snapshot (`model/<kind>/latest`) in `storage`, and evaluates
+/// the saved model on held-out scripts.
 ///
-/// All scripts run through a single engine (a model cannot be moved between
-/// engines); each script starts with a focus change to a new synthetic
-/// field, so word ids continue across scripts. `cfg` is used with
-/// `hotkeys = false`, `threading = Inline` and periodic snapshots disabled
-/// (the snapshot is saved once, at the end). Right after the boundary key
-/// that commits a word, its label is injected with weight 1.0: as a
-/// `Correction` if the committed mode was wrong, else as `Implicit` - what a
-/// user who fixes every wrong word would produce. Events are not logged
-/// (use [`crate::write_log`] for a replayable log).
+/// Training: the first `n - k` scripts (`k` from [`PretrainOptions::eval_frac`])
+/// run through one inline engine for `opts.epochs` passes, each key via
+/// `Engine::teach` with the script's target action and both loss weights
+/// 1.0; every script starts with a focus change to a new synthetic field.
+/// `cfg` is used with `hotkeys = false`, `threading = Inline` and periodic
+/// snapshots off (one snapshot is saved at the end). Events are discarded.
+///
+/// Evaluation: a fresh engine loads the saved snapshot and the last `k`
+/// scripts are fed through `Engine::on_key`, so the model decides; no labels
+/// are injected, so nothing is learned. Each decision is compared with the
+/// target (edit over all keys; chosen rendering at `Commit` keys, also
+/// restricted to ambiguous words) and the engine's committed text with the
+/// expected text.
 ///
 /// # Errors
-/// `InvalidInput` if `model` is not of kind `cfg.policy`; `InvalidData` if
-/// the engine's commits do not line up with the scripts' words or it
-/// reports diagnostics (dropped labels); any I/O error from saving the
-/// snapshot.
+/// `InvalidData` if the engine reports diagnostics (dropped labels, bad
+/// snapshot) or the evaluation log does not line up with the keys; any I/O
+/// error from saving or loading the snapshot.
 pub fn pretrain(
     scripts: &[Script],
     cfg: EngineConfig,
-    model: Model,
+    opts: PretrainOptions,
     storage: Arc<dyn Storage>,
 ) -> io::Result<PretrainReport> {
-    let name = kind_name(cfg.policy);
-    let learner_id = model.learner.id();
-    if !learner_id.starts_with(name) || learner_id.as_bytes().get(name.len()) != Some(&b'@') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("model {learner_id} is not of policy kind {name}"),
-        ));
-    }
     let cfg = EngineConfig {
         hotkeys: false,
         threading: Threading::Inline,
         snapshot_every_secs: f64::MAX,
+        teach_batch: opts.batch.max(1),
+        replay_every: 0,
         ..cfg
     };
-    let session = SessionInfo {
-        id: PRETRAIN_SESSION.to_owned(),
-        wall_unix_ms: 0,
-        app_version: APP_VERSION.to_owned(),
-    };
-    let storage: Arc<dyn Storage> = Arc::new(ModelOnly(storage));
-    let mut engine = Engine::with_model(cfg, storage, session, model);
-    let mut run = Run::default();
-    for (field_id, script) in (0u64..).zip(scripts) {
-        run.script(&mut engine, field_id, script)?;
+    let k = eval_count(scripts.len(), opts.eval_frac);
+    let (train, held_out) = scripts.split_at(scripts.len() - k);
+
+    let learner = build_action(cfg.policy, cfg.seed);
+    let model_only: Arc<dyn Storage> = Arc::new(ModelOnly(Arc::clone(&storage)));
+    let mut engine =
+        Engine::with_model(cfg.clone(), model_only, session(PRETRAIN_SESSION), learner);
+    let mut train_keys = 0u64;
+    let mut field_id = 0u64;
+    for _ in 0..opts.epochs {
+        for script in train {
+            train_keys += teach_script(&mut engine, field_id, script)?;
+            field_id += 1;
+        }
     }
-    engine.shutdown().map_err(|e| match e {
-        EngineError::Storage(io) => io,
-    })?;
-    Ok(run.report())
+    engine.shutdown().map_err(engine_err)?;
+
+    let eval = evaluate(held_out, &cfg, &storage)?;
+    Ok(PretrainReport {
+        epochs: opts.epochs,
+        train_scripts: train.len() as u64,
+        train_keys,
+        eval,
+    })
 }
 
-/// Running totals of a pre-training run.
-#[derive(Default)]
-struct Run {
-    /// Engine word id of the first word of the next script.
-    base: u64,
-    words: u64,
-    /// Prequential outcomes of ambiguous words, in order.
-    outcomes: Vec<bool>,
+/// Teacher-forces one script; returns the number of keys.
+fn teach_script(engine: &mut Engine, field_id: u64, script: &Script) -> io::Result<u64> {
+    if script.keys.len() != script.targets.len() {
+        return Err(invalid_data(format!(
+            "{}: {} keys but {} targets",
+            script.session,
+            script.keys.len(),
+            script.targets.len()
+        )));
+    }
+    let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
+    engine.on_context(&synthetic_context(field_id, t0));
+    for (key, target) in script.keys.iter().zip(&script.targets) {
+        engine.teach(key, *target, 1.0, 1.0);
+    }
+    check_diagnostics(engine, &script.session)?;
+    Ok(script.keys.len() as u64)
 }
 
-impl Run {
-    fn script(&mut self, engine: &mut Engine, field_id: u64, script: &Script) -> io::Result<()> {
-        let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
-        engine.on_context(&synthetic_context(field_id, t0));
-        let mut next = 0usize;
-        for key in &script.keys {
-            let Some(committed) = engine.on_key(key).commit else {
-                continue;
-            };
-            let word = script.words.get(next).ok_or_else(|| {
-                invalid_data(format!("{}: more commits than words", script.session))
-            })?;
-            let outcome = judge(word, &committed, &script.session)?;
-            if outcome.ambiguous {
-                self.outcomes.push(outcome.right);
-            }
-            let source = if outcome.right {
-                LabelSource::Implicit
-            } else {
-                LabelSource::Correction
-            };
-            engine.inject_label(
-                Target::Word(self.base + next as u64),
-                word.lang,
-                1.0,
-                source,
-            );
-            next += 1;
-        }
-        if next != script.words.len() {
-            return Err(invalid_data(format!(
-                "{}: {next} commits for {} words",
-                script.session,
-                script.words.len()
-            )));
-        }
-        let diagnostics = engine.take_diagnostics();
-        if !diagnostics.is_empty() {
-            return Err(invalid_data(format!(
-                "{}: engine diagnostics: {}",
-                script.session,
-                diagnostics.join("; ")
-            )));
-        }
-        self.base += next as u64;
-        self.words += next as u64;
+fn check_diagnostics(engine: &mut Engine, session: &str) -> io::Result<()> {
+    let diagnostics = engine.take_diagnostics();
+    if diagnostics.is_empty() {
         Ok(())
+    } else {
+        Err(invalid_data(format!(
+            "{session}: engine diagnostics: {}",
+            diagnostics.join("; ")
+        )))
     }
+}
 
-    fn report(&self) -> PretrainReport {
-        let n = self.outcomes.len();
-        let tenth = n.div_ceil(10);
-        // `tenth <= n`, so both splits are in bounds.
-        let (head, _) = self.outcomes.split_at(tenth);
-        let (_, tail) = self.outcomes.split_at(n - tenth);
-        let correct = self.outcomes.iter().filter(|&&ok| ok).count();
-        PretrainReport {
-            words: self.words,
-            ambiguous: n as u64,
-            correct: correct as u64,
-            head_accuracy: slice_accuracy(head),
-            tail_accuracy: slice_accuracy(tail),
+/// The text the user intends for `word` (committed in its target language).
+struct Expected {
+    text: String,
+    ambiguous: bool,
+    lang: Lang,
+}
+
+fn expected(word: &ScriptWord) -> Expected {
+    let tr = nimk_telex::transform(&word.raw);
+    let ambiguous = tr.text != word.raw && tr.valid_vi;
+    let text = match word.lang {
+        Lang::Vi => tr.text,
+        Lang::En => word.raw.clone(),
+    };
+    Expected {
+        text,
+        ambiguous,
+        lang: word.lang,
+    }
+}
+
+/// Feeds `scripts` through a fresh engine holding the saved snapshot.
+fn evaluate(
+    scripts: &[Script],
+    cfg: &EngineConfig,
+    storage: &Arc<dyn Storage>,
+) -> io::Result<EvalReport> {
+    let mut report = EvalReport::default();
+    if scripts.is_empty() {
+        return Ok(report);
+    }
+    // Isolated copy: the evaluation engine neither logs into nor saves over
+    // the caller's storage.
+    let mem = MemStorage::new();
+    let key = snapshot_key(cfg.policy);
+    let bytes = storage
+        .blobs()
+        .get(&key)?
+        .ok_or_else(|| invalid_data(format!("snapshot {key} missing after training")))?;
+    mem.blobs().put(&key, &bytes)?;
+    let mut engine = Engine::new(cfg.clone(), Arc::new(mem.clone()), session(EVAL_SESSION));
+    check_diagnostics(&mut engine, "eval start")?;
+
+    let mut targets: Vec<Action> = Vec::new();
+    let mut expect_words: Vec<Expected> = Vec::new();
+    for (field_id, script) in (0u64..).zip(scripts) {
+        let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
+        let mut committed: Vec<String> = Vec::new();
+        committed.extend(engine.on_context(&synthetic_context(field_id, t0)).commit);
+        for key in &script.keys {
+            committed.extend(engine.on_key(key).commit);
+        }
+        let end = script.keys.last().map_or(t0, |k| k.timestamp);
+        committed.extend(engine.commit_pending(end).commit);
+        check_diagnostics(&mut engine, &script.session)?;
+
+        let words: Vec<Expected> = script.words.iter().map(expected).collect();
+        let total = words.len().max(committed.len());
+        let matched = words
+            .iter()
+            .zip(&committed)
+            .filter(|(w, c)| w.text == **c)
+            .count();
+        report.scripts += 1;
+        report.text_total += total as u64;
+        report.text_matched += matched as u64;
+        report.scripts_exact += u64::from(matched == total);
+        targets.extend_from_slice(&script.targets);
+        expect_words.extend(words);
+    }
+    engine.shutdown().map_err(engine_err)?;
+
+    let decisions = word_decisions(&mem)?;
+    if decisions.len() != targets.len() {
+        return Err(invalid_data(format!(
+            "eval logged {} decisions for {} keys",
+            decisions.len(),
+            targets.len()
+        )));
+    }
+    let mut next_word = 0usize;
+    for (d, target) in decisions.iter().zip(&targets) {
+        let mut word = (false, target.render);
+        if target.edit == EditAction::Commit {
+            if let Some(w) = expect_words.get(next_word) {
+                word = (w.ambiguous, w.lang);
+            }
+            next_word += 1;
+        }
+        report.count(*d, *target, word);
+    }
+    Ok(report)
+}
+
+/// Every word-level `Decision` in the in-memory log.
+fn word_decisions(mem: &MemStorage) -> io::Result<Vec<Decided>> {
+    let source = mem.event_source()?;
+    let mut out = Vec::new();
+    for id in source.segments()? {
+        for raw in source.read_segment(&id)? {
+            let record: Record = serde_json::from_slice(&raw?).map_err(io::Error::other)?;
+            if let Event::Decision {
+                target: Target::Word(_),
+                edit: Some(edit),
+                chosen,
+                p_vi,
+                at_key,
+                ..
+            } = record.event
+            {
+                out.push(Decided {
+                    edit,
+                    chosen,
+                    p_vi,
+                    at_key,
+                });
+            }
         }
     }
+    Ok(out)
 }
 
 #[cfg(test)]

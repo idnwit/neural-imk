@@ -4,13 +4,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use nimk_policy::PolicyKind;
+use nimk_policy::ModelKind;
 
 use crate::ReplayConfig;
 
 /// Usage text.
-pub const USAGE: &str = "usage: nimk-replay --data DIR [--policy baseline,linear,tiny_mlp] \
-[--from SEGMENT_PREFIX] [--report report.json] [--seed N]";
+pub const USAGE: &str = "usage: nimk-replay --data DIR [--model linear_action,gru_action] \
+[--from SEGMENT_PREFIX] [--report report.json] [--seed N] [--init DIR] [--frozen]";
 
 /// Parsed arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,10 +61,10 @@ fn utf8(flag: &str, v: OsString) -> Result<String, CliError> {
     })
 }
 
-fn parse_policies(flag: &str, list: &str) -> Result<Vec<PolicyKind>, CliError> {
+fn parse_models(flag: &str, list: &str) -> Result<Vec<ModelKind>, CliError> {
     let mut out = Vec::new();
     for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let kind = PolicyKind::from_str(name).map_err(|e| CliError::Invalid {
+        let kind = ModelKind::from_str(name).map_err(|e| CliError::Invalid {
             flag: flag.to_owned(),
             reason: e.to_string(),
         })?;
@@ -75,7 +75,7 @@ fn parse_policies(flag: &str, list: &str) -> Result<Vec<PolicyKind>, CliError> {
     if out.is_empty() {
         return Err(CliError::Invalid {
             flag: flag.to_owned(),
-            reason: "empty policy list".to_owned(),
+            reason: "empty model list".to_owned(),
         });
     }
     Ok(out)
@@ -93,13 +93,11 @@ where
     let mut data = None;
     let mut report = None;
     let mut replay = ReplayConfig {
-        policies: vec![
-            PolicyKind::Baseline,
-            PolicyKind::Linear,
-            PolicyKind::TinyMlp,
-        ],
+        models: vec![ModelKind::LinearAction, ModelKind::GruAction],
         from: None,
         seed: None,
+        init: None,
+        frozen: false,
     };
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
@@ -111,9 +109,13 @@ where
         if flag == "-h" || flag == "--help" {
             return Ok(Command::Help);
         }
+        if flag == "--frozen" && inline.is_none() {
+            replay.frozen = true;
+            continue;
+        }
         if !matches!(
             flag.as_str(),
-            "--data" | "--policy" | "--from" | "--report" | "--seed"
+            "--data" | "--model" | "--from" | "--report" | "--seed" | "--init"
         ) {
             return Err(CliError::Unexpected(arg));
         }
@@ -123,7 +125,8 @@ where
         match flag.as_str() {
             "--data" => data = Some(PathBuf::from(value)),
             "--report" => report = Some(PathBuf::from(value)),
-            "--policy" => replay.policies = parse_policies(&flag, &utf8(&flag, value)?)?,
+            "--init" => replay.init = Some(PathBuf::from(value)),
+            "--model" => replay.models = parse_models(&flag, &utf8(&flag, value)?)?,
             "--from" => replay.from = Some(utf8(&flag, value)?),
             _ => {
                 let v = utf8(&flag, value)?;
@@ -156,12 +159,14 @@ mod tests {
         let cmd = p(&[
             "--data",
             "/d",
-            "--policy=linear,baseline,linear",
+            "--model=gru_action,linear_action,gru_action",
             "--from",
             "2026-11-01",
             "--report",
             "r.json",
             "--seed=7",
+            "--init=/m",
+            "--frozen",
         ])
         .unwrap();
         let Command::Run(a) = cmd else {
@@ -170,11 +175,13 @@ mod tests {
         assert_eq!(a.data, PathBuf::from("/d"));
         assert_eq!(a.report, Some(PathBuf::from("r.json")));
         assert_eq!(
-            a.replay.policies,
-            [PolicyKind::Linear, PolicyKind::Baseline]
+            a.replay.models,
+            [ModelKind::GruAction, ModelKind::LinearAction]
         );
         assert_eq!(a.replay.from.as_deref(), Some("2026-11-01"));
         assert_eq!(a.replay.seed, Some(7));
+        assert_eq!(a.replay.init, Some(PathBuf::from("/m")));
+        assert!(a.replay.frozen);
     }
 
     #[test]
@@ -182,13 +189,14 @@ mod tests {
         let Command::Run(a) = p(&["--data", "x"]).unwrap() else {
             panic!("expected run");
         };
-        assert_eq!(a.replay.policies.len(), 3);
+        assert_eq!(a.replay.models.len(), 2);
+        assert!(!a.replay.frozen);
         assert_eq!(p(&["--help"]).unwrap(), Command::Help);
         assert_eq!(p(&[]).unwrap_err(), CliError::NoData);
         assert!(matches!(p(&["--data"]), Err(CliError::MissingValue(_))));
         assert!(matches!(p(&["--bogus"]), Err(CliError::Unexpected(_))));
         assert!(matches!(
-            p(&["--data", "x", "--policy", "gpt"]),
+            p(&["--data", "x", "--model", "gpt"]),
             Err(CliError::Invalid { .. })
         ));
         assert!(matches!(

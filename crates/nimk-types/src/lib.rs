@@ -5,16 +5,18 @@
 //! composer, the policy, storage and the replay harness.
 #![forbid(unsafe_code)]
 
+mod action;
 mod ctx;
 mod event;
-mod features;
 mod key;
 mod lang;
 
-pub use ctx::{AppContext, CaretRel, DecisionCtx, Sample};
+pub use action::{
+    Action, ActionMask, ActionScores, EditAction, Example, Observation, RECENT_WINDOW,
+};
+pub use ctx::{AppContext, CaretRel};
 pub use event::{
     Boundary, DecisionRule, Event, LabelSource, Record, SCHEMA_VERSION, SwitchScope, Target,
 };
-pub use features::Features;
 pub use key::{KeyEvent, KeyKind, Modifiers, keycode};
 pub use lang::Lang;

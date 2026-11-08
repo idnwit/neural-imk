@@ -5,6 +5,8 @@
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 
+#[cfg(test)]
+use nimk_engine::Replace;
 use nimk_engine::{AppContext, EngineOutput, KeyEvent, Lang, Overlay};
 use nimk_types::{CaretRel, KeyKind, Modifiers};
 
@@ -66,6 +68,11 @@ pub struct NimkCtx {
 pub struct NimkOut {
     /// `false`: return the key to the app untouched.
     pub consumed: bool,
+    /// UTF-16 units before the caret to replace with `replace_text`
+    /// (0 = no replacement). Apply the replacement before `commit`/`marked`.
+    pub replace_delete: u32,
+    /// Replacement text for `replace_delete`; null = no replacement.
+    pub replace_text: *const c_char,
     /// Text to `insertText`, or null for none. Applied before `marked`.
     pub commit: *const c_char,
     /// New marked text; null = no change, `""` = clear.
@@ -82,6 +89,8 @@ impl NimkOut {
     pub const fn pass_through() -> Self {
         Self {
             consumed: false,
+            replace_delete: 0,
+            replace_text: ptr::null(),
             commit: ptr::null(),
             marked: ptr::null(),
             mode: NIMK_MODE_UNCHANGED,
@@ -193,6 +202,7 @@ pub(crate) unsafe fn ctx_from_c(ctx: &NimkCtx) -> AppContext {
 pub(crate) struct OutBuffers {
     commit: Option<CString>,
     marked: Option<CString>,
+    replace: Option<CString>,
 }
 
 impl OutBuffers {
@@ -201,8 +211,15 @@ impl OutBuffers {
     pub(crate) fn fill(&mut self, output: EngineOutput) -> NimkOut {
         self.commit = output.commit.map(to_cstring);
         self.marked = output.marked.map(to_cstring);
+        let (replace_delete, replace) = match output.replace {
+            Some(r) => (r.delete_before, Some(to_cstring(r.text))),
+            None => (0, None),
+        };
+        self.replace = replace;
         NimkOut {
             consumed: output.consumed,
+            replace_delete,
+            replace_text: self.replace.as_deref().map_or(ptr::null(), CStr::as_ptr),
             commit: self.commit.as_deref().map_or(ptr::null(), CStr::as_ptr),
             marked: self.marked.as_deref().map_or(ptr::null(), CStr::as_ptr),
             mode: output.mode.map_or(NIMK_MODE_UNCHANGED, mode_code),
@@ -214,6 +231,7 @@ impl OutBuffers {
     pub(crate) fn clear(&mut self) {
         self.commit = None;
         self.marked = None;
+        self.replace = None;
     }
 }
 
@@ -335,8 +353,14 @@ mod tests {
             marked: Some(String::new()),
             mode: Some(Lang::Vi),
             overlay: Some(Overlay::Manual),
+            replace: Some(Replace {
+                delete_before: 5,
+                text: "việt ".into(),
+            }),
         });
         assert!(out.consumed);
+        assert_eq!(out.replace_delete, 5);
+        assert_eq!(read(out.replace_text).as_deref(), Some("việt "));
         assert_eq!(read(out.commit).as_deref(), Some("việt "));
         assert_eq!(read(out.marked).as_deref(), Some(""));
         assert_eq!(out.mode, NIMK_MODE_VI);
@@ -350,6 +374,8 @@ mod tests {
         assert!(!out.consumed);
         assert!(out.commit.is_null());
         assert!(out.marked.is_null());
+        assert!(out.replace_text.is_null());
+        assert_eq!(out.replace_delete, 0);
         assert_eq!(out.mode, NIMK_MODE_UNCHANGED);
         assert_eq!(out.overlay, NIMK_OVERLAY_NONE);
         assert_eq!(overlay_code(Some(Overlay::Auto)), NIMK_OVERLAY_AUTO);

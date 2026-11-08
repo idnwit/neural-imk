@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{CaretRel, KeyEvent, Lang};
+use crate::{CaretRel, EditAction, KeyEvent, Lang};
 
 /// Version of the event log schema. Bump on breaking changes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -68,6 +68,10 @@ pub enum Event {
         rule: Option<DecisionRule>,
         /// Mode chosen.
         chosen: Lang,
+        /// Buffer edit applied (ADR 0007); `None` in old logs and for focus
+        /// priors.
+        #[serde(default)]
+        edit: Option<EditAction>,
     },
     /// The user pressed the switch hotkey.
     ManualSwitch {

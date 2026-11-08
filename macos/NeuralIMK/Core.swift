@@ -4,6 +4,8 @@ import Foundation
 /// immediately, so they stay valid after the next FFI call.
 struct CoreOutput {
     var consumed = false
+    var replaceDelete = 0
+    var replaceText: String?
     var commit: String?
     var marked: String?
     var mode = UInt8(NIMK_MODE_UNCHANGED)
@@ -13,6 +15,8 @@ struct CoreOutput {
 
     init(_ raw: NimkOut) {
         consumed = raw.consumed
+        replaceDelete = Int(raw.replace_delete)
+        replaceText = raw.replace_text.map { String(cString: $0) }
         commit = raw.commit.map { String(cString: $0) }
         marked = raw.marked.map { String(cString: $0) }
         mode = raw.mode
@@ -46,6 +50,9 @@ final class Core {
             : "started \(version), data dir \(dataDir.path)")
         drainDiagnostics()
     }
+
+    /// Last replace failure/mismatch, shown in the IME menu.
+    var lastReplaceDiagnostic: String?
 
     var isLive: Bool { handle != nil }
 

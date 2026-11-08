@@ -1,21 +1,25 @@
 //! Public engine API and the wiring between the internal modules.
 //!
-//! The per-key flow (decisions, commits, manual switches) lives in the
-//! private submodule `flow`; this file builds the engine and implements the
-//! public entry points.
+//! The engine is mechanical (ADR 0007): per key it builds an
+//! [`Observation`], asks the action model and applies the chosen edit. The
+//! per-key flow lives in the private submodule `flow`, the hotkey and
+//! retroactive correction (ADR 0008) in `switch`; this file builds the
+//! engine and implements the public entry points.
 
 mod flow;
+mod switch;
 
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use nimk_policy::{FeatureExtractor, Model, Policy, PolicyKind};
+use nimk_policy::{ImeLearner, ImeModel, ModelKind, build_action};
 use nimk_storage::{EventSink, Storage};
-use nimk_types::{AppContext, Event, Features, KeyEvent, LabelSource, Lang, Target};
+use nimk_types::{Action, AppContext, Event, Example, KeyEvent, LabelSource, Lang, Target};
 
 use crate::composer::Composer;
-use crate::hotkey::HotkeyDetector;
-use crate::labeler::{Labeler, LabelerParams};
+use crate::hotkey::{HotkeyDetector, HotkeyParams};
+use crate::labeler::{Labeler, LabelerParams, Step};
 use crate::logger::{Logger, NullSink};
 use crate::trainer::{Core, SaveTarget, Trainer, TrainerOut, TrainerParams};
 use crate::{EngineConfig, Threading};
@@ -23,8 +27,7 @@ use crate::{EngineConfig, Threading};
 /// Why the overlay is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
-    /// The policy changed the sticky mode (never shown for word-scoped
-    /// hard-rule renderings).
+    /// The model changed the sticky mode.
     Auto,
     /// The user pressed the hotkey.
     Manual,
@@ -40,11 +43,23 @@ pub struct EngineOutput {
     /// New marked text; `Some("")` clears it. Applied after `commit`.
     pub marked: Option<String>,
     /// Sticky session mode (the mode the next word starts in) after this
-    /// call; `None` = unchanged. Word-scoped hard-rule renderings
-    /// (`InvalidVi`) do not appear here.
+    /// call; `None` = unchanged.
     pub mode: Option<Lang>,
     /// Show the mode overlay at the caret; only when the sticky mode changes.
     pub overlay: Option<Overlay>,
+    /// Retroactive correction of the just-committed word (ADR 0008).
+    /// Applied before `commit` and `marked`.
+    pub replace: Option<Replace>,
+}
+
+/// Replace text already inserted before the caret (ADR 0008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replace {
+    /// Number of UTF-16 code units to delete immediately before the caret
+    /// (the committed word plus the boundary characters typed after it).
+    pub delete_before: u32,
+    /// Text to insert in their place (new rendering + the same boundary).
+    pub text: String,
 }
 
 /// Engine errors (only from [`Engine::shutdown`]; construction never fails).
@@ -68,22 +83,19 @@ pub struct SessionInfo {
 }
 
 /// Blob key of the latest model snapshot for `kind`.
-fn snapshot_key(kind: PolicyKind) -> String {
+fn snapshot_key(kind: ModelKind) -> String {
     let name = match kind {
-        PolicyKind::Baseline => "baseline",
-        PolicyKind::Linear => "linear",
-        PolicyKind::TinyMlp => "tiny_mlp",
+        ModelKind::LinearAction => "linear_action",
+        ModelKind::GruAction => "gru_action",
     };
     format!("model/{name}/latest")
 }
 
-/// Telex flags of the word being composed, kept for the commit-time rule.
+/// Telex flags of the current raw buffer (features, not rules).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct WordTelex {
-    /// Some Telex transform took effect.
-    has_telex: bool,
-    /// The Telex rendering is a complete valid syllable.
+struct TelexFlags {
     valid_vi: bool,
+    viable_vi: bool,
 }
 
 /// Focused app/field as last reported by [`Engine::on_context`].
@@ -93,40 +105,64 @@ struct Focus {
     id: u64,
 }
 
+/// The last committed word, kept while only boundary characters were typed
+/// after it so a double Shift can still rewrite it (ADR 0008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LastWord {
+    id: u64,
+    raw: String,
+    vi: String,
+    /// Rendering that was committed.
+    lang: Lang,
+    /// Characters typed (and passed to the app) after the word.
+    boundary: String,
+}
+
+impl LastWord {
+    fn text(&self, lang: Lang) -> &str {
+        match lang {
+            Lang::Vi => &self.vi,
+            Lang::En => &self.raw,
+        }
+    }
+}
+
 /// The IME engine. One instance per IME process; not `Sync`, call it from
 /// the IMK main thread only.
 pub struct Engine {
     cfg: EngineConfig,
-    extractor: Arc<dyn FeatureExtractor>,
-    policy: Arc<dyn Policy>,
-    policy_id: Arc<str>,
+    model: Arc<dyn ImeModel>,
+    model_id: Arc<str>,
     trainer: Trainer,
     logger: Logger,
     labeler: Labeler,
     hotkey: HotkeyDetector,
     composer: Composer,
-    /// Sticky session mode: changed only by policy decisions that pass
-    /// hysteresis and by manual switches.
+    /// Sticky session mode: the rendering the next word starts in. Changed
+    /// by the model at commits and focus changes, and by manual switches.
     mode: Lang,
-    /// Word-scoped rendering override set by a hard rule (`InvalidVi`);
-    /// cleared at commit.
-    word_mode: Option<Lang>,
-    /// A manual switch happened between words: the policy may not move the
-    /// sticky mode until the next word commits (the user's choice wins).
-    manual_hold: bool,
+    /// Rendering currently shown for the buffer (`mode` when it is empty).
+    shown: Lang,
+    /// A manual switch happened while composing the current word: its
+    /// rendering is locked until the word ends.
+    locked: bool,
+    /// Telex flags of the buffer as of its latest edit.
+    telex: TelexFlags,
+    /// Model calls of the current word.
+    word_steps: Vec<Step>,
+    /// Teacher-forced examples not yet handed to the trainer
+    /// (`EngineConfig::teach_batch`).
+    taught: Vec<Example>,
+    /// Previous non-hotkey key-downs, oldest first.
+    recent: VecDeque<KeyEvent>,
+    last_word: Option<LastWord>,
     focus: Option<Focus>,
     next_focus: u64,
-    /// Modes of up to 3 previous words in this field, most recent first.
+    /// Renderings of up to 3 previous words in this field, most recent first.
     prev_langs: Vec<Lang>,
     last_switch_t: Option<f64>,
-    /// A manual switch happened while composing the current word.
-    in_word_correction: bool,
     /// A word was committed since the last focus change.
     committed_since_focus: bool,
-    /// Features of the latest decision of the current word.
-    word_features: Features,
-    /// Telex flags of the current word as of its latest key.
-    word_telex: WordTelex,
     last_snapshot_t: Option<f64>,
     last_t: f64,
     diagnostics: Vec<String>,
@@ -141,31 +177,31 @@ impl Engine {
     pub fn new(cfg: EngineConfig, storage: Arc<dyn Storage>, session: SessionInfo) -> Self {
         let key = snapshot_key(cfg.policy);
         let mut diagnostics = Vec::new();
-        let mut model = nimk_policy::build(cfg.policy, cfg.seed);
+        let mut learner = build_action(cfg.policy, cfg.seed);
         match storage.blobs().get(&key) {
             Ok(None) => {}
             Ok(Some(bytes)) => {
-                if let Err(e) = model.learner.load(&bytes) {
+                if let Err(e) = learner.load(&bytes) {
                     diagnostics.push(format!("snapshot {key} unusable ({e}); starting fresh"));
-                    model = nimk_policy::build(cfg.policy, cfg.seed);
+                    learner = build_action(cfg.policy, cfg.seed);
                 }
             }
             Err(e) => diagnostics.push(format!("cannot read snapshot {key} ({e}); starting fresh")),
         }
-        let mut engine = Self::with_model(cfg, storage, session, model);
+        let mut engine = Self::with_model(cfg, storage, session, learner);
         diagnostics.append(&mut engine.diagnostics);
         engine.diagnostics = diagnostics;
         engine
     }
 
-    /// Creates an engine around a given model without loading snapshots
-    /// (benchmarks, synthetic pre-training).
+    /// Creates an engine around a given learner without loading snapshots
+    /// (benchmarks, synthetic pre-training, tests).
     #[must_use]
     pub fn with_model(
         cfg: EngineConfig,
         storage: Arc<dyn Storage>,
         session: SessionInfo,
-        model: Model,
+        learner: Box<dyn ImeLearner>,
     ) -> Self {
         let mut diagnostics = Vec::new();
         let background = cfg.threading == Threading::Background;
@@ -180,8 +216,8 @@ impl Engine {
         };
         let logger = Logger::new(session.id.clone(), sink, background);
 
-        let policy = model.learner.snapshot();
-        let policy_id: Arc<str> = Arc::from(policy.id());
+        let model = learner.snapshot();
+        let model_id: Arc<str> = Arc::from(model.id());
         let params = TrainerParams {
             correction_window: cfg.correction_window,
             correction_steps: cfg.correction_steps,
@@ -194,14 +230,20 @@ impl Engine {
             storage,
             key: snapshot_key(cfg.policy),
         };
-        let trainer = Trainer::new(Core::new(model.learner, params, save), background);
+        let trainer = Trainer::new(Core::new(learner, params, save), background);
         let labeler = Labeler::new(LabelerParams {
             implicit: cfg.hotkeys,
             correction_words: cfg.correction_words,
             timeout_secs: cfg.label_timeout_secs,
             implicit_weight: cfg.implicit_weight,
+            edit_weight: cfg.edit_online_weight,
         });
-        let hotkey = HotkeyDetector::new(cfg.shift_tap_secs, cfg.shift_tap, cfg.ctrl_space);
+        let hotkey = HotkeyDetector::new(HotkeyParams {
+            tap_secs: cfg.shift_tap_secs,
+            double_secs: cfg.double_shift_secs,
+            double_shift: cfg.double_shift,
+            ctrl_space: cfg.ctrl_space,
+        });
         let config_json = match serde_json::to_string(&cfg) {
             Ok(json) => json,
             Err(e) => {
@@ -212,27 +254,27 @@ impl Engine {
 
         let mut engine = Self {
             cfg,
-            extractor: model.extractor,
-            policy,
-            policy_id,
+            model,
+            model_id,
             trainer,
             logger,
             labeler,
             hotkey,
             composer: Composer::new(),
-            // Prior: start in VI (the IME targets Vietnamese users); only
-            // the hard rules force EN until the model is confident.
+            // Initial prior; the model overrides it at the first focus.
             mode: Lang::Vi,
-            word_mode: None,
-            manual_hold: false,
+            shown: Lang::Vi,
+            locked: false,
+            telex: TelexFlags::default(),
+            word_steps: Vec::new(),
+            taught: Vec::new(),
+            recent: VecDeque::with_capacity(nimk_types::RECENT_WINDOW + 1),
+            last_word: None,
             focus: None,
             next_focus: 0,
             prev_langs: Vec::with_capacity(3),
             last_switch_t: None,
-            in_word_correction: false,
             committed_since_focus: false,
-            word_features: Features::default(),
-            word_telex: WordTelex::default(),
             last_snapshot_t: None,
             last_t: 0.0,
             diagnostics,
@@ -241,14 +283,15 @@ impl Engine {
             wall_unix_ms: session.wall_unix_ms,
             app_version: session.app_version,
             config_json,
-            policy_id: engine.policy_id.to_string(),
+            policy_id: engine.model_id.to_string(),
         };
         engine.logger.log(0.0, start);
         engine
     }
 
     /// App focus changed or a new caret position is known. Assigns a new
-    /// focus id (and makes a prior decision) when app or field changed.
+    /// focus id (and asks the model for a mode prior) when app or field
+    /// changed.
     ///
     /// A word still being composed when the focus changes is committed
     /// first (boundary `External`), so no typed text is lost.
@@ -281,9 +324,10 @@ impl Engine {
             id,
         });
         self.prev_langs.clear();
+        self.recent.clear();
+        self.last_word = None;
         self.committed_since_focus = false;
-        self.in_word_correction = false;
-        self.manual_hold = false;
+        self.locked = false;
         self.decide_prior(id, ctx.timestamp, &mut out);
         self.drain_trainer(ctx.timestamp);
         out
@@ -292,13 +336,50 @@ impl Engine {
     /// Handles one key. Never panics; on internal error returns
     /// `consumed = false` so the key reaches the app. Word ids are 0, 1, 2...
     /// per session, one per committed non-empty word; they depend only on
-    /// boundary keys, never on the mode, so replay and synthetic ids match.
+    /// the buffer's commits, never on the rendering, so replay and synthetic
+    /// ids match.
     pub fn on_key(&mut self, key: &KeyEvent) -> EngineOutput {
-        match catch_unwind(AssertUnwindSafe(|| self.handle_key(key))) {
+        match catch_unwind(AssertUnwindSafe(|| self.handle_key(key, None))) {
             Ok(out) => out,
             Err(_) => {
                 self.diagnostics
                     .push("internal panic in on_key; key passed through".into());
+                EngineOutput::default()
+            }
+        }
+    }
+
+    /// Teacher forcing for pre-training: like [`Engine::on_key`] but applies
+    /// `target` instead of the model's decision and queues one [`Example`]
+    /// (observation, effective target, the given weights) to the trainer at
+    /// once (or, with `EngineConfig::teach_batch` > 1, in batches of that
+    /// many; the remainder is trained at [`Engine::shutdown`]). The model is
+    /// not consulted, so the logged `Decision` has
+    /// `p_vi: None`. An edit the action mask forbids falls back to `Pass`
+    /// (and the example records `Pass`). Hotkeys are still detected.
+    ///
+    /// Words typed this way keep no per-step examples for later labels
+    /// (they were already taught); labels still flow through the labeler,
+    /// so [`Engine::inject_label`] works as usual.
+    ///
+    /// [`Example`]: nimk_types::Example
+    pub fn teach(
+        &mut self,
+        key: &KeyEvent,
+        target: Action,
+        edit_weight: f32,
+        render_weight: f32,
+    ) -> EngineOutput {
+        let forced = flow::Forced {
+            target,
+            edit_weight,
+            render_weight,
+        };
+        match catch_unwind(AssertUnwindSafe(|| self.handle_key(key, Some(forced)))) {
+            Ok(out) => out,
+            Err(_) => {
+                self.diagnostics
+                    .push("internal panic in teach; key passed through".into());
                 EngineOutput::default()
             }
         }
@@ -333,17 +414,16 @@ impl Engine {
         }
     }
 
-    /// Sticky session mode: the mode the next word starts in. A word
-    /// rendered in EN by a hard rule does not change it.
+    /// Sticky session mode: the mode the next word starts in.
     #[must_use]
     pub fn mode(&self) -> Lang {
         self.mode
     }
 
-    /// Id of the policy currently serving predictions.
+    /// Id of the model currently serving predictions.
     #[must_use]
     pub fn policy_id(&self) -> Arc<str> {
-        Arc::clone(&self.policy_id)
+        Arc::clone(&self.model_id)
     }
 
     /// Drains human-readable warnings (fallbacks, dropped log records) for
@@ -360,6 +440,7 @@ impl Engine {
     /// Fails if flushing or saving fails.
     pub fn shutdown(mut self) -> Result<(), EngineError> {
         let t = self.last_t;
+        self.flush_taught();
         let mut finals = Vec::new();
         self.labeler.flush(&mut finals);
         self.emit_labels(t, finals);

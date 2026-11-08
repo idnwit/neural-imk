@@ -1,4 +1,4 @@
-//! `nimk-replay`: replays logged sessions through one or more policies and
+//! `nimk-replay`: replays logged sessions through one or more action models and
 //! reports metrics (see docs/05-storage-and-log.md and the library docs).
 #![forbid(unsafe_code)]
 // The report is printed to stdout by design.

@@ -1,6 +1,6 @@
 # Context I/O
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-types/src/ctx.rs`, `macos/NeuralIMK/InputController.swift`
+> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-types/src/ctx.rs`, `macos/NeuralIMK/{InputController,Context}.swift`
 
 Context chỉ gồm `bundle_id` của app và vị trí con trỏ tương đối trong cửa sổ app.
 Cả hai lấy được mà không cần quyền Accessibility hay Screen Recording; `field_id` chỉ dùng để nhận biết đổi ô nhập.
@@ -99,7 +99,7 @@ let caretQ = CGRect(x: line.minX, y: mainH - line.minY - line.height,
 
 ## Lưới ô con trỏ
 
-Policy lưới hoá `caret` thành ô 8×8 để có feature rời rạc "khu vực nhập"; log vẫn lưu số thực gốc.
+`nimk_policy::encode` lưới hoá `caret` thành ô 8×8 (65 giá trị, 64 là "không biết") để có embedding "khu vực nhập"; log vẫn lưu số thực gốc.
 
 ```text
         x:  0    1    2    3    4    5    6    7

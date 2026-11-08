@@ -1,0 +1,78 @@
+//! The switch hotkey (double Shift / Ctrl+Space) and retroactive correction
+//! of the last committed word (ADR 0008).
+
+use nimk_types::{Event, LabelSource, SwitchScope, Target};
+
+use super::{Engine, EngineOutput, Overlay, Replace};
+
+/// UTF-16 code units of `s` (the unit of `NSString` ranges).
+fn utf16_len(s: &str) -> u32 {
+    // Saturating: the cast cannot truncate after `min`.
+    s.encode_utf16().count().min(u32::MAX as usize) as u32
+}
+
+impl Engine {
+    /// Hotkey, by when it is pressed:
+    /// - mid-word: flips the current word's rendering and locks it;
+    /// - right after a commit, with only boundary characters typed since:
+    ///   rewrites that word (and keeps the boundary) in the other rendering;
+    /// - before any typing after focus: flips the sticky mode (focus prior
+    ///   correction);
+    /// - otherwise (typed past the last word): flips the sticky mode only.
+    ///
+    /// The result becomes the sticky mode, and corrections become labels.
+    pub(super) fn manual_switch(&mut self, t: f64, out: &mut EngineOutput) {
+        self.last_switch_t = Some(t);
+        let mut label: Option<(Target, f32)> = None;
+        let (scope, word_id, to) = if !self.composer.is_empty() {
+            let to = self.shown.flip();
+            self.shown = to;
+            self.locked = true;
+            out.marked = Some(self.composer.rendering(to).to_owned());
+            (SwitchScope::InWord, Some(self.composer.word_id()), to)
+        } else if let Some(w) = self.last_word.as_mut() {
+            let to = w.lang.flip();
+            let old = format!("{}{}", w.text(w.lang), w.boundary);
+            let new = format!("{}{}", w.text(to), w.boundary);
+            out.replace = Some(Replace {
+                delete_before: utf16_len(&old),
+                text: new,
+            });
+            w.lang = to;
+            let id = w.id;
+            if let Some(first) = self.prev_langs.first_mut() {
+                *first = to;
+            }
+            label = Some((Target::Word(id), 1.0));
+            (SwitchScope::AfterCommit, Some(id), to)
+        } else if self.committed_since_focus {
+            (
+                SwitchScope::AfterCommit,
+                self.composer.last_committed(),
+                self.mode.flip(),
+            )
+        } else {
+            if let Some(f) = &self.focus {
+                label = Some((Target::Focus(f.id), 1.0));
+            }
+            (SwitchScope::BeforeTyping, None, self.mode.flip())
+        };
+        self.mode = to;
+        if self.composer.is_empty() {
+            self.shown = to;
+        }
+        self.logger
+            .log(t, Event::ManualSwitch { scope, word_id, to });
+        let finals: Vec<_> = label
+            .and_then(|(target, weight)| {
+                self.labeler
+                    .refinalize(target, to, weight, LabelSource::Correction)
+            })
+            .into_iter()
+            .collect();
+        self.emit_labels(t, finals);
+        out.mode = Some(to);
+        out.overlay = Some(Overlay::Manual);
+        self.drain_trainer(t);
+    }
+}
