@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.giangndm.inputmethod.NeuralIMK</string>
+	<key>CFBundleName</key>
+	<string>NeuralIMK</string>
+	<key>CFBundleDisplayName</key>
+	<string>NeuralIMK</string>
+	<key>CFBundleExecutable</key>
+	<string>NeuralIMK</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>InputMethodConnectionName</key>
+	<string>com.giangndm.inputmethod.NeuralIMK_Connection</string>
+	<key>InputMethodServerControllerClass</key>
+	<string>InputController</string>
+	<key>TISIntendedLanguage</key>
+	<string>vi</string>
+	<key>TISIconIsTemplate</key>
+	<true/>
+	<key>tsInputMethodCharacterRepertoireKey</key>
+	<array>
+		<string>Latn</string>
+	</array>
+	<key>tsInputMethodIconFileKey</key>
+	<string>NeuralIMK.tiff</string>
+</dict>
+</plist>

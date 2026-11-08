@@ -1,0 +1,29 @@
+[package]
+name = "nimk-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nimk-replay"
+path = "src/main.rs"
+
+[dependencies]
+nimk-types.workspace = true
+nimk-storage.workspace = true
+nimk-policy.workspace = true
+nimk-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+nimk-synth.workspace = true
+tempfile.workspace = true

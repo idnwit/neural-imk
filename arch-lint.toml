@@ -1,0 +1,210 @@
+#:schema https://raw.githubusercontent.com/ynishi/arch-lint/main/schema/arch-lint.schema.json
+# Architecture contract for NeuralIMK. See docs/01-architecture.md.
+#
+# Layers (top may use bottom, never the reverse):
+#   ffi, replay, synth  ->  engine  ->  telex | policy  ->  types
+#                                 \->  storage (true leaf, no nimk deps)
+#
+# arch-lint does not resolve `use other_crate::...` to scopes, so crate-level
+# layering is enforced with `restrict-use` deny lists on crate paths.
+
+preset = "recommended"
+fail_on = "warning"
+
+[analyzer]
+exclude = ["target/**"]
+
+# ---------- scopes: one per crate ----------
+[[scopes]]
+name = "types"
+paths = ["crates/nimk-types/src/**"]
+
+[[scopes]]
+name = "storage"
+paths = ["crates/nimk-storage/src/**"]
+
+[[scopes]]
+name = "telex"
+paths = ["crates/nimk-telex/src/**"]
+
+[[scopes]]
+name = "policy"
+paths = ["crates/nimk-policy/src/**"]
+
+[[scopes]]
+name = "engine"
+paths = ["crates/nimk-engine/src/**"]
+
+[[scopes]]
+name = "ffi"
+paths = ["crates/nimk-ffi/src/**"]
+
+[[scopes]]
+name = "replay"
+paths = ["crates/nimk-replay/src/**"]
+
+[[scopes]]
+name = "synth"
+paths = ["crates/nimk-synth/src/**"]
+
+# Pure crates: run on (or feed) the per-keystroke path; no side effects, no
+# wall clock (the engine's only clock is input event timestamps).
+[[scopes]]
+name = "pure"
+paths = ["crates/nimk-types/src/**", "crates/nimk-telex/src/**", "crates/nimk-policy/src/**"]
+
+# Engine internals: independent modules, wired only by engine.rs.
+[[scopes]]
+name = "eng-composer"
+paths = ["crates/nimk-engine/src/composer.rs"]
+
+[[scopes]]
+name = "eng-hotkey"
+paths = ["crates/nimk-engine/src/hotkey.rs"]
+
+[[scopes]]
+name = "eng-labeler"
+paths = ["crates/nimk-engine/src/labeler.rs"]
+
+[[scopes]]
+name = "eng-trainer"
+paths = ["crates/nimk-engine/src/trainer.rs"]
+
+[[scopes]]
+name = "eng-logger"
+paths = ["crates/nimk-engine/src/logger.rs"]
+
+# Engine minus the worker modules: no threads here.
+[[scopes]]
+name = "engine-no-threads"
+paths = ["crates/nimk-engine/src/**"]
+exclude = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/logger.rs"]
+
+# Every crate except ffi: no exported C symbols.
+[[scopes]]
+name = "non-ffi"
+paths = ["crates/*/src/**"]
+exclude = ["crates/nimk-ffi/src/**"]
+
+# ---------- crate layering ----------
+[[restrict-use]]
+name = "types-is-bottom"
+scope = "types"
+deny = ["nimk_storage::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_synth::**", "nimk_replay::**"]
+message = "nimk-types is the bottom layer and must not depend on other nimk crates."
+
+[[restrict-use]]
+name = "leaf-storage"
+scope = "storage"
+deny = ["nimk_types::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_synth::**", "nimk_replay::**"]
+message = "nimk-storage is a leaf: bytes only, no nimk crates (keeps EncryptedStorage a pure decorator)."
+
+[[restrict-use]]
+name = "leaf-telex"
+scope = "telex"
+deny = ["nimk_storage::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_synth::**", "nimk_replay::**"]
+message = "nimk-telex may only depend on nimk-types."
+
+[[restrict-use]]
+name = "leaf-policy"
+scope = "policy"
+deny = ["nimk_storage::**", "nimk_telex::**", "nimk_engine::**", "nimk_ffi::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**", "std::thread::**"]
+message = "nimk-policy maps Features to p(VI); no storage, Telex, engine, files or threads."
+
+[[restrict-use]]
+name = "engine-not-up"
+scope = "engine"
+deny = ["nimk_ffi::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
+message = "nimk-engine must not depend on the FFI layer or touch files directly (use Storage)."
+
+[[restrict-use]]
+name = "ffi-thin"
+scope = "ffi"
+deny = ["nimk_policy::**", "nimk_telex::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
+message = "nimk-ffi only adapts nimk-engine (+ constructs PlainFsStorage) to C; no policy, Telex or file logic."
+
+[[restrict-use]]
+name = "replay-not-ffi"
+scope = "replay"
+deny = ["nimk_ffi::**"]
+message = "nimk-replay drives nimk-engine directly, never the C ABI."
+
+[[restrict-use]]
+name = "synth-not-ffi"
+scope = "synth"
+deny = ["nimk_ffi::**"]
+message = "nimk-synth drives nimk-engine directly, never the C ABI."
+
+[[restrict-use]]
+name = "pure-no-side-effects"
+scope = "pure"
+deny = ["std::fs", "std::fs::**", "std::io", "std::io::**", "std::net::**", "std::thread::**",
+        "std::sync::**", "std::time::**", "std::env::**", "parking_lot::**"]
+except = ["std::sync::Arc", "std::sync::atomic::**"]
+message = "types/telex/policy are pure: no I/O, threads, locks, env or wall clock."
+
+[[restrict-use]]
+name = "engine-event-clock"
+scope = "engine"
+deny = ["std::time::**", "std::env::**"]
+message = "The engine's only clock is KeyEvent/AppContext timestamps (replay determinism)."
+
+[[restrict-use]]
+name = "hot-path-no-io"
+scope = "engine-no-threads"
+deny = ["std::fs::**", "std::net::**", "std::thread::**", "std::sync::Mutex", "std::sync::Mutex::**",
+        "std::sync::RwLock", "std::sync::RwLock::**", "std::sync::Condvar"]
+message = "Keystroke path: no I/O, locks or threads outside trainer/logger."
+
+# Engine modules are independent; only engine.rs wires them. `[[independent]]`
+# / `[[deny-scope-dep]]` do not resolve crate:: paths here (arch-lint 0.11,
+# verified with a probe), so siblings are denied by path text instead.
+
+[[restrict-use]]
+name = "eng-composer-independent"
+scope = "eng-composer"
+deny = ["crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+message = "Engine module `composer` must not use sibling modules; engine.rs wires them."
+
+[[restrict-use]]
+name = "eng-hotkey-independent"
+scope = "eng-hotkey"
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+message = "Engine module `hotkey` must not use sibling modules; engine.rs wires them."
+
+[[restrict-use]]
+name = "eng-labeler-independent"
+scope = "eng-labeler"
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+message = "Engine module `labeler` must not use sibling modules; engine.rs wires them."
+
+[[restrict-use]]
+name = "eng-trainer-independent"
+scope = "eng-trainer"
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+message = "Engine module `trainer` must not use sibling modules; engine.rs wires them."
+
+[[restrict-use]]
+name = "eng-logger-independent"
+scope = "eng-logger"
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+message = "Engine module `logger` must not use sibling modules; engine.rs wires them."
+
+[[deny-attr]]
+name = "no-c-exports-outside-ffi"
+scope = "non-ffi"
+attrs = ["no_mangle", "export_name"]
+message = "Only nimk-ffi exports C symbols."
+# Note: edition-2024 `#[unsafe(no_mangle)]` is NOT matched by deny-attr
+# (arch-lint 0.11); the workspace lint `unsafe_code = "deny"` catches it.
+
+# ---------- built-in rules ----------
+[rules.no-unwrap-expect]
+allow_in_tests = true
+severity = "error"
+
+# AL011 is not in the `recommended` preset and `enabled = true` does not add
+# it; `make arch` runs a second pass with `--rules no-panic-in-lib`.
+[rules.no-panic-in-lib]
+allow_in_tests = true
+severity = "error"
