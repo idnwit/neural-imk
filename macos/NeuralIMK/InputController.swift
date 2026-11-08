@@ -5,12 +5,16 @@ import InputMethodKit
 /// No decisions are made here (docs/02-keyboard-io.md).
 @objc(InputController)
 class InputController: IMKInputController {
-    /// Whether the engine currently shows marked text in this client. When
-    /// false, the next letter starts a word, so the context is refreshed.
+    /// Whether the engine currently shows marked text (a word being composed
+    /// or a pending word, ADR 0011). When false, the next letter starts a
+    /// word, so the context is refreshed.
     private var composing = false
 
-    /// Text known to precede the caret (see `track`); never trusted blindly.
-    private var recent = ""
+    /// Settles the context of rapid activations; shared because Electron
+    /// activates two different clients per click.
+    private static let contextDebounce = Debouncer()
+    private static let activationDelay = 0.12
+    private static let caretRetryDelay = 0.08
 
     private static let notFound = NSRange(location: NSNotFound, length: 0)
 
@@ -33,7 +37,10 @@ class InputController: IMKInputController {
             return false
         }
 
-        if !composing, startsWord(event, chars: chars) {
+        // A key before the debounced context fired: send it now, so the
+        // engine knows the field before the first key.
+        let flushed = Self.contextDebounce.flush { sendContext(client) }
+        if !flushed, !composing, startsWord(event, chars: chars) {
             sendContext(client)
         }
 
@@ -44,21 +51,24 @@ class InputController: IMKInputController {
             chars: chars,
             timestamp: event.timestamp)
         apply(out, client: client)
-        if !out.consumed { trackPassedKey(event, chars: chars) }
         return out.consumed
     }
 
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         composing = false
-        recent = ""
         if let client = sender as? IMKTextInput {
-            sendContext(client)
+            // A newer activation (or a deactivation) within the window
+            // replaces this one.
+            Self.contextDebounce.schedule(after: Self.activationDelay) { [weak self] in
+                self?.sendContextProbingCaret(client)
+            }
         }
         ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
     }
 
     override func deactivateServer(_ sender: Any!) {
+        Self.contextDebounce.cancel()
         commitPending(sender)
         super.deactivateServer(sender)
     }
@@ -77,19 +87,28 @@ class InputController: IMKInputController {
         let policyItem = NSMenuItem(title: "Policy: \(policy)", action: nil, keyEquivalent: "")
         policyItem.isEnabled = false
         menu.addItem(policyItem)
-        if let diag = Core.shared.lastReplaceDiagnostic {
-            let item = NSMenuItem(title: "Last replace issue: \(diag)", action: nil, keyEquivalent: "")
-            item.isEnabled = false
+        // Model items sit at the top level: IMK does not reliably deliver
+        // actions of submenu items (unverified), so none are nested.
+        menu.addItem(.separator())
+        let active = Core.shared.model
+        for kind in [UInt8(NIMK_MODEL_LINEAR), UInt8(NIMK_MODEL_GRU)] {
+            var title = "Model: \(Core.modelName(kind))"
+            switch Core.shared.checkpointSource(kind) {
+            case UInt8(NIMK_CHECKPOINT_USER): title += " (đã học thêm)"
+            case UInt8(NIMK_CHECKPOINT_BUNDLED): title += " (gốc)"
+            default: title += " (chưa pre-train)"
+            }
+            if kind == active { title += " ✓" }
+            let item = NSMenuItem(title: title, action: #selector(selectModel(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(kind)
+            item.representedObject = NSNumber(value: kind)
+            item.state = kind == active ? .on : .off
             menu.addItem(item)
         }
-        if let bundle = client()?.bundleIdentifier() {
-            let on = ReplaceCompat.shared.allows(bundle)
-            let toggle = NSMenuItem(title: "Retro-correction in this app: \(on ? "on" : "off")",
-                                    action: #selector(toggleRetro(_:)), keyEquivalent: "")
-            toggle.target = self
-            toggle.representedObject = bundle
-            menu.addItem(toggle)
-        }
+        let reset = NSMenuItem(title: "Khôi phục model gốc", action: #selector(resetModel(_:)), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
         menu.addItem(.separator())
         let open = NSMenuItem(title: "Open data folder", action: #selector(openDataFolder(_:)), keyEquivalent: "")
         open.target = self
@@ -100,16 +119,49 @@ class InputController: IMKInputController {
         return menu
     }
 
-    @objc func toggleRetro(_ sender: NSMenuItem) {
-        guard let bundle = sender.representedObject as? String else { return }
-        ReplaceCompat.shared.toggle(bundle)
+    /// The menu item behind an action's `sender`. IMK passes a dictionary
+    /// holding the item under `kIMKCommandMenuItemName`, not the item itself.
+    private func menuItem(from sender: Any?) -> NSMenuItem? {
+        if let item = sender as? NSMenuItem { return item }
+        if let dict = sender as? [AnyHashable: Any] {
+            return dict[kIMKCommandMenuItemName] as? NSMenuItem
+        }
+        return nil
+    }
+
+    @objc func selectModel(_ sender: Any?) {
+        guard let item = menuItem(from: sender) else {
+            Core.shared.log("menu: select model: no menu item in sender \(String(describing: sender))")
+            return
+        }
+        let kind = (item.representedObject as? NSNumber).map { UInt8(truncatingIfNeeded: $0.intValue) }
+            ?? UInt8(truncatingIfNeeded: item.tag)
+        Core.shared.log("menu: select model \(Core.modelName(kind))")
+        guard kind != Core.shared.model else { return }
+        let out = Core.shared.setModel(kind, timestamp: ProcessInfo.processInfo.systemUptime)
+        let client = self.client()
+        if let client { apply(out, client: client) }
+        ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
+        let caret = client.map { ContextProbe.caretRect($0) } ?? .zero
+        Overlay.shared.showText(Core.modelName(Core.shared.model), caret: caret)
+    }
+
+    @objc func resetModel(_ sender: Any?) {
+        Core.shared.log("menu: reset model \(Core.modelName(Core.shared.model))")
+        let out = Core.shared.resetModel(timestamp: ProcessInfo.processInfo.systemUptime)
+        if let client = self.client() { apply(out, client: client) }
+        ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
+        let caret = client().map { ContextProbe.caretRect($0) } ?? .zero
+        Overlay.shared.showText("Đã khôi phục \(Core.modelName(Core.shared.model))", caret: caret)
     }
 
     @objc func openDataFolder(_ sender: Any?) {
+        Core.shared.log("menu: open data folder")
         NSWorkspace.shared.open(Core.shared.dataDir)
     }
 
     @objc func showDiagnosticsLog(_ sender: Any?) {
+        Core.shared.log("menu: show diagnostics log")
         Core.shared.drainDiagnostics()
         let url = Core.shared.logURL
         if !FileManager.default.fileExists(atPath: url.path) {
@@ -127,6 +179,19 @@ class InputController: IMKInputController {
               let first = chars?.unicodeScalars.first
         else { return false }
         return CharacterSet.letters.contains(first)
+    }
+
+    /// Activation path: when the caret rect is still zero (the client is not
+    /// laid out yet), probe once more shortly after; if it stays zero the
+    /// context goes out without a caret.
+    private func sendContextProbingCaret(_ client: IMKTextInput) {
+        if ContextProbe.caretRect(client) == .zero {
+            Self.contextDebounce.schedule(after: Self.caretRetryDelay) { [weak self] in
+                self?.sendContext(client)
+            }
+        } else {
+            sendContext(client)
+        }
     }
 
     private func sendContext(_ client: IMKTextInput) {
@@ -148,88 +213,10 @@ class InputController: IMKInputController {
         composing = false
     }
 
-    /// Retroactively replaces `delete` UTF-16 units before the caret (ADR 0008).
-    ///
-    /// Safe-or-skip: the text is touched only if the app is not known to ignore
-    /// `replacementRange` and the `delete` units before the caret read back
-    /// exactly as the text we ourselves inserted (`recent`). Otherwise nothing is
-    /// changed (the engine has already flipped the mode and learned). There is
-    /// deliberately no CGEvent-backspace fallback. Returns true when replaced.
-    private func applyReplace(_ text: String, delete: Int, client: IMKTextInput) -> Bool {
-        let bundle = client.bundleIdentifier() ?? "?"
-        guard ReplaceCompat.shared.allows(bundle) else {
-            reportReplaceFailure("không sửa được ở app này: \(bundle) is deny-listed or switched off")
-            return false
-        }
-        // Pre-check: where we expect the old text to be.
-        let sel = client.selectedRange()
-        let units = Array(recent.utf16)
-        guard sel.location != NSNotFound, delete > 0, sel.location >= delete, units.count >= delete else {
-            reportReplaceFailure("replace skipped (\(bundle)): caret=\(sel.location), delete=\(delete), known=\(units.count)")
-            return false
-        }
-        let expected = String(decoding: units.suffix(delete), as: UTF16.self)
-        let range = NSRange(location: sel.location - delete, length: delete)
-        var actual = NSRange(location: NSNotFound, length: 0)
-        guard let before = client.string(from: range, actualRange: &actual),
-              NSEqualRanges(actual, range), before == expected
-        else {
-            // Stale caret (e.g. Chromium) or user moved: skip, verdict unchanged.
-            reportReplaceFailure("replace skipped (\(bundle)): text before caret is not \"\(expected)\"")
-            return false
-        }
-        client.insertText(text, replacementRange: range)
-        // Post-check: the range must now hold the new text.
-        let after = NSRange(location: range.location, length: text.utf16.count)
-        var actual2 = NSRange(location: NSNotFound, length: 0)
-        if let got = client.string(from: after, actualRange: &actual2), got == text {
-            ReplaceCompat.shared.record(bundle, .ok)
-            recent = String(decoding: units.dropLast(delete), as: UTF16.self) + text
-            return true
-        }
-        // The app ignored the range (e.g. appended): never try again here.
-        ReplaceCompat.shared.record(bundle, .unsupported)
-        reportReplaceFailure("replace post-check failed (\(bundle)): marked unsupported")
-        return false
-    }
-
-    private func reportReplaceFailure(_ message: String) {
-        Core.shared.lastReplaceDiagnostic = message
-        Core.shared.log(message)
-    }
-
-    /// Tracks the text just before the caret that we know about: our commits
-    /// plus the plain characters we let through. Used as the expected text.
-    private func track(commit: String) { remember(commit) }
-
-    private func trackPassedKey(_ event: NSEvent, chars: String?) {
-        guard event.type == .keyDown else { return }
-        if event.keyCode == 51 { // backspace
-            if !recent.isEmpty { recent.removeLast() }
-        } else if event.modifierFlags.intersection([.command, .control]).isEmpty,
-                  let chars, !chars.isEmpty,
-                  chars.unicodeScalars.allSatisfy({ $0.value >= 0x20 && !(0xF700...0xF8FF).contains($0.value) }) {
-            remember(chars)
-        } else {
-            recent = "" // navigation, shortcuts, etc.: unknown context
-        }
-    }
-
-    private func remember(_ s: String) {
-        recent += s
-        if recent.count > 256 { recent = String(recent.suffix(256)) }
-    }
-
-    /// Applies an engine answer: replace first, then commit, marked text, UI.
+    /// Applies an engine answer: commit, then marked text, then UI.
     private func apply(_ out: CoreOutput, client: IMKTextInput, caret: NSRect? = nil) {
-        var replaceSkipped = false
-        if let text = out.replaceText {
-            replaceSkipped = !applyReplace(text, delete: out.replaceDelete, client: client)
-            composing = false
-        }
         if let commit = out.commit {
             client.insertText(commit, replacementRange: Self.notFound)
-            track(commit: commit)
             composing = false
         }
         if let marked = out.marked {
@@ -244,10 +231,23 @@ class InputController: IMKInputController {
             ModeStatusItem.shared.show(mode: mode, auto: isAuto)
         }
         if out.overlay != UInt8(NIMK_OVERLAY_NONE) {
-            Overlay.shared.show(mode: mode ?? Core.shared.mode,
-                                manual: out.overlay == UInt8(NIMK_OVERLAY_MANUAL),
-                                skipped: replaceSkipped,
-                                caret: caret ?? ContextProbe.caretRect(client))
+            showOverlay(mode: mode ?? Core.shared.mode,
+                        manual: out.overlay == UInt8(NIMK_OVERLAY_MANUAL),
+                        client: client, caret: caret)
+        }
+    }
+
+    /// Shows the mode badge at a freshly probed caret. A zero rect is
+    /// probed once more after a short delay; only if it is still zero does
+    /// the overlay fall back to the mouse location.
+    private func showOverlay(mode: UInt8, manual: Bool, client: IMKTextInput, caret: NSRect?) {
+        let first = caret ?? ContextProbe.caretRect(client)
+        if first != .zero {
+            Overlay.shared.show(mode: mode, manual: manual, caret: first)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.caretRetryDelay) {
+            Overlay.shared.show(mode: mode, manual: manual, caret: ContextProbe.caretRect(client))
         }
     }
 }

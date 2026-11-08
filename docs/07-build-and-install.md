@@ -61,24 +61,32 @@ Test học `GruAction` chỉ chạy ở bản release (273 s ở debug): `cargo 
 
 ## Pretrain model
 
-IME cần một snapshot đã pretrain trước lần cài đầu; model chưa train là trung tính và không commit từ đúng ([04](04-engine-ml.md)).
-Quy trình dưới đây chưa được chạy đầu-cuối trên máy cài thật.
+App đóng gói sẵn model pretrain trên dữ liệu synthetic; lần chạy đầu bắt đầu từ chúng và học tiếp online ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
 
-1. Pretrain vào một thư mục tạm, không bao giờ vào thư mục dữ liệu thật khi chưa chủ ý (`--out` là bắt buộc):
+1. `make models` pretrain `linear_action` và `gru_action` (seed 42, 200 session x 500 từ, 2 epoch) vào `target/models/<kind>/`, rồi copy mỗi checkpoint tới `target/models/bundle/model/<kind>/latest`.
+2. Kind nào đã có bản trong `bundle/` thì bỏ qua; `make models FORCE=1` pretrain lại (GRU mất khoảng 100 s).
+3. `scripts/build-app.sh` chạy `make models` nếu `bundle/` thiếu, rồi copy nó vào `NeuralIMK.app/Contents/Resources/models/` (khoảng 0.8 MB). File sinh ra nằm dưới `target/`, không commit.
+4. Lần chạy đầu: `ReadOnlyDirBlobs` phục vụ model gốc, menu ghi `(gốc)`. Khi học, checkpoint ghi vào `<Application Support>/<bundle id>/blobs/model/<kind>/latest`, menu ghi `(đã học thêm)`.
+5. Menu bộ gõ > `Khôi phục model gốc` (các mục model nằm thẳng ở menu chính, dạng `Model: GRU (gốc) ✓`) xoá checkpoint người dùng của model đang dùng và nạp lại bản gốc.
 
-   ```sh
-   cargo run --release -p nimk-synth --bin nimk-synth -- pretrain \
-       --model gru_action --out /tmp/nimk-pre --sessions 200 --words 500 --epochs 2
-   ```
+Pretrain thủ công vẫn dùng được; `--out` là bắt buộc và không bao giờ mặc định vào data dir:
 
-2. Đọc báo cáo in ra (`edit_accuracy`, `render_accuracy`, `ambiguous_acc`, `text_match_rate`); kỳ vọng xem [04](04-engine-ml.md#kết-quả-đo).
-3. Snapshot nằm ở `/tmp/nimk-pre/blobs/model/gru_action/latest`. Copy nó vào `~/Library/Application Support/NeuralIMK/blobs/model/gru_action/latest` trước khi cài IME lần đầu (tạo thư mục nếu chưa có).
-4. Cài IME. `Engine::new` nạp snapshot này; nếu hỏng thì dựng model mới và báo qua diagnostics.
-5. So sánh offline: `nimk-replay --data <dir> --init /tmp/nimk-pre --model gru_action [--frozen]`.
+```sh
+cargo run --release -p nimk-synth --bin nimk-synth -- pretrain \
+    --model gru_action --out target/models/gru_action --sessions 200 --words 500 --epochs 2
+```
+
+Đọc báo cáo in ra (`edit_accuracy`, `render_accuracy`, `ambiguous_acc`, `text_match_rate`); kỳ vọng xem [04](04-engine-ml.md#kết-quả-đo).
+So sánh offline: `nimk-replay --data <dir> --init target/models/gru_action --model gru_action [--frozen]`.
 
 `nimk-synth gen --out DIR` ghi event log synthetic thay vì model; flag chung `--sessions N --words N --seed S`, riêng `pretrain` có `--model`, `--epochs N`, `--eval-frac F`, `--batch N`.
-Mặc định 100 session x 500 từ, seed 42, 2 epoch, `eval-frac` 0.1, batch 128; bản GRU 200 x 500 x 2 mất khoảng 102 s.
+Mặc định 100 session x 500 từ, seed 42, 2 epoch, `eval-frac` 0.1, batch 128.
 Snapshot cũ từ trước khi sửa rò nhãn `SHOWN_VI` phải pretrain lại ([04](04-engine-ml.md#encoding)).
+
+## Vị trí lưu trữ
+
+Mọi vị trí do SDK macOS trả về, không viết cứng trong Swift: data dir là `FileManager.url(for: .applicationSupportDirectory)` nối bundle id; log là `.libraryDirectory`/`Logs`/`<bundle id>.log`; model gốc là `Bundle.main.resourceURL/models`.
+Ngoại lệ duy nhất là `scripts/install.sh` copy vào `$HOME/Library/Input Methods`, vị trí Apple quy định cho input method của người dùng.
 
 ## `Info.plist`
 
@@ -95,8 +103,7 @@ Thiếu hoặc sai một key dưới đây thì macOS không liệt kê IME tron
 
 ## Cài đặt
 
-0. Lần đầu: copy snapshot đã pretrain vào thư mục dữ liệu ([Pretrain model](#pretrain-model)).
-1. `make install` (build, đóng gói, copy vào `~/Library/Input Methods/`).
+1. `make install` (pretrain model nếu chưa có, build, đóng gói kèm model, copy vào `$HOME/Library/Input Methods/`).
 2. `killall NeuralIMK` để process cũ thoát; hệ thống tự chạy bản mới khi IME được chọn.
 3. Lần đầu: System Settings → Keyboard → Input Sources → thêm NeuralIMK.
 4. Giữ input source ABC bật làm đường lùi.
@@ -105,12 +112,12 @@ Thiếu hoặc sai một key dưới đây thì macOS không liệt kê IME tron
 
 | Tình huống | Làm gì |
 | --- | --- |
-| Xem log debug | `~/Library/Logs/NeuralIMK.log` (menu IME → `Show diagnostics log`) |
-| Xem dữ liệu, event log | `~/Library/Application Support/NeuralIMK/` (hoặc menu IME → `Open data folder`) |
+| Xem log debug | Menu IME → `Show diagnostics log` (`<Library>/Logs/<bundle id>.log`), hoặc `log stream --predicate 'subsystem == "com.giangndm.inputmethod.NeuralIMK"'` |
+| Xem dữ liệu, event log | Menu IME → `Open data folder` (`<Application Support>/<bundle id>`) |
 | IME treo hoặc crash, không gõ được | Chuyển sang ABC bằng menu input; `killall NeuralIMK` |
 | IME không hiện trong Input Sources | Kiểm tra `Info.plist` ở bảng trên; log out/in để hệ thống quét lại |
 | Bản mới không có hiệu lực | `killall NeuralIMK`, chọn lại input source |
-| Model hỏng, `load` lỗi | Engine tự dựng model mới (chưa pretrain nên gõ sai); xoá `blobs/model/<kind>/latest` rồi copy snapshot pretrain lại |
-| Gỡ cài đặt | Xoá `~/Library/Input Methods/NeuralIMK.app`, bỏ khỏi Input Sources |
+| Model học sai hoặc checkpoint hỏng | Menu bộ gõ > `Khôi phục model gốc`; checkpoint hỏng thì engine dựng model mới và báo diagnostics |
+| Gỡ cài đặt | Xoá `$HOME/Library/Input Methods/NeuralIMK.app`, bỏ khỏi Input Sources |
 
 Lỗi trong hot path không bao giờ làm mất phím: Engine trả `consumed = false` và phím đi thẳng vào app.

@@ -85,11 +85,9 @@ any
 give
 day
 are
-was
 were
 being
 had
-did
 done
 said
 made
@@ -913,7 +911,6 @@ vote
 wait
 walk
 wall
-war
 watch
 water
 weapon
@@ -946,7 +943,6 @@ world
 worry
 write
 writer
-wrong
 yard
 yeah
 yes
@@ -1595,7 +1591,6 @@ december
 weekend
 tomorrow
 yesterday
-dad
 mom
 man
 boss
@@ -1673,3 +1668,4 @@ solution
 therefore
 unless
 neither
+away

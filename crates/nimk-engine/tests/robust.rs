@@ -168,7 +168,8 @@ fn missing_sink_falls_back_to_null() {
         "{d:?}"
     );
     let mut t = 0.0;
-    assert_eq!(commits(&type_str(&mut e, "ab ", &mut t)), vec!["ab"]);
+    type_str(&mut e, "ab ", &mut t);
+    assert_eq!(e.commit_pending(t + 1.0).commit.as_deref(), Some("ab "));
     e.shutdown().unwrap();
 }
 
@@ -318,9 +319,6 @@ fn garbage(mut e: Engine, seed: u64, label: &str) {
                 let out = e.on_key(&key);
                 if let Some(m) = &out.marked {
                     assert!(m.chars().count() <= 128);
-                }
-                if let Some(r) = &out.replace {
-                    assert!(r.delete_before > 0);
                 }
             }
         }

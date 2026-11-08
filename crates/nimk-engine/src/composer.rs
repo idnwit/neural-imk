@@ -143,6 +143,20 @@ impl Composer {
         }
     }
 
+    /// Puts a word taken by [`Composer::take`] back as the current word
+    /// (Backspace into a pending word), restoring its id. Only the most
+    /// recently taken word can be restored and only into an empty composer;
+    /// otherwise nothing changes and `false` is returned.
+    pub(crate) fn restore(&mut self, word: &Committed) -> bool {
+        if !self.raw.is_empty() || self.next_id != word.id + 1 {
+            return false;
+        }
+        self.next_id = word.id;
+        self.raw.clone_from(&word.raw);
+        self.vi.clone_from(&word.vi);
+        true
+    }
+
     /// Takes the current word for commit. Returns `None` (and assigns no id)
     /// if the word is empty; otherwise the word id counter advances.
     pub(crate) fn take(&mut self) -> Option<Committed> {

@@ -23,7 +23,6 @@ seen
 days
 air
 arm
-away
 bar
 best
 born
@@ -242,3 +241,8 @@ vex
 virus
 visa
 vow
+was
+war
+did
+wrong
+dad

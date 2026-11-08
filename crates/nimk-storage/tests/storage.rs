@@ -226,3 +226,18 @@ fn memory_clones_share_data() {
     drop(b.event_sink("t").unwrap());
     assert_eq!(segments(&a).len(), 2);
 }
+
+#[test]
+fn delete_removes_blob_and_reports_it() {
+    for_each_backend(|s| {
+        let b = s.blobs();
+        b.put("model/m/latest", b"x").unwrap();
+        assert!(b.delete("model/m/latest").unwrap());
+        assert_eq!(b.get("model/m/latest").unwrap(), None);
+        assert!(!b.delete("model/m/latest").unwrap());
+        assert_eq!(
+            b.delete("../x").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    });
+}

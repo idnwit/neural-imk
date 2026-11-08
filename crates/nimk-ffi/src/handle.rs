@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nimk_engine::{Engine, EngineConfig, SessionInfo};
-use nimk_storage::{PlainFsStorage, Storage};
+use nimk_storage::{LayeredStorage, MemStorage, PlainFsStorage, ReadOnlyDirBlobs, Storage};
 
 use crate::abi::{OutBuffers, to_cstring};
 
@@ -26,9 +26,13 @@ pub struct NimkCore {
 
 impl NimkCore {
     /// Builds the core. May panic inside the engine; callers catch unwinds.
-    pub(crate) fn new(data_dir: Option<&str>, app_version: String) -> Self {
+    pub(crate) fn new(
+        data_dir: Option<&str>,
+        models_dir: Option<&str>,
+        app_version: String,
+    ) -> Self {
         let mut own_diags = Vec::new();
-        let storage = open_storage(data_dir, &mut own_diags);
+        let storage = open_storage(data_dir, models_dir, &mut own_diags);
         let session = SessionInfo {
             id: session_id(),
             wall_unix_ms: wall_unix_ms(),
@@ -59,19 +63,40 @@ impl NimkCore {
     }
 }
 
-/// Opens plain-file storage at `data_dir`. Falls back to in-memory storage
-/// (nothing persisted) when the path is missing or cannot be opened.
-fn open_storage(data_dir: Option<&str>, diags: &mut Vec<String>) -> Arc<dyn Storage> {
-    match data_dir.filter(|d| !d.is_empty()) {
+/// Opens plain-file storage at `data_dir`, layered over the read-only
+/// bundled defaults in `models_dir` when it is readable. Falls back to
+/// in-memory storage (nothing persisted) when `data_dir` is missing or
+/// cannot be opened; a missing `models_dir` only costs the pretrained start.
+fn open_storage(
+    data_dir: Option<&str>,
+    models_dir: Option<&str>,
+    diags: &mut Vec<String>,
+) -> Arc<dyn Storage> {
+    let user = match data_dir.filter(|d| !d.is_empty()) {
         Some(dir) => match PlainFsStorage::open(dir) {
-            Ok(fs) => return Arc::new(fs),
+            Ok(fs) => fs,
+            Err(err) => {
+                diags.push(format!(
+                    "nimk-ffi: cannot open storage at {dir}: {err}; using memory"
+                ));
+                return Arc::new(MemStorage::new());
+            }
+        },
+        None => {
+            diags.push("nimk-ffi: no data_dir; using in-memory storage".to_owned());
+            return Arc::new(MemStorage::new());
+        }
+    };
+    match models_dir.filter(|d| !d.is_empty()) {
+        Some(dir) => match ReadOnlyDirBlobs::open(dir) {
+            Ok(defaults) => return Arc::new(LayeredStorage::new(user, defaults)),
             Err(err) => diags.push(format!(
-                "nimk-ffi: cannot open storage at {dir}: {err}; using memory"
+                "nimk-ffi: no bundled models at {dir}: {err}; starting untrained"
             )),
         },
-        None => diags.push("nimk-ffi: no data_dir; using in-memory storage".to_owned()),
+        None => diags.push("nimk-ffi: no models_dir; starting untrained".to_owned()),
     }
-    Arc::new(nimk_storage::MemStorage::new())
+    Arc::new(user)
 }
 
 /// Random-ish session id: wall clock nanos and pid, mixed with the
@@ -101,6 +126,33 @@ fn wall_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_layers_over_bundled_models_when_present() {
+        let data = tempfile::tempdir().unwrap();
+        let models = tempfile::tempdir().unwrap();
+        PlainFsStorage::open(models.path())
+            .unwrap()
+            .blobs()
+            .put("model/m/latest", b"b")
+            .unwrap();
+        let models_dir = models.path().join("blobs");
+        let (d, m) = (data.path().to_str(), models_dir.to_str());
+        let mut diags = Vec::new();
+        let s = open_storage(d, m, &mut diags);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            s.blobs().get("model/m/latest").unwrap(),
+            Some(b"b".to_vec())
+        );
+
+        for bad in [None, Some(""), Some("/definitely/not/here")] {
+            let mut diags = Vec::new();
+            let s = open_storage(d, bad, &mut diags);
+            assert_eq!(diags.len(), 1, "{bad:?}: {diags:?}");
+            assert_eq!(s.blobs().get("model/m/latest").unwrap(), None);
+        }
+    }
 
     #[test]
     fn session_ids_are_hex_and_differ() {

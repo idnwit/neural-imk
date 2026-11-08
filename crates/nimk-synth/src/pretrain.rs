@@ -88,11 +88,7 @@ impl Storage for ModelOnly {
 
 /// Snapshot blob key the engine uses for `kind`.
 fn snapshot_key(kind: ModelKind) -> String {
-    let name = match kind {
-        ModelKind::LinearAction => "linear_action",
-        ModelKind::GruAction => "gru_action",
-    };
-    format!("model/{name}/latest")
+    format!("model/{}/latest", kind.name())
 }
 
 fn invalid_data(msg: String) -> io::Error {
@@ -120,6 +116,13 @@ fn eval_count(n: usize, eval_frac: f64) -> usize {
     }
     let k = (n as f64 * eval_frac.min(1.0)).round() as usize;
     k.clamp(1, n - 1)
+}
+
+/// The scripts [`pretrain`] holds out for evaluation (the last ones, per
+/// `opts.eval_frac`).
+#[must_use]
+pub fn held_out(scripts: &[Script], eval_frac: f64) -> &[Script] {
+    &scripts[scripts.len() - eval_count(scripts.len(), eval_frac)..]
 }
 
 /// Behaviour-clones `scripts` into a fresh `cfg.policy` model, saves it as
@@ -150,14 +153,7 @@ pub fn pretrain(
     opts: PretrainOptions,
     storage: Arc<dyn Storage>,
 ) -> io::Result<PretrainReport> {
-    let cfg = EngineConfig {
-        hotkeys: false,
-        threading: Threading::Inline,
-        snapshot_every_secs: f64::MAX,
-        teach_batch: opts.batch.max(1),
-        replay_every: 0,
-        ..cfg
-    };
+    let cfg = pretrain_config(cfg, opts);
     let k = eval_count(scripts.len(), opts.eval_frac);
     let (train, held_out) = scripts.split_at(scripts.len() - k);
 
@@ -203,7 +199,7 @@ fn teach_script(engine: &mut Engine, field_id: u64, script: &Script) -> io::Resu
     Ok(script.keys.len() as u64)
 }
 
-fn check_diagnostics(engine: &mut Engine, session: &str) -> io::Result<()> {
+pub(crate) fn check_diagnostics(engine: &mut Engine, session: &str) -> io::Result<()> {
     let diagnostics = engine.take_diagnostics();
     if diagnostics.is_empty() {
         Ok(())
@@ -236,16 +232,40 @@ fn expected(word: &ScriptWord) -> Expected {
     }
 }
 
-/// Feeds `scripts` through a fresh engine holding the saved snapshot.
-fn evaluate(
+/// Engine settings used for both training and evaluation.
+pub(crate) fn pretrain_config(cfg: EngineConfig, opts: PretrainOptions) -> EngineConfig {
+    EngineConfig {
+        hotkeys: false,
+        threading: Threading::Inline,
+        snapshot_every_secs: f64::MAX,
+        teach_batch: opts.batch.max(1),
+        replay_every: 0,
+        ..cfg
+    }
+}
+
+/// Evaluates the snapshot that [`pretrain`] saved in `storage` on arbitrary
+/// `scripts` (for example a focused slice such as lone-`w` typing), without
+/// modifying `storage`. `cfg` and `opts` must match the `pretrain` call.
+///
+/// # Errors
+///
+/// `InvalidData` if the snapshot is missing or the evaluation log does not
+/// line up with the keys; I/O errors from reading the snapshot.
+pub fn evaluate_snapshot(
     scripts: &[Script],
-    cfg: &EngineConfig,
+    cfg: EngineConfig,
+    opts: PretrainOptions,
     storage: &Arc<dyn Storage>,
 ) -> io::Result<EvalReport> {
-    let mut report = EvalReport::default();
-    if scripts.is_empty() {
-        return Ok(report);
-    }
+    evaluate(scripts, &pretrain_config(cfg, opts), storage)
+}
+
+/// Fresh engine over an isolated copy of the snapshot saved in `storage`.
+pub(crate) fn eval_engine(
+    cfg: &EngineConfig,
+    storage: &Arc<dyn Storage>,
+) -> io::Result<(Engine, MemStorage)> {
     // Isolated copy: the evaluation engine neither logs into nor saves over
     // the caller's storage.
     let mem = MemStorage::new();
@@ -257,7 +277,20 @@ fn evaluate(
     mem.blobs().put(&key, &bytes)?;
     let mut engine = Engine::new(cfg.clone(), Arc::new(mem.clone()), session(EVAL_SESSION));
     check_diagnostics(&mut engine, "eval start")?;
+    Ok((engine, mem))
+}
 
+/// Feeds `scripts` through a fresh engine holding the saved snapshot.
+fn evaluate(
+    scripts: &[Script],
+    cfg: &EngineConfig,
+    storage: &Arc<dyn Storage>,
+) -> io::Result<EvalReport> {
+    let mut report = EvalReport::default();
+    if scripts.is_empty() {
+        return Ok(report);
+    }
+    let (mut engine, mem) = eval_engine(cfg, storage)?;
     let mut targets: Vec<Action> = Vec::new();
     let mut expect_words: Vec<Expected> = Vec::new();
     for (field_id, script) in (0u64..).zip(scripts) {
@@ -273,10 +306,11 @@ fn evaluate(
 
         let words: Vec<Expected> = script.words.iter().map(expected).collect();
         let total = words.len().max(committed.len());
+        // A committed chunk carries its boundary ("tiếng ", ADR 0011).
         let matched = words
             .iter()
             .zip(&committed)
-            .filter(|(w, c)| w.text == **c)
+            .filter(|(w, c)| w.text == c.trim_end_matches(|ch: char| !ch.is_alphanumeric()))
             .count();
         report.scripts += 1;
         report.text_total += total as u64;
@@ -287,16 +321,24 @@ fn evaluate(
     }
     engine.shutdown().map_err(engine_err)?;
 
-    let decisions = word_decisions(&mem)?;
-    if decisions.len() != targets.len() {
+    let (key_count, decisions) = word_decisions(&mem)?;
+    if key_count != targets.len() {
         return Err(invalid_data(format!(
-            "eval logged {} decisions for {} keys",
-            decisions.len(),
+            "eval logged {key_count} key records for {} keys",
             targets.len()
         )));
     }
+    // Keys the model never sees (ADR 0011: boundary keys joining a pending
+    // word, Return, shortcuts) log no decision; align by key index.
+    let mut by_key: Vec<Option<Decided>> = vec![None; targets.len()];
+    for (idx, d) in decisions {
+        if let Some(slot) = by_key.get_mut(idx) {
+            *slot = Some(d);
+        }
+    }
     let mut next_word = 0usize;
-    for (d, target) in decisions.iter().zip(&targets) {
+    let mut shown: Option<Lang> = None;
+    for (d, target) in by_key.iter().zip(&targets) {
         let mut word = (false, target.render);
         if target.edit == EditAction::Commit {
             if let Some(w) = expect_words.get(next_word) {
@@ -304,37 +346,46 @@ fn evaluate(
             }
             next_word += 1;
         }
-        report.count(*d, *target, word);
+        if let Some(d) = d {
+            report.count(*d, *target, word);
+            report.count_display(*d, *target, &mut shown);
+        }
     }
     Ok(report)
 }
 
-/// Every word-level `Decision` in the in-memory log.
-fn word_decisions(mem: &MemStorage) -> io::Result<Vec<Decided>> {
+/// Number of key records and every word-level `Decision` of the in-memory
+/// log, each with the index of the key that triggered it.
+pub(crate) fn word_decisions(mem: &MemStorage) -> io::Result<(usize, Vec<(usize, Decided)>)> {
     let source = mem.event_source()?;
+    let mut keys = 0usize;
     let mut out = Vec::new();
     for id in source.segments()? {
         for raw in source.read_segment(&id)? {
             let record: Record = serde_json::from_slice(&raw?).map_err(io::Error::other)?;
-            if let Event::Decision {
-                target: Target::Word(_),
-                edit: Some(edit),
-                chosen,
-                p_vi,
-                at_key,
-                ..
-            } = record.event
-            {
-                out.push(Decided {
-                    edit,
+            match record.event {
+                Event::Key { .. } => keys += 1,
+                Event::Decision {
+                    target: Target::Word(_),
+                    edit: Some(edit),
                     chosen,
                     p_vi,
                     at_key,
-                });
+                    ..
+                } if keys > 0 => out.push((
+                    keys - 1,
+                    Decided {
+                        edit,
+                        chosen,
+                        p_vi,
+                        at_key,
+                    },
+                )),
+                _ => {}
             }
         }
     }
-    Ok(out)
+    Ok((keys, out))
 }
 
 #[cfg(test)]

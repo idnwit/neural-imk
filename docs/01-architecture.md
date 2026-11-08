@@ -41,7 +41,7 @@ Mỗi phím đi qua một vòng cố định: engine dựng `Observation`, model
     |
     v
 +--------------+ hit   +--------------------+
-| HotkeyDetect | ----> | manual_switch      | --> EngineOutput { consumed, replace?, marked?, mode }
+| HotkeyDetect | ----> | manual_switch      | --> EngineOutput { consumed, marked?, mode }
 +--------------+       +--------------------+
     | no hit
     v
@@ -52,12 +52,12 @@ Mỗi phím đi qua một vòng cố định: engine dựng `Observation`, model
                                    +-------------------+                        |
                                                                            Action v
 +-----------------------------------------------------------------------------------+
-| apply: Append -> push + Telex + marked | Pop -> pop | Commit -> commit_word | Pass   |
+| apply: Append -> push + Telex + marked | Pop -> pop | Commit -> pending | Pass     |
 +-----------------------------------------------------------------------------------+
     |                                   |
     v                                   v
  EngineOutput { consumed, commit,     Decision / WordCommit / Label records,
-   marked, mode, overlay, replace }   Example -> trainer
+   marked, mode, overlay }            Example -> trainer
 ```
 
 Hotkey đứng trước model và không bao giờ vào `Observation`; mọi lựa chọn còn lại do model quyết định, engine chỉ che action vô nghĩa bằng `ActionMask`.
@@ -96,14 +96,14 @@ Tầng trên được bỏ qua tầng giữa (ví dụ `nimk-synth` dùng thẳn
 | Crate | Loại | Trách nhiệm | Dependency nội bộ (`Cargo.toml`) |
 | --- | --- | --- | --- |
 | `nimk-types` | lib | `Lang`, `KeyEvent`, `AppContext`, `CaretRel`, hợp đồng action (`Observation`, `Action`, `EditAction`, `ActionMask`, `ActionScores`, `Example`), schema sự kiện | — |
-| `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore`; `PlainFsStorage`, `MemStorage`; chỉ biết bytes | — |
+| `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore`; `PlainFsStorage`, `MemStorage`, `LayeredStorage`, `ReadOnlyDirBlobs`; chỉ biết bytes | — |
 | `nimk-telex` | lib | `transform`, `encode`, `is_valid_syllable`; Telex là công cụ, không phải luật | `nimk-types` |
 | `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `build_action`, `decide`, `encode`; `LinearAction`, `GruAction` (backend `burn`) | `nimk-types` |
-| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, logger, sửa ngược | `types`, `storage`, `telex`, `policy` |
+| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, logger, từ pending ([02](02-keyboard-io.md)) | `types`, `storage`, `telex`, `policy` |
 | `nimk-ffi` | staticlib | C ABI cho Swift; crate duy nhất có `extern "C"`/`unsafe` | `types`, `engine`, `storage` |
 | `nimk-replay` | bin + lib | Replay log qua model, xuất metric ([05](05-storage-and-log.md)) | `types`, `storage`, `policy`, `engine` |
 | `nimk-synth` | lib + bin | Dữ liệu gõ synthetic, `write_log`, `pretrain` ([ADR 0006](adr/0006-synthetic-pretraining.md), [ADR 0007](adr/0007-neural-action-model.md)) | `types`, `telex`, `storage`, `policy`, `engine` |
-| `macos/NeuralIMK` | Swift | IMK shim, overlay, status item, `ReplaceCompat` ([09](09-app-compat.md)) | `libnimk_ffi.a` qua header |
+| `macos/NeuralIMK` | Swift | IMK shim, overlay, status item, `Debouncer` ([09](09-app-compat.md)) | `libnimk_ffi.a` qua header |
 
 Quy tắc tầng được khoá bằng `arch-lint.toml` và chạy trong `make check`; bảng đầy đủ ở [08](08-coding-standard.md#contract-arch-lint).
 
@@ -114,10 +114,10 @@ Năm module nội bộ độc lập với nhau; `engine.rs` nối chúng, và ha
 ```text
                       +-------------------------------------------+
                       |                engine.rs                  |
-                      | Engine, EngineOutput, Replace, Overlay    |
+                      | Engine, EngineOutput, Overlay             |
                       +-------------------------------------------+
                         |  engine/flow.rs     engine/switch.rs  |
-                        |  (per-key loop)     (hotkey + replace) |
+                        |  (per-key loop)     (hotkey, flip)     |
                         v        v         v          v         v
                   +--------+ +-------+ +--------+ +--------+ +--------+
                   |composer| |hotkey | |labeler | |trainer | |logger  |
@@ -135,7 +135,7 @@ Module con không `use` nhau (`eng-*-independent`); thread chỉ được tạo 
 | `trainer` (+ `trainer/tests.rs`) | Replay buffer, cửa sổ correction, snapshot; nền hoặc inline |
 | `logger` | Serialize `Record` vào `EventSink` |
 | `engine/flow.rs` | Vòng lặp mỗi phím: `Observation`, gọi model, áp action, commit, nhãn |
-| `engine/switch.rs` | `manual_switch`: hotkey theo thời điểm, sinh `Replace` |
+| `engine/switch.rs` | `manual_switch`: hotkey theo thời điểm, lật từ pending |
 
 ## API công khai của `nimk-engine`
 
@@ -160,6 +160,11 @@ impl Engine {
         render_weight: f32,
     ) -> EngineOutput;
     pub fn commit_pending(&mut self, timestamp: f64) -> EngineOutput;
+    pub fn switch_model(&mut self, kind: ModelKind, timestamp: f64) -> EngineOutput;
+    pub fn model_kind(&self) -> ModelKind;
+    pub fn has_checkpoint(&self, kind: ModelKind) -> bool;
+    pub fn checkpoint_source(&self, kind: ModelKind) -> CheckpointSource; // User | Bundled | None
+    pub fn reset_model(&mut self, timestamp: f64) -> EngineOutput;
     pub fn inject_label(&mut self, target: Target, label: Lang, weight: f32, source: LabelSource);
     pub fn mode(&self) -> Lang;
     pub fn policy_id(&self) -> Arc<str>;
@@ -173,12 +178,6 @@ pub struct EngineOutput {
     pub marked: Option<String>,
     pub mode: Option<Lang>,
     pub overlay: Option<Overlay>,
-    pub replace: Option<Replace>,
-}
-
-pub struct Replace {
-    pub delete_before: u32,
-    pub text: String,
 }
 
 pub struct SessionInfo {
@@ -190,12 +189,13 @@ pub struct SessionInfo {
 
 | Hành vi | Nội dung |
 | --- | --- |
-| `new` không bao giờ lỗi | Đọc `model/<kind>/latest` (`linear_action` hoặc `gru_action`); thiếu hoặc hỏng → model mới từ `cfg.policy` (mặc định `LinearAction`); sink lỗi → null sink; cả hai báo qua `take_diagnostics` |
+| `new` không bao giờ lỗi | Đọc blob `settings/model` (nếu hợp lệ thì ghi đè `cfg.policy`), rồi `model/<kind>/latest` (`linear_action` hoặc `gru_action`); thiếu hoặc hỏng → model mới từ `cfg.policy` (mặc định `GruAction`); sink lỗi → null sink; cả hai báo qua `take_diagnostics` |
 | `with_model` | Không nạp snapshot; dùng cho benchmark, pretrain và test |
 | `new` ghi `session_start` | Record đầu tiên chứa `EngineConfig` dạng JSON để replay dựng lại |
 | `on_key` không panic | Lỗi nội bộ → `consumed = false`, phím tới app |
 | `teach` | Như `on_key` nhưng áp `target` thay cho quyết định của model và xếp một `Example`; model không được gọi, `Decision.p_vi = None`. Edit bị mask chặn rơi về `Pass`; hotkey vẫn được nhận. Dùng cho pretrain ([04](04-engine-ml.md)) |
 | `on_context` | Đổi app hoặc `field_id` → commit từ đang gõ (`Boundary::External`), id focus mới, model chọn prior |
+| `switch_model` | Commit từ đang gõ như `commit_pending`, chốt nhãn treo, lưu model hiện tại vào checkpoint riêng, nạp `model/<kind>/latest` của model mới (thiếu/hỏng → model mới + diagnostic), publish snapshot, ghi `settings/model`, log `model_switch`. Cùng kind chỉ commit. Chạy được với cả `Background` và `Inline` ([04](04-engine-ml.md#chọn-model)) |
 | `shutdown` | Chốt nhãn còn treo, huấn luyện nốt phần dư của `teach`, flush log, lưu snapshot; lỗi duy nhất là `EngineError::Storage` |
 
 `mode()` là sticky mode: mode mà từ kế tiếp bắt đầu, không phải rendering đang hiện của từ dở.
@@ -217,31 +217,58 @@ Nhờ vậy cùng log + cùng config cho ra cùng quyết định khi replay.
 
 ## Hợp đồng C ABI
 
-`nimk-ffi` xuất 9 hàm; header sinh bằng `make header` (cbindgen) ra `target/nimk_ffi.h`, bản dưới đây suy ra từ `exports.rs` và `abi.rs`.
+`nimk-ffi` xuất 13 hàm; header sinh bằng `make header` (cbindgen) ra `target/nimk_ffi.h`, bản dưới đây suy ra từ `exports.rs` và `abi.rs`.
 
 ```c
 // minh hoạ từ exports.rs; header thật do cbindgen sinh
-NimkCore   *nimk_new(const char *data_dir, const char *app_version);
+NimkCore   *nimk_new(const char *data_dir, const char *models_dir, const char *app_version);
 void        nimk_free(NimkCore *core);
 bool        nimk_shutdown(NimkCore *core);
 void        nimk_context(NimkCore *core, const NimkCtx *ctx, NimkOut *out);
 void        nimk_key(NimkCore *core, const NimkKey *key, NimkOut *out);
 void        nimk_commit_pending(NimkCore *core, double timestamp, NimkOut *out);
+bool        nimk_set_model(NimkCore *core, uint8_t kind, double timestamp, NimkOut *out);
+uint8_t     nimk_model(const NimkCore *core);
+bool        nimk_reset_model(NimkCore *core, double timestamp, NimkOut *out);
+uint8_t     nimk_checkpoint_source(const NimkCore *core, uint8_t kind);
 uint8_t     nimk_mode(const NimkCore *core);
 const char *nimk_policy_id(NimkCore *core);
 const char *nimk_take_diagnostics(NimkCore *core);
 ```
 
-`NimkOut` mirror `EngineOutput`; `replace_delete` và `replace_text` mang `Replace`.
+`NIMK_MODEL_LINEAR` = 0 và `NIMK_MODEL_GRU` = 1 là mã `kind`; `nimk_set_model` trả `false` (và để `out` ở dạng pass-through) khi `kind` lạ hoặc core null.
+`nimk_checkpoint_source` trả `NIMK_CHECKPOINT_NONE` (0), `NIMK_CHECKPOINT_BUNDLED` (1) hoặc `NIMK_CHECKPOINT_USER` (2); `nimk_reset_model` xoá checkpoint của người dùng và nạp lại model gốc.
+
+`NimkOut` mirror `EngineOutput`. Hợp đồng đầu ra: Swift áp `commit` (`insertText`), rồi `marked` (`setMarkedText`); từ model kết thúc ở lại `marked` (từ + ranh giới) cho tới khi từ kế tiếp bắt đầu, lúc đó `commit` mang từ pending ([ADR 0011](adr/0011-pending-word-commit.md)).
 
 | Trường `NimkOut` | Nghĩa |
 | --- | --- |
 | `consumed` | `false` → trả phím nguyên vẹn cho app |
-| `replace_delete`, `replace_text` | Số UTF-16 unit trước con trỏ cần thay và text thay; áp trước `commit`/`marked`; `replace_text = null` là không thay |
-| `commit`, `marked` | Null = không đổi; `marked = ""` xoá preedit |
+| `commit`, `marked` | Null = không đổi; `marked = ""` xoá preedit; `commit` là từ đang gõ hoặc từ pending cộng ranh giới |
 | `mode` | `NIMK_MODE_EN` (0), `NIMK_MODE_VI` (1), `NIMK_MODE_UNCHANGED` (255) |
 | `overlay` | `NIMK_OVERLAY_NONE` (0), `NIMK_OVERLAY_AUTO` (1), `NIMK_OVERLAY_MANUAL` (2) |
 
 Quy tắc FFI: mỗi hàm bọc `catch_unwind`, lỗi → `NimkOut::pass_through()` (`consumed = false`); chuỗi trong `NimkOut` sống đến lần gọi kế.
 `nimk_new` trả null khi engine không dựng được; mọi hàm khác chấp nhận null và cho phím đi qua. Panic ghi vào diagnostics (tối đa 256 dòng).
 Không mở được data dir thì dùng `MemStorage` và báo qua diagnostics.
+`data_dir` do Swift lấy từ SDK (không hard-code); `models_dir` là thư mục model đóng gói trong app, null hoặc thiếu thì chạy không có model gốc và báo qua diagnostics ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
+
+### Phân tầng storage
+
+`nimk_new` dựng `LayeredStorage(PlainFsStorage(data_dir), ReadOnlyDirBlobs(models_dir))`; engine vẫn chỉ cầm `Arc<dyn Storage>`.
+
+```text
+ Swift: FileManager                     Swift: Bundle.main.resourceURL
+ Application Support/<bundle id>        Contents/Resources/models
+        | data_dir                             | models_dir
+        v                                      v
++-----------------------------------------------------------+
+| LayeredStorage                                            |
+|  events    --> PlainFsStorage (user)                      |
+|  put/delete--> PlainFsStorage (user)                      |
+|  get       --> user, if absent --> ReadOnlyDirBlobs       |
+|  list      --> union of both, sorted                      |
++-----------------------------------------------------------+
+```
+
+Checkpoint học thêm luôn ghi vào tầng người dùng và che bản gốc; xoá nó đưa model về bản gốc.

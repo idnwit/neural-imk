@@ -23,12 +23,14 @@ mod generate;
 mod keymap;
 mod log;
 mod pretrain;
+mod probe;
 
 pub use corpus::Corpus;
 pub use eval_report::{EvalReport, POS_BUCKETS};
-pub use generate::{MixProfile, Script, ScriptWord, SynthConfig, generate};
+pub use generate::{MixProfile, Script, ScriptWord, SynthConfig, generate, script_of};
 pub use log::write_log;
-pub use pretrain::{PretrainOptions, PretrainReport, pretrain};
+pub use pretrain::{PretrainOptions, PretrainReport, evaluate_snapshot, held_out, pretrain};
+pub use probe::{ProbeResult, probe_word};
 
 /// Bundle id used for every synthetic `Context` event.
 pub const SYNTHETIC_BUNDLE_ID: &str = "synthetic";

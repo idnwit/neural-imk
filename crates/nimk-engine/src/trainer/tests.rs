@@ -56,6 +56,9 @@ impl BlobStore for NoStorage {
     fn list(&self, _p: &str) -> io::Result<Vec<String>> {
         Ok(Vec::new())
     }
+    fn delete(&self, _k: &str) -> io::Result<bool> {
+        Ok(false)
+    }
 }
 impl Storage for NoStorage {
     fn event_sink(&self, _s: &str) -> io::Result<Box<dyn EventSink>> {

@@ -59,9 +59,9 @@ fn valid_syllables() -> Vec<String> {
     let mut out = Vec::new();
     for ini in INITIALS {
         for group in GROUPS {
-            // `g` + `i...` re-parses as `gi`; `uơ` needs `qu` (documented gap).
+            // `g` + `i...` re-parses as `gi`; `uơ` is typeable after h kh th qu only.
             if (ini == "g" && group.starts_with('i') && group.chars().count() > 1)
-                || (group == "uơ" && ini != "qu")
+                || (group == "uơ" && !["qu", "h", "kh", "th"].contains(&ini))
             {
                 continue;
             }
@@ -143,4 +143,23 @@ fn every_prefix_of_a_valid_syllable_is_viable() {
             );
         }
     }
+}
+
+#[test]
+fn every_variant_types_the_word() {
+    let mut with_variant = 0;
+    for w in valid_syllables() {
+        for form in [w.clone(), title(&w), w.to_uppercase()] {
+            let variants = nimk_telex::encode_variants(&form);
+            assert!(variants.len() <= 8);
+            for raw in variants {
+                with_variant += 1;
+                let t = transform(&raw);
+                assert_eq!(t.text, form, "variant {raw}");
+                assert!(t.valid_vi);
+                assert_ne!(raw, encode(&form));
+            }
+        }
+    }
+    assert!(with_variant > 20_000, "only {with_variant} variants");
 }

@@ -31,6 +31,12 @@ pub struct MixProfile {
     /// Per-word-gap probability of a Cmd+key shortcut between words (target
     /// `Pass`). 0 disables.
     pub p_shortcut: f32,
+    /// Probability a Vietnamese word is typed in a random alternative key
+    /// order ([`nimk_telex::encode_variants`]: tone after the vowel, late
+    /// marks such as `theme` for thêm, lone `w`, late `d`) instead of the
+    /// canonical one. The RNG is only consulted for words that have a
+    /// variant. 0 disables.
+    pub p_variant: f32,
 }
 
 impl Default for MixProfile {
@@ -42,6 +48,7 @@ impl Default for MixProfile {
             p_ambiguous: 0.4,
             p_typo: 0.0,
             p_shortcut: 0.0,
+            p_variant: 0.5,
         }
     }
 }
@@ -126,6 +133,38 @@ pub fn generate(cfg: &SynthConfig, corpus: &Corpus) -> Vec<Script> {
     (0..cfg.sessions).map(|n| session(cfg, corpus, n)).collect()
 }
 
+/// A hand-written script: `words` are `(language, text, raw keys)`, typed
+/// as one sentence with Space after each word (the last one included, so
+/// every word gets its `Commit` key). For probes and focused evaluations.
+#[must_use]
+pub fn script_of(words: &[(Lang, &str, &str)]) -> Script {
+    let mut w = Writer {
+        rng: Rng::new(0),
+        t: START_SECS,
+        interval: 0.12,
+        keys: Vec::new(),
+        words: Vec::new(),
+        targets: Vec::new(),
+        last_lang: Lang::Vi,
+    };
+    for &(lang, text, raw) in words {
+        w.type_word(raw, lang, 0.0);
+        w.words.push(ScriptWord {
+            word_id: w.words.len() as u64,
+            lang,
+            text: text.to_owned(),
+            raw: raw.to_owned(),
+        });
+        w.key(' ', 0, EditAction::Commit);
+    }
+    Script {
+        session: "synth-script".to_owned(),
+        keys: w.keys,
+        words: w.words,
+        targets: w.targets,
+    }
+}
+
 /// Builds session `n` with its own RNG stream.
 fn session(cfg: &SynthConfig, corpus: &Corpus, n: usize) -> Script {
     let stream = (n as u64)
@@ -191,7 +230,7 @@ impl Writer {
             };
             let text = if i == 0 { capitalize(&word) } else { word };
             let raw = match lang {
-                Lang::Vi => nimk_telex::encode(&text),
+                Lang::Vi => self.encode_vi(&text, mix.p_variant),
                 Lang::En => text.clone(),
             };
             self.type_word(&raw, lang, mix.p_typo);
@@ -231,6 +270,19 @@ impl Writer {
         self.key(if paragraph { '\r' } else { ' ' }, 0, EditAction::Pass);
         // Thinking pause before the next sentence.
         self.t += self.interval * 3.0 * self.rng.unit();
+    }
+
+    /// Telex keys for a Vietnamese word: the canonical form, or with
+    /// probability `p_variant` a random variant when it has any.
+    fn encode_vi(&mut self, text: &str, p_variant: f32) -> String {
+        let variants = nimk_telex::encode_variants(text);
+        if !variants.is_empty() && self.rng.chance(p_variant) {
+            let i = self.rng.below(variants.len());
+            if let Some(v) = variants.get(i) {
+                return v.clone();
+            }
+        }
+        nimk_telex::encode(text)
     }
 
     /// Picks a word in `lang`, falling back to the other language if empty.

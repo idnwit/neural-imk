@@ -35,7 +35,7 @@ fn smoke(kind: ModelKind) {
     // Every character typed either was consumed into the buffer or went to
     // the app: nothing may be dropped silently (consumed => marked text).
     for o in &outs {
-        if o.consumed && o.replace.is_none() && o.mode.is_none() {
+        if o.consumed && o.mode.is_none() {
             assert!(
                 o.marked.is_some(),
                 "{kind:?}: consumed key without marked text"

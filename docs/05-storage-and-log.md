@@ -28,7 +28,11 @@ pub trait BlobStore: Send + Sync {
     fn put(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
     fn get(&self, key: &str) -> io::Result<Option<Vec<u8>>>;
     fn list(&self, prefix: &str) -> io::Result<Vec<String>>;
+    fn delete(&self, key: &str) -> io::Result<bool>;
+    fn origin(&self, key: &str) -> io::Result<Option<BlobOrigin>>; // mặc định: User nếu có
 }
+
+pub enum BlobOrigin { User, Default }
 
 pub trait Storage: Send + Sync {
     fn event_sink(&self, session: &str) -> io::Result<Box<dyn EventSink>>;
@@ -46,6 +50,8 @@ pub trait Storage: Send + Sync {
 | `put` | Atomic: reader thấy bản cũ hoặc bản mới, không bao giờ lẫn (tmp + rename) |
 | `get` | `Ok(None)` khi không có key |
 | `list` | Key bắt đầu bằng `prefix`, đã sắp xếp |
+| `delete` | `Ok(true)` nếu đã xoá, `Ok(false)` nếu không có; store chỉ đọc trả `Unsupported` |
+| `origin` | Tầng mà `get` sẽ đọc: `User` hay `Default` (bản đóng gói); `None` nếu không có |
 | Kiểm tra đầu vào | Chung cho mọi backend: `session` đổi ký tự lạ thành `_` (rỗng → lỗi); `SegmentId` phải là `[A-Za-z0-9_-]+`; record chứa `\n` → lỗi; blob key gồm các đoạn nối bằng `/`, mỗi đoạn không rỗng, không bắt đầu bằng `.`, không chứa `\` hay NUL. Vi phạm → `io::ErrorKind::InvalidInput` |
 
 ## Implementation
@@ -54,18 +60,32 @@ pub trait Storage: Send + Sync {
 | --- | --- | --- |
 | `PlainFsStorage::open(root)` | IME thật | Tạo `root/events` và `root/blobs` nếu chưa có |
 | `MemStorage::new()` | Unit test, replay | Clone dùng chung dữ liệu |
+| `ReadOnlyDirBlobs::open(dir)` | Model đóng gói trong app | `BlobStore` chỉ đọc trên thư mục có sẵn; `put`/`delete` → `Unsupported`; cùng luật blob key |
+| `LayeredStorage::new(user, defaults)` | IME thật | Sự kiện chỉ vào `user`; `get` đọc `user` rồi `defaults`; `put`/`delete` chỉ tác động `user`; `list` là hợp đã sắp xếp, bỏ trùng; `user_blobs()` cho tầng người dùng riêng |
 | `EncryptedStorage<S: Storage>` | Sau PoC | Decorator mã hoá từng record/blob rồi chuyển cho `S` |
 
-Layout của `PlainFsStorage` với root `~/Library/Application Support/NeuralIMK/`:
+Data dir là `<Application Support>/<bundle id>`, do `FileManager.url(for: .applicationSupportDirectory, ...)` trả về rồi nối `Bundle.main.bundleIdentifier`; không đường dẫn nào được viết cứng.
+Layout của `PlainFsStorage` với root đó:
 
 ```text
-~/Library/Application Support/NeuralIMK/
+<Application Support>/<bundle id>/
   events/
     2026-11-08_<session>.jsonl   # one segment per day and session, one Record per line
     2026-11-09_<session>.jsonl
   blobs/
-    model/<kind>/latest     # model snapshot, <kind> = linear_action | gru_action
+    model/<kind>/latest     # learned snapshot, <kind> = linear_action | gru_action
+    settings/model          # {"model":"linear_action"}, model chọn trên GUI
 ```
+
+Model gốc nằm trong app, đọc qua `ReadOnlyDirBlobs`:
+
+```text
+NeuralIMK.app/Contents/Resources/models/
+  model/<kind>/latest        # pretrained on synthetic data (make models)
+```
+
+Log chẩn đoán là `<Library>/Logs/<bundle id>.log` (`FileManager` `.libraryDirectory`), đồng thời đi qua `os.Logger(subsystem: <bundle id>)`.
+`LayeredStorage` ghi đè lên key `model/<kind>/latest` ở tầng người dùng khi học online; xoá key đó (`Engine::reset_model`) trả về model gốc.
 
 Thêm mã hoá chỉ là bọc thêm một lớp; engine vẫn cầm `Arc<dyn Storage>`.
 
@@ -94,13 +114,14 @@ Mỗi dòng log là một `Record` JSON; trường chung `v`, `seq`, `t`, `sessi
 | `type` | Trường riêng | Ghi khi |
 | --- | --- | --- |
 | `session_start` | `wall_unix_ms`, `app_version`, `config_json` (`EngineConfig` dạng JSON), `policy_id` | Record đầu tiên của mỗi session |
-| `context` | `bundle_id`, `field_id`, `caret` (`{x, y}` hoặc `null`) | `activateServer`, đổi app/ô nhập, phím đầu của từ |
+| `context` | `bundle_id`, `field_id`, `caret` (`{x, y}` hoặc `null`) | `activateServer` (sau debounce 120 ms), đổi app/ô nhập, phím đầu của từ |
 | `key` | `key` (`KeyEvent`), `word_id` (`u64` hoặc `null`) | Mỗi phím IME nhận |
-| `decision` | `target`, `at_key` (số phím của từ sau action, 0 cho prior), `policy_id`, `p_vi` (`null` khi `teach` hoặc giá trị không hữu hạn), `rule` (luôn `null` ở log mới; `invalid_vi`/`no_telex` chỉ có trong log cũ), `chosen`, `edit` | Mỗi lần model được hỏi (mỗi phím không phải hotkey, và prior lúc focus) |
+| `decision` | `target`, `at_key` (số phím của từ sau action, 0 cho prior), `policy_id`, `p_vi` (`null` khi `teach` hoặc giá trị không hữu hạn), `rule` (luôn `null` ở log mới; `invalid_vi`/`no_telex` chỉ có trong log cũ), `chosen`, `edit` | Mỗi lần model được hỏi: phím không phải hotkey mà có từ đang gõ hoặc là chữ cái, và prior lúc focus. Phím không phải chữ khi buffer rỗng, và ranh giới nối vào từ pending, không gọi model nên không có `decision` |
 | `manual_switch` | `scope` (`in_word`/`after_commit`/`before_typing`), `word_id`, `to` | Hotkey (double Shift hoặc Ctrl+Space) |
-| `word_commit` | `word_id`, `raw`, `vi`, `en`, `mode`, `boundary` | Commit |
-| `label` | `target`, `label`, `weight`, `source` (`implicit`/`correction`) | Nhãn chốt; sửa ngược muộn ghi thêm nhãn `correction` mới cho cùng `target` |
+| `word_commit` | `word_id`, `raw`, `vi`, `en`, `mode`, `boundary` (phím kết thúc từ) | Commit thật: khi từ pending được chèn vào app, không phải lúc model kết thúc từ; Backspace quay lại từ thì không ghi |
+| `label` | `target`, `label`, `weight`, `source` (`implicit`/`correction`) | Nhãn chốt; từ pending bị lật ghi `correction` ngay lúc commit thật; nhãn `correction` muộn hơn vẫn ghi đè nhãn ngầm đã chốt |
 | `model_update` | `policy_id`, `n_samples`, `loss` | Trainer cập nhật |
+| `model_switch` | `from`, `to` (policy id, ví dụ `linear_action@v3`) | Người dùng đổi model; replay bỏ qua record này |
 
 `target` là `Target` tag `kind`/`id`: `{"kind":"word","id":7}` hoặc `{"kind":"focus","id":2}`.
 `edit` là `EditAction` dạng `snake_case` (`append`, `pop`, `commit`, `pass`); trường có `#[serde(default)]` nên log cũ không có nó vẫn đọc được, và prior lúc focus ghi `null`.

@@ -121,7 +121,7 @@ message = "nimk-engine must not depend on the FFI layer or touch files directly 
 name = "ffi-thin"
 scope = "ffi"
 deny = ["nimk_policy::**", "nimk_telex::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
-message = "nimk-ffi only adapts nimk-engine (+ constructs PlainFsStorage) to C; no policy, Telex or file logic."
+message = "nimk-ffi only adapts nimk-engine (+ builds the layered storage) to C; no policy, Telex or file logic."
 
 [[restrict-use]]
 name = "replay-not-ffi"

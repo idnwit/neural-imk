@@ -7,8 +7,8 @@ use nimk_types::{
     RECENT_WINDOW, Target,
 };
 
-use super::{Engine, EngineOutput, LastWord, Overlay, TelexFlags};
-use crate::composer::{boundary_of, printable_char};
+use super::{Engine, EngineOutput, Overlay, PendingWord, TelexFlags};
+use crate::composer::{Committed, boundary_of, printable_char};
 use crate::labeler::{FinalLabel, Step};
 use crate::trainer::TrainerOut;
 
@@ -16,8 +16,19 @@ use crate::trainer::TrainerOut;
 /// recording instead of growing without bound).
 const MAX_STEPS: usize = 128;
 
-/// Most boundary characters remembered after a committed word.
+/// Most boundary characters kept after a pending word; more commit it.
 const MAX_BOUNDARY: usize = 16;
+
+/// Whether `c` may join a pending word's boundary: space and sentence
+/// punctuation. Anything else printable commits the pending word.
+fn is_boundary_char(c: char) -> bool {
+    c == ' '
+        || matches!(
+            c,
+            '.' | ',' | '?' | '!' | ':' | ';' | '\'' | '"' | '(' | ')' | '\u{2026}'
+        )
+        || matches!(c, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
+}
 
 /// Teacher-forced action for [`Engine::teach`].
 #[derive(Debug, Clone, Copy)]
@@ -59,15 +70,111 @@ impl Engine {
         if key.kind == KeyKind::FlagsChanged {
             return out;
         }
+        if self.pending.is_some() && self.pending_key(key, t, &mut out) {
+            self.note_key(key);
+            return out;
+        }
+        if !mask.append && self.composer.is_empty() {
+            // Structural mask: only `Pass` is legal, so the model is not
+            // consulted and the key goes straight to the app.
+            self.note_key(key);
+            return out;
+        }
         self.model_step(key, mask, t, forced, &mut out);
         out
+    }
+
+    /// A key arrives while a word is pending (ADR 0011). Returns `true`
+    /// when the key was fully handled here; `false` when the pending word
+    /// has been committed and the key continues through the normal flow.
+    fn pending_key(&mut self, key: &KeyEvent, t: f64, out: &mut EngineOutput) -> bool {
+        let printable = printable_char(key);
+        if let Some(c) = printable.filter(|c| is_boundary_char(*c)) {
+            let room = self
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.boundary.chars().count() < MAX_BOUNDARY);
+            if room && let Some(p) = self.pending.as_mut() {
+                p.boundary.push(c);
+                out.consumed = true;
+                out.marked = Some(p.text());
+                return true;
+            }
+        }
+        if printable.is_none()
+            && key.keycode == nimk_types::keycode::BACKSPACE
+            && !key.mods.is_shortcut()
+        {
+            self.pending_backspace(out);
+            return true;
+        }
+        // A letter starts the next word; everything else is passed on.
+        self.finalize_pending(t, out);
+        false
+    }
+
+    /// Backspace over the pending text: drops the last boundary character;
+    /// when that was the last one the word becomes the composing word again
+    /// (so the next Backspace erases a letter).
+    fn pending_backspace(&mut self, out: &mut EngineOutput) {
+        out.consumed = true;
+        let Some(p) = self.pending.as_mut() else {
+            return;
+        };
+        p.boundary.pop();
+        if !p.boundary.is_empty() {
+            out.marked = Some(p.text());
+            return;
+        }
+        let Some(p) = self.pending.take() else {
+            return;
+        };
+        let word = Committed {
+            id: p.id,
+            raw: p.raw,
+            vi: p.vi,
+        };
+        if !self.composer.restore(&word) {
+            // Unreachable by construction (the pending word is always the
+            // latest taken); keep the text rather than lose it.
+            out.commit = Some(match p.lang {
+                Lang::Vi => word.vi,
+                Lang::En => word.raw,
+            });
+            out.marked = Some(String::new());
+            return;
+        }
+        self.shown = p.lang;
+        self.locked = p.locked;
+        self.word_steps = p.steps;
+        // The step of the undone Commit must not be learned.
+        if self
+            .word_steps
+            .last()
+            .is_some_and(|s| s.edit == EditAction::Commit)
+        {
+            self.word_steps.pop();
+        }
+        self.refresh_telex();
+        out.marked = Some(self.composer.rendering(self.shown).to_owned());
+    }
+
+    /// Records a key in the recent window (every non-hotkey key-down).
+    fn note_key(&mut self, key: &KeyEvent) {
+        self.recent.push_back(key.clone());
+        if self.recent.len() > RECENT_WINDOW {
+            self.recent.pop_front();
+        }
     }
 
     /// Structural legality of each edit for `key` (not a language rule).
     fn mask_for(&self, key: &KeyEvent) -> ActionMask {
         let filled = !self.composer.is_empty();
         ActionMask {
-            append: printable_char(key).is_some() && !self.composer.is_full(),
+            // A word starts with a letter; once started it may take any
+            // printable key (the model decides when it ends).
+            append: printable_char(key).is_some_and(|c| filled || c.is_alphabetic())
+                && !self.composer.is_full(),
             pop: filled,
             commit: filled,
         }
@@ -235,7 +342,6 @@ impl Engine {
                     self.composer.push(c);
                     self.refresh_telex();
                 }
-                self.last_word = None;
                 out.consumed = true;
                 out.marked = Some(self.composer.rendering(self.shown).to_owned());
             }
@@ -251,19 +357,22 @@ impl Engine {
                 }
             }
             EditAction::Commit => {
-                let committed = self.commit_word(boundary_of(key), t, out);
-                self.last_word = match (committed, printable_char(key)) {
-                    (Some(mut w), Some(c)) => {
-                        w.boundary.push(c);
-                        Some(w)
+                // Space and sentence punctuation keep the word pending as
+                // marked text; any other ender commits it and passes on.
+                self.end_word(boundary_of(key), out);
+                match printable_char(key).filter(|c| is_boundary_char(*c)) {
+                    Some(c) => {
+                        if let Some(p) = self.pending.as_mut() {
+                            p.boundary.push(c);
+                            out.consumed = true;
+                            out.marked = Some(p.text());
+                        }
                     }
-                    _ => None,
-                };
+                    None => self.finalize_pending(t, out),
+                }
             }
             EditAction::Pass => {
-                if was_empty {
-                    self.note_passed_char(key);
-                } else if prev_shown != self.shown {
+                if !was_empty && prev_shown != self.shown {
                     out.marked = Some(self.composer.rendering(self.shown).to_owned());
                 }
             }
@@ -271,20 +380,7 @@ impl Engine {
         if self.composer.is_empty() {
             self.shown = self.mode;
         }
-        self.recent.push_back(key.clone());
-        if self.recent.len() > RECENT_WINDOW {
-            self.recent.pop_front();
-        }
-    }
-
-    /// A key reached the app with no word in progress: a printable one
-    /// extends the boundary after the last committed word, anything else
-    /// (letters of a new word, Backspace, arrows, shortcuts) forgets it.
-    fn note_passed_char(&mut self, key: &KeyEvent) {
-        match (self.last_word.as_mut(), printable_char(key)) {
-            (Some(w), Some(c)) if w.boundary.chars().count() < MAX_BOUNDARY => w.boundary.push(c),
-            _ => self.last_word = None,
-        }
+        self.note_key(key);
     }
 
     /// Housekeeping on every input event: event clock, implicit label
@@ -326,7 +422,10 @@ impl Engine {
                 edit: None,
             },
         );
+        // The focus prior only moves the mode and the status item: no overlay
+        // (every click would pop one up).
         self.set_sticky(render, out);
+        out.overlay = None;
         self.shown = self.mode;
         let step = Step {
             obs,
@@ -344,50 +443,72 @@ impl Engine {
         }
     }
 
-    /// Commits the current word (if any) in its shown rendering (for a model
-    /// `Commit`, `shown` was just set to the model's fresh decision) and returns
-    /// what the retroactive correction needs to remember about it.
-    pub(super) fn commit_word(
-        &mut self,
-        boundary: Boundary,
-        t: f64,
-        out: &mut EngineOutput,
-    ) -> Option<LastWord> {
+    /// Ends the word being composed: it becomes the pending word in its
+    /// shown rendering (for a model `Commit`, `shown` was just set to the
+    /// model's fresh decision) and the sticky mode follows it. Nothing is
+    /// logged or labelled until [`Engine::finalize_pending`]. Returns
+    /// whether there was a word.
+    pub(super) fn end_word(&mut self, ended_by: Boundary, out: &mut EngineOutput) -> bool {
         let lang = self.shown;
-        let text = self.composer.rendering(lang).to_owned();
-        let w = self.composer.take()?;
-        self.logger.log(
-            t,
-            Event::WordCommit {
-                word_id: w.id,
-                raw: w.raw.clone(),
-                vi: w.vi.clone(),
-                en: w.raw.clone(),
-                mode: lang,
-                boundary,
-            },
-        );
-        out.commit = Some(text);
-        let correction = self.locked.then_some(lang);
-        let steps = std::mem::take(&mut self.word_steps);
-        let mut finals = Vec::new();
-        self.labeler
-            .on_commit(Target::Word(w.id), steps, lang, t, correction, &mut finals);
-        self.emit_labels(t, finals);
-        self.prev_langs.insert(0, lang);
-        self.prev_langs.truncate(3);
-        self.committed_since_focus = true;
-        self.set_sticky(lang, out);
-        self.reset_word();
-        self.last_word = None;
-        self.drain_trainer(t);
-        Some(LastWord {
+        let Some(w) = self.composer.take() else {
+            return false;
+        };
+        self.pending = Some(PendingWord {
             id: w.id,
             raw: w.raw,
             vi: w.vi,
             lang,
+            locked: self.locked,
+            ended_by,
             boundary: String::new(),
-        })
+            steps: std::mem::take(&mut self.word_steps),
+        });
+        self.set_sticky(lang, out);
+        self.reset_word();
+        true
+    }
+
+    /// Commits the pending word for real: `insertText` of word plus
+    /// boundary, `WordCommit` record and label bookkeeping.
+    pub(super) fn finalize_pending(&mut self, t: f64, out: &mut EngineOutput) {
+        let Some(p) = self.pending.take() else {
+            return;
+        };
+        let text = p.text();
+        self.logger.log(
+            t,
+            Event::WordCommit {
+                word_id: p.id,
+                raw: p.raw.clone(),
+                vi: p.vi.clone(),
+                en: p.raw.clone(),
+                mode: p.lang,
+                boundary: p.ended_by,
+            },
+        );
+        out.commit = Some(text);
+        let correction = p.locked.then_some(p.lang);
+        let mut finals = Vec::new();
+        self.labeler.on_commit(
+            Target::Word(p.id),
+            p.steps,
+            p.lang,
+            t,
+            correction,
+            &mut finals,
+        );
+        self.emit_labels(t, finals);
+        self.prev_langs.insert(0, p.lang);
+        self.prev_langs.truncate(3);
+        self.committed_since_focus = true;
+        self.drain_trainer(t);
+    }
+
+    /// Ends the word being composed (if any) and commits it, and any
+    /// pending word, for real.
+    pub(super) fn commit_word(&mut self, boundary: Boundary, t: f64, out: &mut EngineOutput) {
+        self.end_word(boundary, out);
+        self.finalize_pending(t, out);
     }
 
     /// Hands the queued teacher-forced examples to the trainer as one batch.

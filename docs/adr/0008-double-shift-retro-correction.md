@@ -1,6 +1,6 @@
 # 0008. Nháy Shift hai lần, sửa ngược từ vừa commit
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08 · **Supersedes:** 0003
+> **Trạng thái:** partially superseded by 0011 (phần sửa ngược bằng `replacementRange`; hotkey nháy Shift hai lần vẫn hiệu lực) · **Ngày:** 2026-11-08 · **Supersedes:** 0003
 
 ## Bối cảnh
 

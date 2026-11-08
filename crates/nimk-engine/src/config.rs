@@ -15,12 +15,19 @@ pub enum Threading {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
-    /// Action model to build when no snapshot exists. Default `LinearAction`:
-    /// same accuracy as `GruAction` on synthetic data at ~300x lower latency.
+    /// Action model to build when no snapshot exists. Default `GruAction`: it
+    /// uses left context (e.g. `theme` -> thêm after Vietnamese words), which
+    /// `LinearAction` cannot; score p99 ~170 us.
     pub policy: ModelKind,
     /// Seed for model initialization.
     pub seed: u64,
-    /// Hysteresis: switch away from the current mode only if `|p - 0.5| > margin`.
+    /// Hysteresis: switch away from the current rendering only if
+    /// `|p - 0.5| > margin`. Applies to the mid-word display only; the commit
+    /// uses the fresh decision. Default 0.02 (`nimk-synth eval`, bundled GRU,
+    /// 20 held-out scripts): mid-word accuracy 0.9063 at 0.26 flips/word vs
+    /// 0.9004 at 0.19 for the old 0.2; margin 0 gives 0.9062 at 0.27. The
+    /// commit accuracy (0.9736) does not depend on it. Linear prefers a larger
+    /// margin (0.8611 at 0.2 vs 0.8569 at 0.02), a smaller difference.
     pub switch_margin: f32,
     /// Detect the switch hotkey from key events. Replay sets `false` and
     /// feeds logged labels through `Engine::inject_label` instead.
@@ -66,9 +73,9 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            policy: ModelKind::LinearAction,
+            policy: ModelKind::GruAction,
             seed: 0x5eed,
-            switch_margin: 0.2,
+            switch_margin: 0.02,
             hotkeys: true,
             shift_tap_secs: 0.3,
             double_shift: true,
