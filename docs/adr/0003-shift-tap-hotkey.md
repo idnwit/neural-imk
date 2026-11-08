@@ -1,6 +1,6 @@
 # 0003. Hotkey chuyển = gõ nhanh Shift trái, dự phòng Ctrl+Space
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08
+> **Trạng thái:** superseded by 0008 · **Ngày:** 2026-11-08
 
 ## Bối cảnh
 

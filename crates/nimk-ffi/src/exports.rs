@@ -153,7 +153,7 @@ pub unsafe extern "C" fn nimk_context(core: *mut NimkCore, ctx: *const NimkCtx, 
     }
 }
 
-/// Handles one key. Apply `commit`, then `marked`; return `consumed` from
+/// Handles one key. Apply `replace`, then `commit`, then `marked`; return `consumed` from
 /// `handle(_:client:)`.
 ///
 /// # Safety
@@ -258,6 +258,8 @@ mod tests {
     fn garbage_out() -> NimkOut {
         NimkOut {
             consumed: true,
+            replace_delete: 3,
+            replace_text: c"junk".as_ptr(),
             commit: c"junk".as_ptr(),
             marked: c"junk".as_ptr(),
             mode: 1,
@@ -269,6 +271,8 @@ mod tests {
         assert!(!out.consumed);
         assert!(out.commit.is_null());
         assert!(out.marked.is_null());
+        assert!(out.replace_text.is_null());
+        assert_eq!(out.replace_delete, 0);
         assert_eq!(out.mode, NIMK_MODE_UNCHANGED);
         assert_eq!(out.overlay, NIMK_OVERLAY_NONE);
     }

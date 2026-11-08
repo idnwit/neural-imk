@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Features, Lang};
-
 /// Caret position relative to the focused app window, each axis in `[0, 1]`,
 /// origin at the window's top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -41,38 +39,6 @@ pub struct AppContext {
     pub caret: Option<CaretRel>,
     /// Seconds since boot, same clock as [`crate::KeyEvent::timestamp`].
     pub timestamp: f64,
-}
-
-/// Everything a feature extractor may look at for one decision.
-#[derive(Debug, Clone, Copy)]
-pub struct DecisionCtx<'a> {
-    /// Bundle id of the focused app.
-    pub bundle_id: &'a str,
-    /// Caret position, if known.
-    pub caret: Option<CaretRel>,
-    /// Raw keys of the current word; empty for the prior made on focus.
-    pub raw: &'a str,
-    /// Whether `telex(raw)` is a valid Vietnamese syllable.
-    pub valid_vi: bool,
-    /// Whether `raw` contains any Telex transform key.
-    pub has_telex: bool,
-    /// Modes of up to 3 previous words in this field, most recent first.
-    pub prev_langs: &'a [Lang],
-    /// Mode currently in effect.
-    pub current: Lang,
-    /// Seconds since the last manual switch (`f32::INFINITY` if none).
-    pub secs_since_switch: f32,
-}
-
-/// One labelled training example.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sample {
-    /// Model input.
-    pub features: Features,
-    /// Language the user wanted.
-    pub label: Lang,
-    /// Importance weight: 1.0 for corrections, ~0.3 for implicit labels.
-    pub weight: f32,
 }
 
 #[cfg(test)]

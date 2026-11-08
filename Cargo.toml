@@ -28,3 +28,7 @@ missing_docs = "warn"
 unwrap_used = "deny"
 expect_used = "deny"
 print_stdout = "deny"
+
+# burn is ~40x slower unoptimized; keep dependencies fast in dev/test builds.
+[profile.dev.package."*"]
+opt-level = 3

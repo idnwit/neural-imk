@@ -1,35 +1,39 @@
-//! Determinism, persistence and robustness with the real policies.
+//! Determinism, persistence and robustness.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::sync::Arc;
 
 use common::*;
 use nimk_engine::{Engine, EngineConfig, Threading};
-use nimk_policy::PolicyKind;
+use nimk_policy::ModelKind;
 use nimk_storage::{BlobStore, EventSink, EventSource, MemStorage, Storage};
-use nimk_types::{Event, KeyEvent, KeyKind, LabelSource, Lang, Modifiers, Target, keycode};
+use nimk_types::{
+    ActionScores, Event, KeyEvent, KeyKind, LabelSource, Lang, Modifiers, Observation, Target,
+    keycode,
+};
 
 /// A short session with words, punctuation, hotkeys and focus changes.
 fn scripted(e: &mut Engine) {
     let mut t = 10.0;
     e.on_context(&ctx("com.apple.TextEdit", 1, t));
     type_str(e, "tieengs Vieetj has ", &mut t);
-    shift_tap(e, &mut t);
+    double_shift(e, &mut t);
     type_str(e, "for test, ", &mut t);
     type_str(e, "dduwowngf", &mut t);
-    shift_tap(e, &mut t);
+    double_shift(e, &mut t);
     type_str(e, " ok. ", &mut t);
     e.on_context(&ctx("com.microsoft.VSCode", 2, t + 1.0));
     t += 1.0;
-    shift_tap(e, &mut t);
+    double_shift(e, &mut t);
     type_str(e, "deploy commit ", &mut t);
     e.commit_pending(t + 20.0);
 }
 
-fn run_scripted(kind: PolicyKind) -> Vec<Vec<u8>> {
+fn run_scripted(kind: ModelKind) -> Vec<Vec<u8>> {
     let storage = MemStorage::new();
     let cfg = EngineConfig {
         policy: kind,
@@ -43,11 +47,7 @@ fn run_scripted(kind: PolicyKind) -> Vec<Vec<u8>> {
 
 #[test]
 fn replay_is_byte_identical() {
-    for kind in [
-        PolicyKind::Baseline,
-        PolicyKind::Linear,
-        PolicyKind::TinyMlp,
-    ] {
+    for kind in [ModelKind::LinearAction, ModelKind::GruAction] {
         let a = run_scripted(kind);
         let b = run_scripted(kind);
         assert!(a.len() > 50, "{kind:?}: {} records", a.len());
@@ -58,7 +58,11 @@ fn replay_is_byte_identical() {
 #[test]
 fn log_records_are_sequenced() {
     let storage = MemStorage::new();
-    let mut e = Engine::new(inline_cfg(), Arc::new(storage.clone()), session());
+    let cfg = EngineConfig {
+        policy: ModelKind::LinearAction,
+        ..inline_cfg()
+    };
+    let mut e = Engine::new(cfg, Arc::new(storage.clone()), session());
     scripted(&mut e);
     e.shutdown().unwrap();
     let recs: Vec<nimk_types::Record> = log_bytes(&storage)
@@ -73,6 +77,7 @@ fn log_records_are_sequenced() {
         Event::SessionStart { config_json, .. } => {
             let cfg: EngineConfig = serde_json::from_str(config_json).unwrap();
             assert_eq!(cfg.threading, Threading::Inline);
+            assert_eq!(cfg.policy, ModelKind::LinearAction);
         }
         other => panic!("first record is {other:?}"),
     }
@@ -94,45 +99,38 @@ fn log_records_are_sequenced() {
 
 #[test]
 fn snapshot_round_trip_and_corrupt_fallback() {
+    let key = "model/linear_action/latest";
+    let cfg = || EngineConfig {
+        policy: ModelKind::LinearAction,
+        ..inline_cfg()
+    };
     let storage = MemStorage::new();
     let shared: Arc<dyn Storage> = Arc::new(storage.clone());
-    let mut e = Engine::new(inline_cfg(), Arc::clone(&shared), session());
+    let mut e = Engine::new(cfg(), Arc::clone(&shared), session());
     assert!(e.take_diagnostics().is_empty());
     scripted(&mut e);
     e.shutdown().unwrap();
-    let saved = storage
-        .blobs()
-        .get("model/tiny_mlp/latest")
-        .unwrap()
-        .unwrap();
+    let saved = storage.blobs().get(key).unwrap().unwrap();
     let fresh = {
         let other = MemStorage::new();
-        Engine::new(inline_cfg(), Arc::new(other.clone()), session())
+        Engine::new(cfg(), Arc::new(other.clone()), session())
             .shutdown()
             .unwrap();
-        other.blobs().get("model/tiny_mlp/latest").unwrap().unwrap()
+        other.blobs().get(key).unwrap().unwrap()
     };
     assert_ne!(saved, fresh, "training changed the weights");
 
-    // Reload without new samples: saving again yields the same weights.
-    let mut e2 = Engine::new(inline_cfg(), Arc::clone(&shared), session());
+    let mut e2 = Engine::new(cfg(), Arc::clone(&shared), session());
     assert!(e2.take_diagnostics().is_empty());
     e2.shutdown().unwrap();
     assert_eq!(
-        storage
-            .blobs()
-            .get("model/tiny_mlp/latest")
-            .unwrap()
-            .unwrap(),
+        storage.blobs().get(key).unwrap().unwrap(),
         saved,
         "restored weights"
     );
 
-    storage
-        .blobs()
-        .put("model/tiny_mlp/latest", b"garbage")
-        .unwrap();
-    let mut e3 = Engine::new(inline_cfg(), shared, session());
+    storage.blobs().put(key, b"garbage").unwrap();
+    let mut e3 = Engine::new(cfg(), shared, session());
     let d = e3.take_diagnostics();
     assert!(d.iter().any(|m| m.contains("starting fresh")), "{d:?}");
 }
@@ -154,7 +152,16 @@ impl Storage for NoSink {
 
 #[test]
 fn missing_sink_falls_back_to_null() {
-    let mut e = Engine::new(inline_cfg(), Arc::new(NoSink(MemStorage::new())), session());
+    let learner = FakeLearner {
+        script: const_typist(0.9),
+        seen: Seen::default(),
+    };
+    let mut e = Engine::with_model(
+        inline_cfg(),
+        Arc::new(NoSink(MemStorage::new())),
+        session(),
+        Box::new(learner),
+    );
     let d = e.take_diagnostics();
     assert!(
         d.iter().any(|m| m.contains("event sink unavailable")),
@@ -170,6 +177,7 @@ fn background_threading_works() {
     let storage = MemStorage::new();
     let cfg = EngineConfig {
         threading: Threading::Background,
+        policy: ModelKind::LinearAction,
         ..EngineConfig::default()
     };
     let mut e = Engine::new(cfg, Arc::new(storage.clone()), session());
@@ -181,7 +189,7 @@ fn background_threading_works() {
     assert!(
         storage
             .blobs()
-            .get("model/tiny_mlp/latest")
+            .get("model/linear_action/latest")
             .unwrap()
             .is_some()
     );
@@ -203,8 +211,31 @@ impl Rng {
     }
 }
 
-#[test]
-fn garbage_never_panics() {
+/// Deterministic pseudo-random model: any edit distribution, any p(VI),
+/// sometimes non-finite, to exercise every action on every observation.
+fn chaotic() -> Arc<ScoreFn> {
+    Arc::new(|o: &Observation| {
+        let mut h = DefaultHasher::new();
+        o.raw.hash(&mut h);
+        o.key
+            .as_ref()
+            .map(|k| (k.keycode, k.chars.clone()))
+            .hash(&mut h);
+        let mut r = Rng(h.finish());
+        let mut edit = [0.0f32; 4];
+        for e in &mut edit {
+            *e = (r.below(1000) as f32) / 1000.0;
+        }
+        let p_vi = match r.below(20) {
+            0 => f32::NAN,
+            1 => f32::INFINITY,
+            _ => (r.below(1001) as f32) / 1000.0,
+        };
+        ActionScores { edit, p_vi }
+    })
+}
+
+fn garbage(mut e: Engine, seed: u64, label: &str) {
     const CHARS: &[&str] = &[
         "a", "e", "o", "w", "d", "s", "f", "r", "x", "j", "z", "A", "W", " ", ",", "1", "é",
         "\u{7f}", "\r", "\u{F702}", "", "ab", "\u{0}", "đ", "🙂",
@@ -229,70 +260,94 @@ fn garbage_never_panics() {
         117,
         u16::MAX,
     ];
-    for kind in [PolicyKind::Baseline, PolicyKind::TinyMlp] {
-        for hotkeys in [true, false] {
-            let storage = MemStorage::new();
-            let cfg = EngineConfig {
-                policy: kind,
-                hotkeys,
-                ..inline_cfg()
-            };
-            let mut e = Engine::new(cfg, Arc::new(storage), session());
-            let mut rng = Rng(0xBAD5EED ^ u64::from(hotkeys));
-            let mut t = 0.0f64;
-            for i in 0..5_000u32 {
-                t += match rng.below(50) {
-                    0 => -5.0,
-                    1 => 30.0,
-                    2 => f64::NAN,
-                    _ => 0.05,
+    let mut rng = Rng(seed);
+    let mut t = 0.0f64;
+    for i in 0..20_000u32 {
+        t += match rng.below(50) {
+            0 => -5.0,
+            1 => 30.0,
+            2 => f64::NAN,
+            _ => 0.05,
+        };
+        if !t.is_finite() {
+            t = f64::from(i);
+        }
+        match rng.below(40) {
+            0 => {
+                e.on_context(&ctx(["a", "b", ""][rng.below(3) as usize], rng.below(3), t));
+            }
+            1 => {
+                e.commit_pending(t);
+            }
+            2 => {
+                let target = if rng.below(2) == 0 {
+                    Target::Word(rng.below(100))
+                } else {
+                    Target::Focus(rng.below(5))
                 };
-                if !t.is_finite() {
-                    t = f64::from(i);
+                let lang = if rng.below(2) == 0 {
+                    Lang::Vi
+                } else {
+                    Lang::En
+                };
+                e.inject_label(target, lang, 1.0, LabelSource::Correction);
+            }
+            _ => {
+                let kind = if rng.below(3) == 0 {
+                    KeyKind::FlagsChanged
+                } else {
+                    KeyKind::KeyDown
+                };
+                let mods = if kind == KeyKind::FlagsChanged && rng.below(2) == 0 {
+                    // Make double Shift taps happen now and then.
+                    Modifiers(if rng.below(2) == 0 {
+                        Modifiers::SHIFT
+                    } else {
+                        0
+                    })
+                } else {
+                    Modifiers((rng.next() as u32) & (rng.next() as u32))
+                };
+                let key = KeyEvent {
+                    kind,
+                    keycode: CODES[rng.below(CODES.len() as u64) as usize],
+                    chars: CHARS[rng.below(CHARS.len() as u64) as usize].to_owned(),
+                    mods,
+                    timestamp: t,
+                };
+                let out = e.on_key(&key);
+                if let Some(m) = &out.marked {
+                    assert!(m.chars().count() <= 128);
                 }
-                match rng.below(40) {
-                    0 => {
-                        e.on_context(&ctx(["a", "b", ""][rng.below(3) as usize], rng.below(3), t));
-                    }
-                    1 => {
-                        e.commit_pending(t);
-                    }
-                    2 => {
-                        let target = if rng.below(2) == 0 {
-                            Target::Word(rng.below(100))
-                        } else {
-                            Target::Focus(rng.below(5))
-                        };
-                        let label = if rng.below(2) == 0 {
-                            Lang::Vi
-                        } else {
-                            Lang::En
-                        };
-                        e.inject_label(target, label, 1.0, LabelSource::Correction);
-                    }
-                    _ => {
-                        let kind = if rng.below(4) == 0 {
-                            KeyKind::FlagsChanged
-                        } else {
-                            KeyKind::KeyDown
-                        };
-                        let key = KeyEvent {
-                            kind,
-                            keycode: CODES[rng.below(CODES.len() as u64) as usize],
-                            chars: CHARS[rng.below(CHARS.len() as u64) as usize].to_owned(),
-                            mods: Modifiers((rng.next() as u32) & (rng.next() as u32)),
-                            timestamp: t,
-                        };
-                        let out = e.on_key(&key);
-                        if let Some(m) = &out.marked {
-                            assert!(m.chars().count() <= 64);
-                        }
-                    }
+                if let Some(r) = &out.replace {
+                    assert!(r.delete_before > 0);
                 }
             }
-            let d = e.take_diagnostics();
-            assert!(!d.iter().any(|m| m.contains("panic")), "{kind:?}: {d:?}");
-            e.shutdown().unwrap();
         }
     }
+    let d = e.take_diagnostics();
+    assert!(!d.iter().any(|m| m.contains("panic")), "{label}: {d:?}");
+    e.shutdown().unwrap();
+}
+
+#[test]
+fn garbage_never_panics_with_chaotic_model() {
+    for hotkeys in [true, false] {
+        let cfg = EngineConfig {
+            hotkeys,
+            ..inline_cfg()
+        };
+        let (e, _s, _) = scripted_engine(chaotic(), cfg);
+        garbage(e, 0xBAD5EED ^ u64::from(hotkeys), "chaotic");
+    }
+}
+
+#[test]
+fn garbage_never_panics_with_linear_action() {
+    let cfg = EngineConfig {
+        policy: ModelKind::LinearAction,
+        ..inline_cfg()
+    };
+    let e = Engine::new(cfg, Arc::new(MemStorage::new()), session());
+    garbage(e, 0xFEED, "linear_action");
 }

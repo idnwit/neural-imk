@@ -68,7 +68,7 @@ paths = ["crates/nimk-engine/src/labeler.rs"]
 
 [[scopes]]
 name = "eng-trainer"
-paths = ["crates/nimk-engine/src/trainer.rs"]
+paths = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/trainer/**"]
 
 [[scopes]]
 name = "eng-logger"
@@ -78,7 +78,7 @@ paths = ["crates/nimk-engine/src/logger.rs"]
 [[scopes]]
 name = "engine-no-threads"
 paths = ["crates/nimk-engine/src/**"]
-exclude = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/logger.rs"]
+exclude = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/trainer/**", "crates/nimk-engine/src/logger.rs"]
 
 # Every crate except ffi: no exported C symbols.
 [[scopes]]
@@ -109,7 +109,7 @@ message = "nimk-telex may only depend on nimk-types."
 name = "leaf-policy"
 scope = "policy"
 deny = ["nimk_storage::**", "nimk_telex::**", "nimk_engine::**", "nimk_ffi::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**", "std::thread::**"]
-message = "nimk-policy maps Features to p(VI); no storage, Telex, engine, files or threads."
+message = "nimk-policy maps Observation to action scores; no storage, Telex, engine, files or threads."
 
 [[restrict-use]]
 name = "engine-not-up"

@@ -1,41 +1,58 @@
-//! Switch hotkey state machine: a lone Left-Shift tap or Ctrl+Space.
+//! Switch hotkey state machine: double Shift tap (ADR 0008) or Ctrl+Space.
 //!
 //! Pure and clock-free: the only time source is [`KeyEvent::timestamp`].
 //! Independent of the other engine modules; `engine.rs` decides what a hit
 //! does and whether the key is consumed.
+//!
+//! A tap is a press and release of either Shift key with nothing else held
+//! or typed, shorter than `tap_secs`. Two taps whose releases are at most
+//! `double_secs` apart fire the hotkey on the second release. Any other key
+//! or modifier between the first press and the second release cancels. A
+//! second tap that is too slow starts a new pair instead.
 
 use nimk_types::{KeyEvent, KeyKind, Modifiers, keycode};
 
 /// A recognised switch hotkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HotkeyHit {
-    /// Left Shift pressed and released alone within the tap window.
-    ShiftTap,
+    /// Second lone Shift tap completed in time.
+    DoubleShift,
     /// Ctrl+Space key down.
     CtrlSpace,
 }
 
-/// Shift-tap tracking state.
+/// Detector tuning (from `EngineConfig`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct HotkeyParams {
+    /// Longest Shift hold that still counts as a tap.
+    pub(crate) tap_secs: f64,
+    /// Longest gap between the releases of the two taps.
+    pub(crate) double_secs: f64,
+    /// Enable the double Shift tap.
+    pub(crate) double_shift: bool,
+    /// Enable Ctrl+Space.
+    pub(crate) ctrl_space: bool,
+}
+
+/// Tap tracking state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
     /// Nothing in progress.
     Idle,
-    /// Left Shift went down alone at `t0`.
-    ShiftDown {
-        /// Timestamp of the press.
-        t0: f64,
-    },
-    /// Left Shift is (probably) held but something else happened; the tap
-    /// can no longer complete.
+    /// First Shift press, alone, at `t0`.
+    Down1 { t0: f64 },
+    /// First tap done; it was released at `t1`.
+    Between { t1: f64 },
+    /// Second Shift press at `t0`; first tap released at `t1`.
+    Down2 { t0: f64, t1: f64 },
+    /// Shift is held but the tap can no longer complete.
     Cancelled,
 }
 
 /// Detects the switch hotkey from the raw event stream.
 #[derive(Debug, Clone)]
 pub(crate) struct HotkeyDetector {
-    tap_secs: f64,
-    shift_tap: bool,
-    ctrl_space: bool,
+    params: HotkeyParams,
     state: State,
 }
 
@@ -43,21 +60,16 @@ pub(crate) struct HotkeyDetector {
 const NON_SHIFT: u32 = Modifiers::CONTROL | Modifiers::OPTION | Modifiers::COMMAND;
 
 impl HotkeyDetector {
-    /// Creates a detector. `tap_secs` = max Shift hold time; `shift_tap`
-    /// enables the lone Left-Shift tap; `ctrl_space` enables Ctrl+Space.
+    /// Creates a detector.
     #[must_use]
-    pub(crate) fn new(tap_secs: f64, shift_tap: bool, ctrl_space: bool) -> Self {
+    pub(crate) fn new(params: HotkeyParams) -> Self {
         Self {
-            tap_secs,
-            shift_tap,
-            ctrl_space,
+            params,
             state: State::Idle,
         }
     }
 
     /// Feeds one event; returns a hit when the hotkey completes on it.
-    /// Any key down, and any other modifier change, between Shift down and
-    /// up cancels the tap.
     pub(crate) fn feed(&mut self, key: &KeyEvent) -> Option<HotkeyHit> {
         match key.kind {
             KeyKind::KeyDown => self.key_down(key),
@@ -66,51 +78,84 @@ impl HotkeyDetector {
     }
 
     fn key_down(&mut self, key: &KeyEvent) -> Option<HotkeyHit> {
-        if self.state != State::Idle {
-            self.state = State::Cancelled;
-        }
+        self.state = match self.state {
+            State::Idle | State::Between { .. } => State::Idle,
+            State::Down1 { .. } | State::Down2 { .. } | State::Cancelled => State::Cancelled,
+        };
         let ctrl_only = key.mods.has(Modifiers::CONTROL)
             && key.mods.0 & (Modifiers::OPTION | Modifiers::COMMAND) == 0;
-        (self.ctrl_space && key.keycode == keycode::SPACE && ctrl_only)
+        (self.params.ctrl_space && key.keycode == keycode::SPACE && ctrl_only)
             .then_some(HotkeyHit::CtrlSpace)
     }
 
+    /// Whether `[t0, t1]` is a tap-length press.
+    fn is_tap(&self, t0: f64, t1: f64) -> bool {
+        let dt = t1 - t0;
+        (0.0..=self.params.tap_secs).contains(&dt)
+    }
+
     fn flags_changed(&mut self, key: &KeyEvent) -> Option<HotkeyHit> {
-        if !self.shift_tap {
+        if !self.params.double_shift {
             return None;
         }
         let shift_held = key.mods.has(Modifiers::SHIFT);
-        if key.keycode != keycode::LEFT_SHIFT {
-            // Another modifier changed: cancels a pending tap; once every
-            // Shift is up we are idle again (recovers from lost events).
+        let t = key.timestamp;
+        if key.keycode != keycode::LEFT_SHIFT && key.keycode != keycode::RIGHT_SHIFT {
+            // Another modifier changed: cancels a pending tap or pair; once
+            // every Shift is up we are idle again (recovers from lost events).
             self.state = match self.state {
                 _ if !shift_held => State::Idle,
-                State::Idle => State::Idle,
-                State::ShiftDown { .. } | State::Cancelled => State::Cancelled,
+                State::Idle | State::Between { .. } => State::Idle,
+                State::Down1 { .. } | State::Down2 { .. } | State::Cancelled => State::Cancelled,
             };
             return None;
         }
+        let alone = key.mods.0 & NON_SHIFT == 0;
         match (self.state, shift_held) {
             (State::Idle, true) => {
-                self.state = if key.mods.0 & NON_SHIFT == 0 {
-                    State::ShiftDown { t0: key.timestamp }
+                self.state = if alone {
+                    State::Down1 { t0: t }
                 } else {
                     State::Cancelled
                 };
                 None
             }
-            (State::ShiftDown { t0 }, false) => {
-                self.state = State::Idle;
-                let dt = key.timestamp - t0;
-                (dt >= 0.0 && dt <= self.tap_secs).then_some(HotkeyHit::ShiftTap)
+            (State::Between { t1 }, true) => {
+                self.state = if alone {
+                    State::Down2 { t0: t, t1 }
+                } else {
+                    State::Cancelled
+                };
+                None
             }
-            // Left Shift event while Shift stays set (e.g. Right Shift held):
-            // ambiguous, never a lone tap.
-            (State::ShiftDown { .. } | State::Cancelled, true) => {
+            // Another Shift went down while one is held: never a lone tap.
+            (State::Down1 { .. } | State::Down2 { .. } | State::Cancelled, true) => {
                 self.state = State::Cancelled;
                 None
             }
-            (_, false) => {
+            (State::Down1 { t0 }, false) => {
+                self.state = if self.is_tap(t0, t) {
+                    State::Between { t1: t }
+                } else {
+                    State::Idle
+                };
+                None
+            }
+            (State::Down2 { t0, t1 }, false) => {
+                if !self.is_tap(t0, t) {
+                    self.state = State::Idle;
+                    return None;
+                }
+                if (0.0..=self.params.double_secs).contains(&(t - t1)) {
+                    self.state = State::Idle;
+                    Some(HotkeyHit::DoubleShift)
+                } else {
+                    // Too slow to pair with the first tap: it is a first tap.
+                    self.state = State::Between { t1: t };
+                    None
+                }
+            }
+            (State::Idle | State::Between { .. } | State::Cancelled, false) => {
                 self.state = State::Idle;
                 None
             }
@@ -124,6 +169,8 @@ mod tests {
 
     const S: u32 = Modifiers::SHIFT;
     const C: u32 = Modifiers::CONTROL;
+    const LS: u16 = keycode::LEFT_SHIFT;
+    const RS: u16 = keycode::RIGHT_SHIFT;
 
     fn flags(code: u16, mods: u32, t: f64) -> KeyEvent {
         KeyEvent {
@@ -145,123 +192,248 @@ mod tests {
         }
     }
 
-    fn run(det: &mut HotkeyDetector, events: &[KeyEvent]) -> Vec<Option<HotkeyHit>> {
-        events.iter().map(|e| det.feed(e)).collect()
+    fn detector() -> HotkeyDetector {
+        HotkeyDetector::new(HotkeyParams {
+            tap_secs: 0.25,
+            double_secs: 0.4,
+            double_shift: true,
+            ctrl_space: true,
+        })
+    }
+
+    /// Indices of the events on which the hotkey fired.
+    fn hits(det: &mut HotkeyDetector, events: &[KeyEvent]) -> Vec<(usize, HotkeyHit)> {
+        events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| det.feed(e).map(|h| (i, h)))
+            .collect()
     }
 
     #[test]
     fn table() {
-        let ls = keycode::LEFT_SHIFT;
-        let rs = keycode::RIGHT_SHIFT;
-        let tap = Some(HotkeyHit::ShiftTap);
-        type Case = (&'static str, Vec<KeyEvent>, Vec<Option<HotkeyHit>>);
+        let dbl = HotkeyHit::DoubleShift;
+        type Case = (&'static str, Vec<KeyEvent>, Vec<(usize, HotkeyHit)>);
         let cases: Vec<Case> = vec![
             (
-                "quick tap",
-                vec![flags(ls, S, 1.0), flags(ls, 0, 1.1)],
-                vec![None, tap],
+                "single tap",
+                vec![flags(LS, S, 1.0), flags(LS, 0, 1.1)],
+                vec![],
             ),
             (
-                "exactly at limit",
-                vec![flags(ls, S, 1.0), flags(ls, 0, 1.25)],
-                vec![None, tap],
-            ),
-            (
-                "held too long",
-                vec![flags(ls, S, 1.0), flags(ls, 0, 1.5)],
-                vec![None, None],
-            ),
-            (
-                "time goes back",
-                vec![flags(ls, S, 1.0), flags(ls, 0, 0.5)],
-                vec![None, None],
-            ),
-            (
-                "shifted letter cancels",
-                vec![flags(ls, S, 1.0), down(0, "A", S, 1.05), flags(ls, 0, 1.1)],
-                vec![None, None, None],
-            ),
-            (
-                "other modifier cancels",
+                "double tap",
                 vec![
-                    flags(ls, S, 1.0),
-                    flags(55, S | Modifiers::COMMAND, 1.02),
-                    flags(55, S, 1.04),
-                    flags(ls, 0, 1.1),
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.3),
                 ],
-                vec![None, None, None, None],
+                vec![(3, dbl)],
+            ),
+            (
+                "left then right",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(RS, S, 1.2),
+                    flags(RS, 0, 1.3),
+                ],
+                vec![(3, dbl)],
+            ),
+            (
+                "right twice",
+                vec![
+                    flags(RS, S, 1.0),
+                    flags(RS, 0, 1.1),
+                    flags(RS, S, 1.2),
+                    flags(RS, 0, 1.3),
+                ],
+                vec![(3, dbl)],
+            ),
+            (
+                "second release exactly at limit",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.3),
+                    flags(LS, 0, 1.5),
+                ],
+                vec![(3, dbl)],
+            ),
+            (
+                "second tap too slow",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.6),
+                    flags(LS, 0, 1.7),
+                ],
+                vec![],
+            ),
+            (
+                "too slow second tap pairs with a third",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.6),
+                    flags(LS, 0, 1.7),
+                    flags(LS, S, 1.8),
+                    flags(LS, 0, 1.9),
+                ],
+                vec![(5, dbl)],
+            ),
+            (
+                "first tap held too long",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.5),
+                    flags(LS, S, 1.6),
+                    flags(LS, 0, 1.7),
+                ],
+                vec![],
+            ),
+            (
+                "second tap held too long",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.6),
+                ],
+                vec![],
+            ),
+            (
+                "key between taps cancels",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    down(0, "a", 0, 1.15),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.3),
+                ],
+                vec![],
+            ),
+            (
+                "shifted letter during first tap cancels",
+                vec![
+                    flags(LS, S, 1.0),
+                    down(0, "A", S, 1.05),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.3),
+                ],
+                vec![],
+            ),
+            (
+                "key during second tap cancels",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.2),
+                    down(0, "A", S, 1.25),
+                    flags(LS, 0, 1.3),
+                ],
+                vec![],
+            ),
+            (
+                "other modifier between taps cancels",
+                vec![
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(55, Modifiers::COMMAND, 1.15),
+                    flags(55, 0, 1.17),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.3),
+                ],
+                vec![],
             ),
             (
                 "shift with cmd held is a chord",
                 vec![
-                    flags(ls, S | Modifiers::COMMAND, 1.0),
-                    flags(ls, Modifiers::COMMAND, 1.1),
+                    flags(LS, S | Modifiers::COMMAND, 1.0),
+                    flags(LS, Modifiers::COMMAND, 1.1),
+                    flags(LS, S | Modifiers::COMMAND, 1.2),
+                    flags(LS, Modifiers::COMMAND, 1.3),
                 ],
-                vec![None, None],
+                vec![],
             ),
             (
-                "right shift is not the hotkey",
-                vec![flags(rs, S, 1.0), flags(rs, 0, 1.1)],
-                vec![None, None],
-            ),
-            (
-                "left released while right held",
+                "both shifts held is not a tap",
                 vec![
-                    flags(ls, S, 1.0),
-                    flags(rs, S, 1.05),
-                    flags(ls, S, 1.1),
-                    flags(rs, 0, 1.2),
+                    flags(LS, S, 1.0),
+                    flags(RS, S, 1.05),
+                    flags(LS, S, 1.1),
+                    flags(RS, 0, 1.2),
+                    flags(LS, S, 1.25),
+                    flags(LS, 0, 1.3),
                 ],
-                vec![None, None, None, None],
+                vec![],
             ),
             (
-                "recovers after cancel",
+                "triple tap fires once then restarts",
                 vec![
-                    flags(ls, S, 1.0),
-                    down(0, "A", S, 1.05),
-                    flags(ls, 0, 1.1),
-                    flags(ls, S, 2.0),
-                    flags(ls, 0, 2.1),
+                    flags(LS, S, 1.0),
+                    flags(LS, 0, 1.1),
+                    flags(LS, S, 1.2),
+                    flags(LS, 0, 1.3),
+                    flags(LS, S, 1.4),
+                    flags(LS, 0, 1.5),
                 ],
-                vec![None, None, None, None, tap],
+                vec![(3, dbl)],
+            ),
+            (
+                "time goes back",
+                vec![flags(LS, S, 1.0), flags(LS, 0, 0.5)],
+                vec![],
             ),
             (
                 "ctrl space",
                 vec![down(keycode::SPACE, " ", C, 1.0)],
-                vec![Some(HotkeyHit::CtrlSpace)],
+                vec![(0, HotkeyHit::CtrlSpace)],
             ),
             (
                 "cmd ctrl space is not",
                 vec![down(keycode::SPACE, " ", C | Modifiers::COMMAND, 1.0)],
-                vec![None],
+                vec![],
             ),
             (
                 "plain space",
                 vec![down(keycode::SPACE, " ", 0, 1.0)],
-                vec![None],
+                vec![],
             ),
         ];
         for (name, events, want) in cases {
-            let mut det = HotkeyDetector::new(0.25, true, true);
-            assert_eq!(run(&mut det, &events), want, "case {name}");
+            assert_eq!(hits(&mut detector(), &events), want, "case {name}");
         }
     }
 
     #[test]
     fn toggles_are_independent() {
-        let mut det = HotkeyDetector::new(0.3, false, true);
         let evs = [
-            flags(keycode::LEFT_SHIFT, S, 1.0),
-            flags(keycode::LEFT_SHIFT, 0, 1.1),
+            flags(LS, S, 1.0),
+            flags(LS, 0, 1.1),
+            flags(LS, S, 1.2),
+            flags(LS, 0, 1.3),
         ];
-        assert_eq!(run(&mut det, &evs), vec![None, None]);
+        let mut det = HotkeyDetector::new(HotkeyParams {
+            tap_secs: 0.3,
+            double_secs: 0.4,
+            double_shift: false,
+            ctrl_space: true,
+        });
+        assert!(hits(&mut det, &evs).is_empty());
         assert_eq!(
             det.feed(&down(keycode::SPACE, " ", C, 2.0)),
             Some(HotkeyHit::CtrlSpace)
         );
 
-        let mut det = HotkeyDetector::new(0.3, true, false);
+        let mut det = HotkeyDetector::new(HotkeyParams {
+            tap_secs: 0.3,
+            double_secs: 0.4,
+            double_shift: true,
+            ctrl_space: false,
+        });
         assert_eq!(det.feed(&down(keycode::SPACE, " ", C, 2.0)), None);
-        assert_eq!(run(&mut det, &evs), vec![None, Some(HotkeyHit::ShiftTap)]);
+        assert_eq!(hits(&mut det, &evs), vec![(3, HotkeyHit::DoubleShift)]);
     }
 }

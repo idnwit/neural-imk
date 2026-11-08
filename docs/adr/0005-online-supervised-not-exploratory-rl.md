@@ -1,6 +1,6 @@
 # 0005. Học có giám sát online, không dùng RL có exploration
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08
+> **Trạng thái:** accepted (partially superseded by 0007) · **Ngày:** 2026-11-08
 
 ## Bối cảnh
 

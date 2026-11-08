@@ -12,3 +12,6 @@ workspace = true
 nimk-types.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+# Neural backend for GruAction. default-features off: no rayon (single-threaded
+# kernels suit the IME process), no GPU backends.
+burn = { version = "=0.22.1", default-features = false, features = ["std", "flex", "autodiff", "optim"] }

@@ -9,13 +9,14 @@ khi hai bên lệch nhau, sửa tài liệu trong cùng commit với code.
 | --- | --- | --- |
 | [00-overview.md](00-overview.md) | Mục tiêu, phạm vi, ngoài phạm vi, chỉ số thành công | — |
 | [01-architecture.md](01-architecture.md) | Process, luồng, crate, quy tắc tầng | `Cargo.toml`, `arch-lint.toml` |
-| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, marked text, hotkey, lifecycle | `crates/nimk-engine/src/{composer,hotkey}.rs`, `macos/` |
+| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, marked text, double Shift, sửa ngược, lifecycle | `crates/nimk-engine/src/{composer,hotkey}.rs`, `crates/nimk-engine/src/engine/`, `macos/` |
 | [03-context-io.md](03-context-io.md) | `bundle_id`, `caret_rel`, đổi toạ độ | `macos/NeuralIMK/InputController.swift`, `nimk-types::CaretRel` |
-| [04-engine-ml.md](04-engine-ml.md) | Bài toán, features, model, online learning, nhãn | `crates/nimk-policy`, `crates/nimk-engine/src/{labeler,trainer}.rs` |
-| [05-storage-and-log.md](05-storage-and-log.md) | Trait `Storage`, schema sự kiện, replay, metric | `crates/nimk-storage`, `nimk-types::event`, `crates/nimk-replay` |
+| [04-engine-ml.md](04-engine-ml.md) | Action model, encoding, `LinearAction`/`GruAction`, online learning, pretrain, kết quả đo | `crates/nimk-policy`, `crates/nimk-types/src/action.rs`, `crates/nimk-engine/src/{config,labeler,trainer}.rs` |
+| [05-storage-and-log.md](05-storage-and-log.md) | Trait `Storage`, schema sự kiện, replay, metric, log synthetic | `crates/nimk-storage`, `nimk-types::event`, `crates/nimk-replay`, `crates/nimk-synth` |
 | [06-gui.md](06-gui.md) | Overlay, status item, menu IME | `macos/NeuralIMK/Overlay.swift` |
 | [07-build-and-install.md](07-build-and-install.md) | Build, đóng gói, cài đặt, debug | `Makefile`, `scripts/` |
 | [08-coding-standard.md](08-coding-standard.md) | Quy ước code, contract arch-lint, test | `arch-lint.toml`, `Makefile` |
+| [09-app-compat.md](09-app-compat.md) | Mức hỗ trợ sửa ngược theo loại app, verdict cache, kế hoạch test tay | `macos/NeuralIMK/{InputController,ReplaceCompat}.swift` |
 | [adr/](adr/) | Quyết định kiến trúc, mỗi quyết định một file | — |
 | [devlog.md](devlog.md) | Nhật ký phát triển (working memory), mới nhất ở trên | — |
 

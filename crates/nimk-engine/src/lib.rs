@@ -3,15 +3,16 @@
 //! [`AppContext`] values so it can be tested and replayed.
 //!
 //! Internal modules (implementation detail, see docs/04-engine-ml.md):
-//! - `composer`: raw keys of the current word, VI/EN renderings, boundaries.
-//! - `hotkey`: switch hotkey state machine (lone Left-Shift tap, Ctrl+Space).
-//! - `labeler`: turns commits and manual switches into [`nimk_types::Sample`]s.
+//! - `composer`: raw keys of the current word and its VI/EN renderings (a
+//!   dumb buffer: every edit is decided by the action model, ADR 0007).
+//! - `hotkey`: switch hotkey state machine (double Shift tap, Ctrl+Space).
+//! - `labeler`: turns commits and manual switches into [`nimk_types::Example`]s.
 //! - `trainer`: replay buffer + correction window; background or inline.
 //! - `logger`: serializes [`nimk_types::Record`]s to an `EventSink`.
 //!
 //! Internal modules are independent of each other; only `engine` wires
 //! them together (enforced by arch-lint). Threads live only in `trainer`
-//! and `logger`. The trainer publishes `Arc<dyn Policy>` snapshots over a
+//! and `logger`. The trainer publishes `Arc<dyn ImeModel>` snapshots over a
 //! channel; the engine drains it with `try_recv` at word boundaries, so the
 //! hot path never locks.
 #![forbid(unsafe_code)]
@@ -25,5 +26,5 @@ mod logger;
 mod trainer;
 
 pub use config::{EngineConfig, Threading};
-pub use engine::{Engine, EngineError, EngineOutput, Overlay, SessionInfo};
+pub use engine::{Engine, EngineError, EngineOutput, Overlay, Replace, SessionInfo};
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};

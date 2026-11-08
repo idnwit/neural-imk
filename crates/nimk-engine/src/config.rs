@@ -1,4 +1,4 @@
-use nimk_policy::PolicyKind;
+use nimk_policy::ModelKind;
 
 /// Where training runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -13,9 +13,11 @@ pub enum Threading {
 /// Engine tuning knobs. Defaults match docs/04-engine-ml.md. Serialized
 /// into the `SessionStart` event so replay can rebuild the same engine.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct EngineConfig {
-    /// Policy to build when no snapshot exists.
-    pub policy: PolicyKind,
+    /// Action model to build when no snapshot exists. Default `LinearAction`:
+    /// same accuracy as `GruAction` on synthetic data at ~300x lower latency.
+    pub policy: ModelKind,
     /// Seed for model initialization.
     pub seed: u64,
     /// Hysteresis: switch away from the current mode only if `|p - 0.5| > margin`.
@@ -23,22 +25,28 @@ pub struct EngineConfig {
     /// Detect the switch hotkey from key events. Replay sets `false` and
     /// feeds logged labels through `Engine::inject_label` instead.
     pub hotkeys: bool,
-    /// Max seconds between Left-Shift down and up to count as a tap.
+    /// Max seconds between a Shift down and up to count as a tap.
     pub shift_tap_secs: f64,
-    /// Accept a lone Left-Shift tap as the switch hotkey (independent of
-    /// `ctrl_space`; `hotkeys = false` disables both).
-    pub shift_tap: bool,
+    /// Accept a double Shift tap as the switch hotkey (ADR 0008;
+    /// independent of `ctrl_space`; `hotkeys = false` disables both).
+    pub double_shift: bool,
+    /// Max seconds between the releases of the two taps of a double Shift.
+    pub double_shift_secs: f64,
     /// Also accept Ctrl+Space as the switch hotkey.
     pub ctrl_space: bool,
     /// Words after a commit during which a hotkey still corrects that commit.
     pub correction_words: usize,
-    /// Label weight for the word before the last committed word when an
-    /// `AfterCommit` switch corrects it (the last word itself gets 1.0).
-    pub correction_prev_weight: f32,
     /// Seconds after a commit before its implicit label is finalized.
     pub label_timeout_secs: f64,
     /// Weight of implicit (uncorrected) labels.
     pub implicit_weight: f32,
+    /// Weight of the edit-head loss in online examples (ADR 0007: 0 = the
+    /// edit head is only trained by pre-training / `Engine::teach`).
+    pub edit_online_weight: f32,
+    /// Teacher-forced examples (`Engine::teach`) per learner update; 1 =
+    /// one update per key. Larger batches make pre-training faster and
+    /// smoother (`nimk-synth` uses 128).
+    pub teach_batch: usize,
     /// Samples re-trained around a correction.
     pub correction_window: usize,
     /// Gradient steps over the correction window.
@@ -58,17 +66,19 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            policy: PolicyKind::TinyMlp,
+            policy: ModelKind::LinearAction,
             seed: 0x5eed,
             switch_margin: 0.2,
             hotkeys: true,
             shift_tap_secs: 0.3,
-            shift_tap: true,
+            double_shift: true,
+            double_shift_secs: 0.4,
             ctrl_space: true,
             correction_words: 2,
-            correction_prev_weight: 0.5,
             label_timeout_secs: 10.0,
             implicit_weight: 0.3,
+            edit_online_weight: 0.0,
+            teach_batch: 1,
             correction_window: 20,
             correction_steps: 5,
             replay_capacity: 10_000,

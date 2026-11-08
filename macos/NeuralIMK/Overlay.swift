@@ -39,10 +39,28 @@ final class Overlay {
 
     /// Shows the badge for `mode` at `caret` (Cocoa screen coordinates).
     /// Auto switches are blue, manual (hotkey) switches orange.
-    func show(mode: UInt8, manual: Bool, caret: NSRect) {
+    func show(mode: UInt8, manual: Bool, skipped: Bool = false, caret: NSRect) {
         let panel = self.panel
-        label.stringValue = mode == UInt8(NIMK_MODE_VI) ? "VI" : "EN"
-        let tint: NSColor = manual ? .systemOrange : .systemBlue
+        let name = mode == UInt8(NIMK_MODE_VI) ? "VI" : "EN"
+        let width: CGFloat = skipped ? 150 : size.width
+        let tint: NSColor = skipped ? .systemRed : (manual ? .systemOrange : .systemBlue)
+        if skipped {
+            // Warning style: red tint, struck-through mode, explanation.
+            let text = NSMutableAttributedString(
+                string: name,
+                attributes: [.strikethroughStyle: NSUnderlineStyle.single.rawValue])
+            text.append(NSAttributedString(string: " không sửa được ở app này"))
+            label.attributedStringValue = text
+            label.font = .boldSystemFont(ofSize: 11)
+        } else {
+            label.attributedStringValue = NSAttributedString(string: name)
+            label.stringValue = name
+            label.font = .boldSystemFont(ofSize: 12)
+        }
+        label.textColor = .white
+        panel.setContentSize(NSSize(width: width, height: size.height))
+        background.frame = NSRect(origin: .zero, size: NSSize(width: width, height: size.height))
+        label.frame = NSRect(x: 0, y: 3, width: width, height: 16)
         background.layer?.backgroundColor = tint.withAlphaComponent(0.92).cgColor
 
         let anchor = caret == .zero

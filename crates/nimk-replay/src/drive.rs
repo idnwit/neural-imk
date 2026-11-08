@@ -4,7 +4,7 @@ use std::io;
 use std::sync::Arc;
 
 use nimk_engine::{Engine, EngineConfig, SessionInfo, Threading};
-use nimk_policy::PolicyKind;
+use nimk_policy::ModelKind;
 use nimk_storage::{BlobStore, EventSink, EventSource, MemStorage, Storage};
 use nimk_types::{AppContext, Boundary, Event, Record};
 
@@ -46,7 +46,7 @@ pub(crate) struct SessionOut {
 /// Builds the engine config for a replayed session from its `SessionStart`.
 fn session_config(
     session: &Session,
-    kind: PolicyKind,
+    kind: ModelKind,
     seed: Option<u64>,
     warnings: &mut Vec<String>,
 ) -> (EngineConfig, SessionInfo) {
@@ -92,8 +92,8 @@ fn session_config(
     (cfg, info)
 }
 
-/// Feeds one logged record to the engine.
-fn feed(engine: &mut Engine, record: &Record) {
+/// Feeds one logged record to the engine; labels are skipped when `frozen`.
+fn feed(engine: &mut Engine, record: &Record, frozen: bool) {
     match &record.event {
         Event::Context {
             bundle_id,
@@ -115,7 +115,7 @@ fn feed(engine: &mut Engine, record: &Record) {
             label,
             weight,
             source,
-        } => engine.inject_label(*target, *label, *weight, *source),
+        } if !frozen => engine.inject_label(*target, *label, *weight, *source),
         // An external commit without a preceding key (IMK
         // `commitComposition`); a no-op when the replayed engine already
         // committed the word (e.g. inside `on_context`).
@@ -145,12 +145,14 @@ fn read_back(events: &MemStorage, warnings: &mut Vec<String>) -> io::Result<Vec<
     Ok(records)
 }
 
-/// Replays `session` through policy `kind`, with snapshots kept in `blobs`.
+/// Replays `session` through model `kind`, with snapshots kept in `blobs`;
+/// `frozen` withholds the logged labels (no online learning).
 pub(crate) fn replay_session(
     session: &Session,
-    kind: PolicyKind,
+    kind: ModelKind,
     blobs: &MemStorage,
     seed: Option<u64>,
+    frozen: bool,
 ) -> SessionOut {
     let mut out = SessionOut::default();
     let (cfg, info) = session_config(session, kind, seed, &mut out.warnings);
@@ -161,7 +163,7 @@ pub(crate) fn replay_session(
     });
     let mut engine = Engine::new(cfg, storage, info);
     for record in &session.records {
-        feed(&mut engine, record);
+        feed(&mut engine, record, frozen);
     }
     out.policy_id = Some(engine.policy_id().to_string());
     let id = &session.id;

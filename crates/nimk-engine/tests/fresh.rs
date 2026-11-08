@@ -1,5 +1,5 @@
-//! UX contract with FRESH (untrained) models of every kind and the default
-//! config: Vietnamese Telex works out of the box, English survives VI mode.
+//! Smoke tests with FRESH (untrained, neutral) real models and the default
+//! config: no panics, one decision per model call, keys are never lost.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -8,121 +8,93 @@ use std::sync::Arc;
 
 use common::*;
 use nimk_engine::{Engine, EngineConfig};
-use nimk_policy::PolicyKind;
+use nimk_policy::ModelKind;
 use nimk_storage::MemStorage;
-use nimk_types::{Event, Lang, Target};
+use nimk_types::{Event, KeyKind, Lang};
 
-const KINDS: [PolicyKind; 3] = [
-    PolicyKind::Baseline,
-    PolicyKind::Linear,
-    PolicyKind::TinyMlp,
-];
-
-fn fresh(kind: PolicyKind) -> (Engine, MemStorage) {
+fn fresh(kind: ModelKind) -> (Engine, MemStorage) {
     let storage = MemStorage::new();
     let cfg = EngineConfig {
         policy: kind,
-        ..EngineConfig::default()
+        ..inline_cfg()
     };
     let engine = Engine::new(cfg, Arc::new(storage.clone()), session());
     (engine, storage)
 }
 
-#[test]
-fn fresh_models_type_vietnamese() {
-    for kind in KINDS {
-        let (mut e, _s) = fresh(kind);
-        assert_eq!(e.mode(), Lang::Vi, "{kind:?}: VI prior");
-        let mut t = 1.0;
-        let outs = type_str(&mut e, "tieengs Vieetj ", &mut t);
-        assert_eq!(commits(&outs), vec!["tiếng", "Việt"], "{kind:?}");
-        e.shutdown().unwrap();
-    }
-}
-
-#[test]
-fn fresh_models_with_focus_type_vietnamese() {
-    for kind in KINDS {
-        let (mut e, _s) = fresh(kind);
-        e.on_context(&ctx("com.apple.TextEdit", 3, 1.0));
-        let mut t = 1.0;
-        let outs = type_str(&mut e, "tieengs Vieetj dduwowngf ", &mut t);
-        assert_eq!(commits(&outs), vec!["tiếng", "Việt", "đường"], "{kind:?}");
-        e.shutdown().unwrap();
-    }
-}
-
-#[test]
-fn english_words_survive_vi_mode() {
-    for kind in KINDS {
-        for word in ["string", "class", "the"] {
-            let (mut e, _s) = fresh(kind);
-            let mut t = 1.0;
-            let outs = type_str(&mut e, &format!("{word} "), &mut t);
-            assert_eq!(commits(&outs), vec![word.to_owned()], "{kind:?}");
-            e.shutdown().unwrap();
+fn smoke(kind: ModelKind) {
+    let (mut e, storage) = fresh(kind);
+    assert_eq!(e.mode(), Lang::Vi);
+    e.on_context(&ctx("com.apple.TextEdit", 3, 1.0));
+    let mut t = 1.0;
+    let text = "tieengs Vieetj, has string ";
+    let mut outs = type_str(&mut e, text, &mut t);
+    outs.push(double_shift(&mut e, &mut t));
+    outs.extend(type_str(&mut e, "dduwowngf ", &mut t));
+    outs.push(e.commit_pending(t + 1.0));
+    // Every character typed either was consumed into the buffer or went to
+    // the app: nothing may be dropped silently (consumed => marked text).
+    for o in &outs {
+        if o.consumed && o.replace.is_none() && o.mode.is_none() {
+            assert!(
+                o.marked.is_some(),
+                "{kind:?}: consumed key without marked text"
+            );
         }
     }
-}
-
-#[test]
-fn ambiguous_test_is_decided() {
-    for kind in KINDS {
-        let storage = MemStorage::new();
-        let cfg = EngineConfig {
-            policy: kind,
-            ..inline_cfg()
-        };
-        let mut e = Engine::new(cfg, Arc::new(storage.clone()), session());
-        let mut t = 1.0;
-        let outs = type_str(&mut e, "test ", &mut t);
-        let c = commits(&outs);
-        assert!(c == ["tét"] || c == ["test"], "{kind:?}: {c:?}");
-        let decided = events(&storage).iter().any(|ev| {
+    let evs = events(&storage);
+    let keys = evs
+        .iter()
+        .filter(|ev| matches!(ev, Event::Key { key, .. } if key.kind == KeyKind::KeyDown))
+        .count();
+    let decisions = evs
+        .iter()
+        .filter(|ev| {
             matches!(
                 ev,
                 Event::Decision {
-                    target: Target::Word(0),
+                    target: nimk_types::Target::Word(_),
                     ..
                 }
             )
-        });
-        assert!(decided, "{kind:?}");
-        assert!(!e.take_diagnostics().iter().any(|d| d.contains("panic")));
-        e.shutdown().unwrap();
-    }
+        })
+        .count();
+    assert_eq!(keys, decisions, "{kind:?}: one decision per model call");
+    let diags = e.take_diagnostics();
+    assert!(
+        !diags.iter().any(|d| d.contains("panic")),
+        "{kind:?}: {diags:?}"
+    );
+    e.shutdown().unwrap();
 }
 
 #[test]
-fn english_word_in_vi_sentence_is_word_scoped() {
-    for kind in KINDS {
-        let (mut e, _s) = fresh(kind);
-        let mut t = 1.0;
-        let outs = type_str(&mut e, "Tooi dungf class nayf ", &mut t);
-        assert_eq!(
-            commits(&outs),
-            vec!["Tôi", "dùng", "class", "này"],
-            "{kind:?}"
-        );
-        assert!(
-            outs.iter().all(|o| o.overlay.is_none() && o.mode.is_none()),
-            "{kind:?}: no sticky change"
-        );
-        assert_eq!(e.mode(), Lang::Vi, "{kind:?}");
-        e.shutdown().unwrap();
-    }
+fn fresh_linear_action_smoke() {
+    smoke(ModelKind::LinearAction);
 }
 
 #[test]
-fn manual_switch_to_en_keeps_telex_words_raw() {
-    for kind in KINDS {
-        let (mut e, _s) = fresh(kind);
-        let mut t = 1.0;
-        let o = shift_tap(&mut e, &mut t);
-        assert_eq!(o.mode, Some(Lang::En), "{kind:?}");
-        let outs = type_str(&mut e, "tieengs ", &mut t);
-        assert_eq!(commits(&outs), vec!["tieengs"], "{kind:?}");
-        assert_eq!(e.mode(), Lang::En, "{kind:?}");
-        e.shutdown().unwrap();
+fn fresh_gru_action_smoke() {
+    smoke(ModelKind::GruAction);
+}
+
+#[test]
+fn fresh_models_decide_deterministically() {
+    for kind in [ModelKind::LinearAction, ModelKind::GruAction] {
+        let run = || {
+            let (mut e, storage) = fresh(kind);
+            let mut t = 1.0;
+            let outs = type_str(&mut e, "tieengs ab ", &mut t);
+            e.shutdown().unwrap();
+            let decisions: Vec<_> = events(&storage)
+                .into_iter()
+                .filter_map(|ev| match ev {
+                    Event::Decision { p_vi, chosen, .. } => Some((p_vi.map(f32::to_bits), chosen)),
+                    _ => None,
+                })
+                .collect();
+            (outs, decisions)
+        };
+        assert_eq!(run(), run(), "{kind:?}");
     }
 }

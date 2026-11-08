@@ -34,10 +34,6 @@ impl Writer {
         Self { buf }
     }
 
-    pub(crate) fn u8(&mut self, v: u8) {
-        self.buf.push(v);
-    }
-
     pub(crate) fn u32(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
@@ -53,6 +49,11 @@ impl Writer {
         for v in vs {
             self.buf.extend_from_slice(&v.to_le_bytes());
         }
+    }
+
+    /// Appends raw bytes (an opaque payload section).
+    pub(crate) fn bytes(&mut self, bs: &[u8]) {
+        self.buf.extend_from_slice(bs);
     }
 
     pub(crate) fn finish(self) -> Vec<u8> {
@@ -112,6 +113,11 @@ impl<'a> Reader<'a> {
         let mut out = [0u8; N];
         out.copy_from_slice(self.take(N)?);
         Ok(out)
+    }
+
+    /// Reads exactly `n` raw bytes.
+    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8], PolicyError> {
+        self.take(n)
     }
 
     pub(crate) fn u8(&mut self) -> Result<u8, PolicyError> {
@@ -177,12 +183,6 @@ pub(crate) fn sigmoid(x: f32) -> f32 {
 pub(crate) fn log_loss(p: f32, y: f32) -> f32 {
     let p = p.clamp(1e-7, 1.0 - 1e-7);
     -(y * p.ln() + (1.0 - y) * (1.0 - p).ln())
-}
-
-/// Weighted mean helper: `num / den`, or 0 when `den` is not positive.
-#[inline]
-pub(crate) fn weighted_mean(num: f32, den: f32) -> f32 {
-    if den > 0.0 { num / den } else { 0.0 }
 }
 
 #[cfg(test)]

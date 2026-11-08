@@ -1,47 +1,51 @@
 use std::sync::Arc;
 
-use nimk_engine::{Engine, EngineConfig, SessionInfo};
-use nimk_policy::PolicyKind;
+use nimk_engine::{Engine, EngineConfig, SessionInfo, Threading};
+use nimk_policy::ModelKind;
 use nimk_storage::{MemStorage, Storage};
 
 use super::*;
-use crate::{Corpus, SynthConfig, generate};
+use crate::{Corpus, MixProfile, SynthConfig, generate};
 
-fn scripts(seed: u64) -> Vec<Script> {
+fn scripts(seed: u64, sessions: usize, words: usize) -> Vec<Script> {
     let cfg = SynthConfig {
         seed,
-        sessions: 20,
-        words_per_session: 200,
+        sessions,
+        words_per_session: words,
+        mix: MixProfile {
+            p_typo: 0.02,
+            p_shortcut: 0.02,
+            ..MixProfile::default()
+        },
         ..SynthConfig::default()
     };
     generate(&cfg, &Corpus::builtin())
 }
 
-fn run(kind: PolicyKind, seed: u64) -> (PretrainReport, MemStorage) {
+fn run(
+    kind: ModelKind,
+    seed: u64,
+    sessions: usize,
+    words: usize,
+    opts: PretrainOptions,
+) -> (PretrainReport, MemStorage) {
     let cfg = EngineConfig {
         policy: kind,
         ..EngineConfig::default()
     };
-    let model = nimk_policy::build(kind, cfg.seed);
     let storage = MemStorage::new();
-    let report = pretrain(&scripts(seed), cfg, model, Arc::new(storage.clone())).unwrap();
+    let report = pretrain(
+        &scripts(seed, sessions, words),
+        cfg,
+        opts,
+        Arc::new(storage.clone()),
+    )
+    .unwrap();
     (report, storage)
 }
 
-fn assert_learns(kind: PolicyKind) {
-    let (r, storage) = run(kind, 5);
-    assert_eq!(r.words, 20 * 200);
-    assert!(r.ambiguous > 200, "{r:?}");
-    assert!(r.correct <= r.ambiguous);
-    assert!(
-        r.tail_accuracy > r.head_accuracy + 0.05,
-        "{kind:?} did not improve: {r:?}"
-    );
-    assert!(r.tail_accuracy > 0.8, "{kind:?}: {r:?}");
-
-    // The snapshot is where the IME looks, and loads cleanly.
-    let key = format!("model/{}/latest", kind_name(kind));
-    assert!(storage.blobs().get(&key).unwrap().is_some());
+fn assert_snapshot_loads(kind: ModelKind, storage: MemStorage) {
+    assert!(storage.blobs().get(&snapshot_key(kind)).unwrap().is_some());
     // Pre-training does not write events.
     assert!(
         storage
@@ -67,39 +71,86 @@ fn assert_learns(kind: PolicyKind) {
 }
 
 #[test]
-fn tiny_mlp_learns_and_saves_snapshot() {
-    assert_learns(PolicyKind::TinyMlp);
-}
-
-#[test]
-fn linear_learns_and_saves_snapshot() {
-    assert_learns(PolicyKind::Linear);
+fn linear_action_clones_behaviour_and_saves_snapshot() {
+    let opts = PretrainOptions {
+        epochs: 3,
+        eval_frac: 0.2,
+        ..PretrainOptions::default()
+    };
+    let (r, storage) = run(ModelKind::LinearAction, 5, 20, 150, opts);
+    assert_eq!((r.epochs, r.train_scripts, r.eval.scripts), (3, 16, 4));
+    let e = &r.eval;
+    assert!(e.keys > 1000 && e.words >= 4 * 150, "{r:?}");
+    assert!(e.ambiguous > 20, "{r:?}");
+    assert!(e.edit_accuracy() > 0.95, "{r:?}");
+    assert!(e.render_accuracy() > 0.6, "{r:?}");
+    assert!(e.ambiguous_accuracy() > 0.55, "{r:?}");
+    assert!(e.text_match_rate() > 0.5, "{r:?}");
+    assert_snapshot_loads(ModelKind::LinearAction, storage);
 }
 
 #[test]
 fn deterministic_with_fixed_seed() {
-    let (a, sa) = run(PolicyKind::Linear, 11);
-    let (b, sb) = run(PolicyKind::Linear, 11);
+    let opts = PretrainOptions {
+        epochs: 1,
+        eval_frac: 0.25,
+        ..PretrainOptions::default()
+    };
+    let (a, sa) = run(ModelKind::LinearAction, 11, 8, 60, opts);
+    let (b, sb) = run(ModelKind::LinearAction, 11, 8, 60, opts);
     assert_eq!(a, b);
-    let key = "model/linear/latest";
-    assert_eq!(sa.blobs().get(key).unwrap(), sb.blobs().get(key).unwrap());
+    let key = snapshot_key(ModelKind::LinearAction);
+    assert_eq!(sa.blobs().get(&key).unwrap(), sb.blobs().get(&key).unwrap());
 }
 
 #[test]
-fn rejects_model_of_another_kind() {
+fn empty_input_and_no_eval_report_zero() {
     let cfg = EngineConfig {
-        policy: PolicyKind::Linear,
+        policy: ModelKind::LinearAction,
         ..EngineConfig::default()
     };
-    let model = nimk_policy::build(PolicyKind::TinyMlp, 1);
-    let err = pretrain(&[], cfg, model, Arc::new(MemStorage::new())).unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    let r = pretrain(
+        &[],
+        cfg.clone(),
+        PretrainOptions::default(),
+        Arc::new(MemStorage::new()),
+    )
+    .unwrap();
+    assert_eq!(
+        (r.train_scripts, r.eval.keys, r.eval.edit_accuracy()),
+        (0, 0, 0.0)
+    );
+
+    let opts = PretrainOptions {
+        epochs: 1,
+        eval_frac: 0.0,
+        ..PretrainOptions::default()
+    };
+    let storage = MemStorage::new();
+    let r = pretrain(&scripts(1, 2, 20), cfg, opts, Arc::new(storage.clone())).unwrap();
+    assert_eq!((r.train_scripts, r.eval.scripts), (2, 0));
+    assert_snapshot_loads(ModelKind::LinearAction, storage);
 }
 
 #[test]
-fn empty_input_reports_zero() {
-    let cfg = EngineConfig::default();
-    let model = nimk_policy::build(cfg.policy, cfg.seed);
-    let r = pretrain(&[], cfg, model, Arc::new(MemStorage::new())).unwrap();
-    assert_eq!((r.words, r.ambiguous, r.accuracy()), (0, 0, 0.0));
+fn eval_split_keeps_both_sides_non_empty() {
+    assert_eq!(eval_count(10, 0.1), 1);
+    assert_eq!(eval_count(10, 0.0), 0);
+    assert_eq!(eval_count(10, 1.0), 9);
+    assert_eq!(eval_count(1, 0.5), 0);
+    assert_eq!(eval_count(3, 0.01), 1);
+    assert_eq!(eval_count(3, f64::NAN), 0);
+}
+
+#[test]
+fn gru_action_learns_edits_on_a_small_run() {
+    let opts = PretrainOptions {
+        epochs: 1,
+        eval_frac: 0.25,
+        ..PretrainOptions::default()
+    };
+    let (r, storage) = run(ModelKind::GruAction, 3, 4, 25, opts);
+    assert_eq!(r.eval.scripts, 1);
+    assert!(r.eval.edit_accuracy() > 0.6, "{r:?}");
+    assert_snapshot_loads(ModelKind::GruAction, storage);
 }

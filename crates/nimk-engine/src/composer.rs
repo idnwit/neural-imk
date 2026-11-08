@@ -1,62 +1,52 @@
 //! Composer: raw keys of the current word, its renderings and word ids.
 //!
-//! The composer does not know Telex: `engine.rs` computes the Telex
-//! rendering of [`Composer::raw`] and hands it back with
-//! [`Composer::set_vi`]. The English rendering is the raw keys themselves.
-//!
-//! Boundary keys commit the word and are then handed back to the app
-//! (`consumed = false`), so the app inserts the space, punctuation or runs
-//! the shortcut itself.
+//! The composer is a dumb buffer: it does not know Telex or when a word
+//! ends. `engine.rs` computes the Telex rendering of [`Composer::raw`] and
+//! hands it back with [`Composer::set_vi`]; every edit is decided by the
+//! action model (ADR 0007). The English rendering is the raw keys.
 
 use nimk_types::{Boundary, KeyEvent, KeyKind, Lang, keycode};
 
-/// Longest word the composer keeps; a further letter splits the word
-/// (committed with [`Boundary::Punct`]) so per-key work stays bounded.
+/// Longest word the composer keeps; at this length `Append` is masked out
+/// so per-key work stays bounded.
 pub(crate) const MAX_RAW: usize = 64;
 
-/// What a key means to the composer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeyClass {
-    /// An ASCII letter that extends the word.
-    Letter(char),
-    /// Backspace.
-    Backspace,
-    /// Ends the word, then goes to the app.
-    Boundary(Boundary),
-    /// Not a word key (modifier change); goes to the app untouched.
-    Ignore,
-}
-
-/// Classifies one key event.
+/// The printable character a key produces, if any: a key-down without
+/// Cmd/Ctrl/Option whose `chars` is exactly one character that is not a
+/// control or private-use (function key) code point.
 #[must_use]
-pub(crate) fn classify(key: &KeyEvent) -> KeyClass {
-    if key.kind == KeyKind::FlagsChanged {
-        return KeyClass::Ignore;
-    }
-    if key.mods.is_shortcut() {
-        return KeyClass::Boundary(Boundary::Shortcut);
-    }
-    match key.keycode {
-        keycode::BACKSPACE => return KeyClass::Backspace,
-        keycode::SPACE => return KeyClass::Boundary(Boundary::Space),
-        keycode::RETURN => return KeyClass::Boundary(Boundary::Return),
-        keycode::TAB => return KeyClass::Boundary(Boundary::Tab),
-        keycode::ESCAPE | keycode::LEFT | keycode::RIGHT | keycode::UP | keycode::DOWN => {
-            return KeyClass::Boundary(Boundary::Navigation);
-        }
-        _ => {}
+pub(crate) fn printable_char(key: &KeyEvent) -> Option<char> {
+    if key.kind != KeyKind::KeyDown || key.mods.is_shortcut() {
+        return None;
     }
     let mut chars = key.chars.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) if c.is_ascii_alphabetic() => KeyClass::Letter(c),
-        (Some('\r' | '\n'), None) => KeyClass::Boundary(Boundary::Return),
-        // Function keys (Home, End, F1...) use the private-use area; keys
-        // without characters are also navigation-like.
-        (Some(c), None) if c.is_control() || ('\u{F700}'..='\u{F8FF}').contains(&c) => {
-            KeyClass::Boundary(Boundary::Navigation)
+        (Some(c), None) if !c.is_control() && !('\u{E000}'..='\u{F8FF}').contains(&c) => Some(c),
+        _ => None,
+    }
+}
+
+/// What ended a word, for the `WordCommit` log record.
+#[must_use]
+pub(crate) fn boundary_of(key: &KeyEvent) -> Boundary {
+    if key.mods.is_shortcut() {
+        return Boundary::Shortcut;
+    }
+    match key.keycode {
+        keycode::SPACE => return Boundary::Space,
+        keycode::RETURN => return Boundary::Return,
+        keycode::TAB => return Boundary::Tab,
+        keycode::ESCAPE | keycode::LEFT | keycode::RIGHT | keycode::UP | keycode::DOWN => {
+            return Boundary::Navigation;
         }
-        (None, _) => KeyClass::Boundary(Boundary::Navigation),
-        _ => KeyClass::Boundary(Boundary::Punct),
+        _ => {}
+    }
+    if printable_char(key).is_some() {
+        Boundary::Punct
+    } else if matches!(key.chars.as_str(), "\r" | "\n") {
+        Boundary::Return
+    } else {
+        Boundary::Navigation
     }
 }
 
@@ -111,8 +101,8 @@ impl Composer {
     /// Number of keys in the current word.
     #[must_use]
     pub(crate) fn key_count(&self) -> u16 {
-        // At most MAX_RAW (64), so the cast never truncates.
-        self.raw.len().min(usize::from(u16::MAX)) as u16
+        // Saturating: the cast cannot truncate after `min`.
+        self.raw.chars().count().min(usize::from(u16::MAX)) as u16
     }
 
     /// Id the current (or next) word has / will get.
@@ -186,71 +176,65 @@ mod tests {
     }
 
     #[test]
-    fn classify_table() {
-        let cases = [
-            (key(0, "a", 0), KeyClass::Letter('a')),
-            (key(0, "A", Modifiers::SHIFT), KeyClass::Letter('A')),
-            (
-                key(0, "a", Modifiers::COMMAND),
-                KeyClass::Boundary(Boundary::Shortcut),
-            ),
-            (
-                key(0, "å", Modifiers::OPTION),
-                KeyClass::Boundary(Boundary::Shortcut),
-            ),
-            (
-                key(keycode::SPACE, " ", 0),
-                KeyClass::Boundary(Boundary::Space),
-            ),
-            (
-                key(keycode::RETURN, "\r", 0),
-                KeyClass::Boundary(Boundary::Return),
-            ),
-            (key(76, "\r", 0), KeyClass::Boundary(Boundary::Return)),
-            (
-                key(keycode::TAB, "\t", 0),
-                KeyClass::Boundary(Boundary::Tab),
-            ),
-            (key(keycode::BACKSPACE, "\u{7f}", 0), KeyClass::Backspace),
-            (
-                key(keycode::LEFT, "\u{F702}", 0),
-                KeyClass::Boundary(Boundary::Navigation),
-            ),
-            (
-                key(keycode::ESCAPE, "\u{1b}", 0),
-                KeyClass::Boundary(Boundary::Navigation),
-            ),
-            (
-                key(115, "\u{F729}", 0),
-                KeyClass::Boundary(Boundary::Navigation),
-            ),
-            (key(29, "0", 0), KeyClass::Boundary(Boundary::Punct)),
-            (key(43, ",", 0), KeyClass::Boundary(Boundary::Punct)),
-            (key(0, "é", 0), KeyClass::Boundary(Boundary::Punct)),
-            (key(0, "", 0), KeyClass::Boundary(Boundary::Navigation)),
-        ];
-        for (k, want) in cases {
-            assert_eq!(classify(&k), want, "key {k:?}");
-        }
+    fn printable_table() {
         let flags = KeyEvent {
             kind: KeyKind::FlagsChanged,
             ..key(56, "", Modifiers::SHIFT)
         };
-        assert_eq!(classify(&flags), KeyClass::Ignore);
+        let cases = [
+            (key(0, "a", 0), Some('a')),
+            (key(0, "A", Modifiers::SHIFT), Some('A')),
+            (key(keycode::SPACE, " ", 0), Some(' ')),
+            (key(43, ",", 0), Some(',')),
+            (key(0, "\u{e9}", 0), Some('\u{e9}')),
+            (key(0, "a", Modifiers::COMMAND), None),
+            (key(0, "a", Modifiers::CONTROL), None),
+            (key(0, "\u{e5}", Modifiers::OPTION), None),
+            (key(keycode::BACKSPACE, "\u{7f}", 0), None),
+            (key(keycode::RETURN, "\r", 0), None),
+            (key(keycode::TAB, "\t", 0), None),
+            (key(keycode::LEFT, "\u{F702}", 0), None),
+            (key(0, "", 0), None),
+            (key(0, "ab", 0), None),
+            (flags, None),
+        ];
+        for (k, want) in cases {
+            assert_eq!(printable_char(&k), want, "key {k:?}");
+        }
+    }
+
+    #[test]
+    fn boundary_table() {
+        let cases = [
+            (key(keycode::SPACE, " ", 0), Boundary::Space),
+            (key(keycode::RETURN, "\r", 0), Boundary::Return),
+            (key(76, "\r", 0), Boundary::Return),
+            (key(keycode::TAB, "\t", 0), Boundary::Tab),
+            (key(0, "a", Modifiers::COMMAND), Boundary::Shortcut),
+            (key(keycode::LEFT, "\u{F702}", 0), Boundary::Navigation),
+            (key(keycode::ESCAPE, "\u{1b}", 0), Boundary::Navigation),
+            (key(keycode::BACKSPACE, "\u{7f}", 0), Boundary::Navigation),
+            (key(43, ",", 0), Boundary::Punct),
+            (key(0, "a", 0), Boundary::Punct),
+            (key(0, "", 0), Boundary::Navigation),
+        ];
+        for (k, want) in cases {
+            assert_eq!(boundary_of(&k), want, "key {k:?}");
+        }
     }
 
     #[test]
     fn backspace_and_ids() {
         let mut c = Composer::new();
-        assert!(!c.pop(), "empty pop passes through");
+        assert!(!c.pop(), "empty pop reports false");
         assert_eq!(c.take(), None);
         assert_eq!(c.word_id(), 0);
         assert_eq!(c.last_committed(), None);
 
         c.push('a');
         c.push('s');
-        c.set_vi("á");
-        assert_eq!(c.rendering(Lang::Vi), "á");
+        c.set_vi("\u{e1}");
+        assert_eq!(c.rendering(Lang::Vi), "\u{e1}");
         assert_eq!(c.rendering(Lang::En), "as");
         assert_eq!(c.key_count(), 2);
         assert!(c.pop());
