@@ -3,10 +3,11 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var preset: HotkeyPreset = .doubleShift
-    @State private var loaded = false
+    @State private var applied: HotkeyPreset = .doubleShift
     @State private var shortcutConflict = false
     @State private var tryText = ""
     @State private var error: String?
+    @State private var dataError: String?
     @State private var confirmDeleteUsage = false
     @State private var showUninstall = false
 
@@ -19,7 +20,7 @@ struct SettingsView: View {
                     ForEach(HotkeyPreset.allCases, id: \.self) { Text(label($0)).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: preset) { new in if loaded { apply(new) } }
+                .onChange(of: preset) { new in if new != applied { apply(new) } }
                 if preset == .off {
                     Text(Strings.noHotkeyUseMenu).font(.caption).foregroundStyle(.secondary)
                 }
@@ -43,14 +44,19 @@ struct SettingsView: View {
             Section(Strings.data) {
                 Button(Strings.deleteUsage, role: .destructive) { confirmDeleteUsage = true }
                 Button(Strings.uninstall, role: .destructive) { showUninstall = true }
+                if let dataError { Text(dataError).font(.caption).foregroundStyle(.red) }
             }
         }
         .formStyle(.grouped)
         .navigationTitle(Strings.settings)
         .onAppear {
-            let text = (try? String(contentsOf: model.configURL)) ?? ""
-            preset = SettingsLogic.preset(fromConfig: text)
-            loaded = true
+            do {
+                let p = SettingsLogic.preset(fromConfig: try readConfig())
+                applied = p
+                preset = p
+            } catch {
+                self.error = "\(Strings.configWriteFailed): \(error.localizedDescription)"
+            }
             shortcutConflict = SystemShortcuts.inputSourceShortcutEnabled()
         }
         .confirmationDialog(Strings.deleteUsageConfirm, isPresented: $confirmDeleteUsage, titleVisibility: .visible) {
@@ -71,23 +77,32 @@ struct SettingsView: View {
 
     private func apply(_ new: HotkeyPreset) {
         do {
-            let text = (try? String(contentsOf: model.configURL)) ?? ""
+            let text = try readConfig()
             let updated = ConfigKeys.set(text, values: new.values)
             try FileManager.default.createDirectory(at: model.dataDir, withIntermediateDirectories: true)
             try Data(updated.utf8).write(to: model.configURL, options: .atomic)
+            applied = new
             error = nil
             DistributedNotificationCenter.default().postNotificationName(
                 Self.reloadName, object: nil, userInfo: nil, deliverImmediately: true)
         } catch {
             self.error = "\(Strings.configWriteFailed): \(error.localizedDescription)"
+            preset = applied
         }
+    }
+
+    /// Missing file reads as empty; any other failure throws so an
+    /// unreadable config is never overwritten.
+    private func readConfig() throws -> String {
+        guard FileManager.default.fileExists(atPath: model.configURL.path) else { return "" }
+        return try String(contentsOf: model.configURL)
     }
 
     private func deleteUsage() {
         let fm = FileManager.default
         let dir = model.blobURL("hooks/usage")
         if fm.fileExists(atPath: dir.path) {
-            do { try fm.removeItem(at: dir) } catch { self.error = error.localizedDescription }
+            do { try fm.removeItem(at: dir); dataError = nil } catch { dataError = error.localizedDescription }
         }
         model.refresh()
     }

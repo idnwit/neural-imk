@@ -25,7 +25,7 @@ struct OnboardingView: View {
                 switch step {
                 case 0: installStep
                 case 1: selectStep
-                case 2: practiceStep
+                case 2: practiceStep.onAppear { corrected = false }
                 default: CheatSheetView()
                 }
             }
