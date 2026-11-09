@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Sidebar sections; the raw value is the Cmd+<n> shortcut.
-enum Section: Int, CaseIterable {
+enum AppSection: Int, CaseIterable {
     case overview = 1, statistics, settings, log
 
     var title: String {
@@ -26,7 +26,7 @@ enum Section: Int, CaseIterable {
 struct RootView: View {
     @EnvironmentObject var model: AppModel
 
-    private var sections: [Section] { Section.allCases.filter { $0 != .log || model.developerMode } }
+    private var sections: [AppSection] { AppSection.allCases.filter { $0 != .log || model.developerMode } }
 
     var body: some View {
         NavigationSplitView {
@@ -44,17 +44,17 @@ struct RootView: View {
         .sheet(isPresented: $model.showOnboarding) { OnboardingView().environmentObject(model) }
     }
 
-    private var sectionBinding: Binding<Section?> {
+    private var sectionBinding: Binding<AppSection?> {
         Binding(get: { model.section }, set: { if let s = $0 { model.section = s } })
     }
 
     @ViewBuilder private var detail: some View {
         switch model.section {
         case .overview: OverviewView()
-        // Replaced by StatisticsView (Task 11), SettingsView (Task 12), LogView (Task 11).
-        case .statistics: PlaceholderView(title: Strings.statistics)
+        case .statistics: StatisticsView()
+        // Replaced by SettingsView (Task 12).
         case .settings: PlaceholderView(title: Strings.settings)
-        case .log: PlaceholderView(title: Strings.log)
+        case .log: LogView()
         }
     }
 }

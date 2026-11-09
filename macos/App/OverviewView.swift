@@ -5,7 +5,7 @@ struct OverviewView: View {
 
     var body: some View {
         Form {
-            SwiftUI.Section(Strings.installState) {
+            Section(Strings.installState) {
                 installRow
                 if case .installed = model.installState {
                     if model.imeSelected {
@@ -24,7 +24,7 @@ struct OverviewView: View {
                     }
                 }
             }
-            SwiftUI.Section(Strings.activeModel) {
+            Section(Strings.activeModel) {
                 LabeledContent(Strings.activeModel, value: model.activeModel)
                 if let acc = model.activeAccuracy, let recent = acc.recent {
                     LabeledContent(Strings.recentAccuracy, value: "\(percent(recent)) · \(Strings.wordsCount(acc.wordsRecent))")
@@ -35,7 +35,7 @@ struct OverviewView: View {
                     Text(Strings.noWordsYet).foregroundStyle(.secondary)
                 }
             }
-            SwiftUI.Section(Strings.cheatSheet) {
+            Section(Strings.cheatSheet) {
                 CheatSheetView()
                 Button(Strings.reviewGuide) { model.showOnboarding = true }
             }

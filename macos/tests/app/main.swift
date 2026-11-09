@@ -47,4 +47,27 @@ check(ModelAccuracy.parse(Data(#"{"version":1,"words_total":0,"corrected_total":
 check(ModelAccuracy.parse(Data("{}".utf8)), nil)
 check(ModelAccuracy(wordsRecent: 0, correctedRecent: 0, wordsTotal: 0, correctedTotal: 0).recent, nil)
 
+// Statistics logic
+check(StatsLogic.recentDateNames(["2026-01-02", ".DS_Store", "2026-01-01", "x-y", "2026-01-03"], limit: 2), ["2026-01-02", "2026-01-03"])
+func mk(_ d: String, _ vi: Int, _ en: Int, _ c: Int) -> UsageDay { UsageDay(date: d, apps: [:], total: UsageCounts(vi: vi, en: en, corrected: c)) }
+check(StatsLogic.lastDays([mk("b", 0, 0, 0), mk("a", 0, 0, 0), mk("c", 0, 0, 0)], limit: 2).map { $0.date }, ["b", "c"])
+check(StatsLogic.wordsSummary([mk("a", 600, 240, 1), mk("b", 600, 240, 3)]), "2 ngày, trung bình 840 từ mỗi ngày, 71% tiếng Việt")
+check(StatsLogic.wordsSummary([mk("a", 0, 0, 1)]), nil)
+check(StatsLogic.wordsSummary([]), nil)
+check(StatsLogic.correctionsSummary([mk("a", 1, 1, 1), mk("b", 1, 1, 3)]), "2 ngày, 4 lần sửa, nhiều nhất 3 lần một ngày")
+check(StatsLogic.percent(0.756), "76%")
+check(StatsLogic.percent(nil), "—")
+check(StatsLogic.tailLines(Data("a\nb\nc\n".utf8), offset: 0, max: 2), ["b", "c"])
+check(StatsLogic.tailLines(Data("rtial\nb\nc".utf8), offset: 5, max: 10), ["b", "c"])
+check(StatsLogic.filter(["Error x", "ok", "an ERROR"], query: "error"), ["Error x", "an ERROR"])
+check(StatsLogic.filter(["a"], query: ""), ["a"])
+let tmpLog = FileManager.default.temporaryDirectory.appendingPathComponent("statslogic-\(getpid()).log")
+let big = (0..<20000).map { "line \($0) padding padding" }.joined(separator: "\n") + "\n"
+try? Data(big.utf8).write(to: tmpLog)
+let tail = StatsLogic.readLogTail(tmpLog)
+check(tail.count, 500)
+check(tail.last, "line 19999 padding padding")
+try? FileManager.default.removeItem(at: tmpLog)
+check(StatsLogic.readLogTail(tmpLog), [])
+
 print("app ok")

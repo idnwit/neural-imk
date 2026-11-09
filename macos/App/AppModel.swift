@@ -26,7 +26,7 @@ final class AppModel: ObservableObject {
     @Published var imeSelected = false
     @Published var developerMode: Bool { didSet { defaults.set(developerMode, forKey: "developerMode") } }
     @Published var showPerAppUsage: Bool { didSet { defaults.set(showPerAppUsage, forKey: "showPerAppUsage") } }
-    @Published var section: Section = .overview
+    @Published var section: AppSection = .overview
     @Published var showOnboarding = false
     /// Bumped whenever the IME writes a `hooks/` blob or on refresh.
     @Published var dataRevision = 0
@@ -129,13 +129,24 @@ final class AppModel: ObservableObject {
     }
 
     /// Watches `blobs/hooks` and its subdirectories (the IME writes blobs by
-    /// tmp + rename inside them). Directories created later are picked up on
-    /// the next refresh.
+    /// tmp + rename inside them) and `blobs/settings`. A directory that does
+    /// not exist yet is represented by its nearest existing ancestor, so the
+    /// event for its creation re-arms the watchers (fresh install).
     private func armWatchers() {
+        let fm = FileManager.default
         let hooks = blobURL("hooks")
-        var dirs = [hooks]
-        if let subs = try? FileManager.default.contentsOfDirectory(at: hooks, includingPropertiesForKeys: [.isDirectoryKey]) {
-            dirs += subs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        var wanted = [hooks, blobURL("settings")]
+        if let subs = try? fm.contentsOfDirectory(at: hooks, includingPropertiesForKeys: [.isDirectoryKey]) {
+            wanted += subs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        }
+        var dirs: [URL] = []
+        for w in wanted {
+            var d = w
+            while d.path != dataDir.path, d.path.count > dataDir.path.count, !fm.fileExists(atPath: d.path) {
+                d = d.deletingLastPathComponent()
+            }
+            if !fm.fileExists(atPath: d.path) { continue }
+            if !dirs.contains(d) { dirs.append(d) }
         }
         for dir in dirs where watchers[dir.path] == nil {
             let fd = open(dir.path, O_EVTONLY)

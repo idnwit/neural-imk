@@ -10,7 +10,7 @@ struct NeuralIMKApp: App {
                     Button(Strings.settings) { model.section = .settings }.keyboardShortcut(",", modifiers: .command)
                 }
                 CommandMenu(Strings.view) {
-                    ForEach(Section.allCases.filter { $0 != .log || model.developerMode }, id: \.self) { s in
+                    ForEach(AppSection.allCases.filter { $0 != .log || model.developerMode }, id: \.self) { s in
                         Button(s.title) { model.section = s }.keyboardShortcut(KeyEquivalent(Character("\(s.rawValue)")), modifiers: .command)
                     }
                     Button(Strings.refresh) { model.refresh() }.keyboardShortcut("r", modifiers: .command)

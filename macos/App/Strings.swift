@@ -38,6 +38,24 @@ enum Strings {
     static let commandPrefixAction = "gõ lệnh (không thêm dấu)"
     static let reviewGuide = "Xem lại hướng dẫn"
 
+    // Statistics and log
+    static let noDataYet = "Chưa có dữ liệu — hãy gõ vài từ"
+    static let showAsTable = "Hiện dạng bảng"
+    static let wordsPerDay = "Từ mỗi ngày"
+    static let correctionsPerDay = "Sửa mỗi ngày"
+    static let modelAccuracy = "Độ chính xác model"
+    static let perApp = "Theo ứng dụng"
+    static let vietnamese = "Tiếng Việt"
+    static let english = "Tiếng Anh"
+    static let date = "Ngày"
+    static let words = "Từ"
+    static let corrections = "Lần sửa"
+    static let model = "Model"
+    static let app = "Ứng dụng"
+    static let filter = "Lọc"
+    static let openDataFolder = "Mở thư mục dữ liệu"
+    static let noLog = "Chưa có nhật ký"
+
     // Placeholders replaced by later screens
     static let comingSoon = "Sắp có"
     static let onboardingTitle = "Chào mừng đến với NeuralIMK"

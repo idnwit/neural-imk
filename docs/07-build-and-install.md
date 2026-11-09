@@ -149,9 +149,9 @@ Developer flow (`make install`):
 | --- | --- |
 | Read the debug log | Menu `Show diagnostics log`, or `log stream --predicate 'subsystem == "com.giangndm.inputmethod.NeuralIMK"'` |
 | Inspect data and event log | Menu `Open data folder` |
-| IME hangs or crashes | Switch to ABC, then `killall NeuralIMK` |
+| IME hangs or crashes | Switch to ABC, then `pkill -f "Input Methods/NeuralIMK.app/Contents/MacOS/NeuralIMK"` (not `killall`: the companion app shares the executable name) |
 | IME missing from Input Sources | Check `Info.plist`; log out and back in |
-| New build has no effect | `killall NeuralIMK`, then select the input source again |
+| New build has no effect | `pkill -f "Input Methods/NeuralIMK.app/Contents/MacOS/NeuralIMK"` (not `killall`: the companion app shares the executable name), then select the input source again |
 | Model learned badly | Menu `Khôi phục model gốc`; a corrupt checkpoint makes the engine build a fresh model and log it |
 | Uninstall | Delete `~/Library/Input Methods/NeuralIMK.app` (and `/Applications/NeuralIMK.app`) and remove it from Input Sources |
 

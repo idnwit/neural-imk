@@ -22,7 +22,10 @@ enum Installer {
         // Same volume as the destination, so the final step is a rename.
         let tmp = dir.appendingPathComponent(".NeuralIMK.installing.app")
         try? fm.removeItem(at: tmp)
-        do { try fm.copyItem(at: m.nestedIME, to: tmp) } catch { throw InstallError.copyFailed(error.localizedDescription) }
+        do { try fm.copyItem(at: m.nestedIME, to: tmp) } catch {
+            try? fm.removeItem(at: tmp)
+            throw InstallError.copyFailed(error.localizedDescription)
+        }
         terminateIME(bundleId: m.imeBundleId)
         do {
             if fm.fileExists(atPath: m.installedIME.path) {

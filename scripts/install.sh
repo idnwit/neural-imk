@@ -17,7 +17,8 @@ fi
 
 mkdir -p "$DEST"
 # Stop the running instance (SIGTERM: it flushes the engine before exiting).
-killall NeuralIMK 2>/dev/null || true
+# Not killall: the companion app shares the executable name.
+pkill -f "Input Methods/NeuralIMK.app/Contents/MacOS/NeuralIMK" 2>/dev/null || true
 rm -rf "$DEST/NeuralIMK.app"
 cp -R "$APP" "$DEST/"
 
