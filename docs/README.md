@@ -1,53 +1,55 @@
-# NeuralIMK — Tài liệu dự án
+# NeuralIMK docs
 
-Thư mục `docs/` là nguồn sự thật về thiết kế. Code là nguồn sự thật về hành vi;
-khi hai bên lệch nhau, sửa tài liệu trong cùng commit với code.
+> **Status:** stable · **Updated:** 2026-11-09
 
-## Danh mục
+`docs/` is the source of truth for design. Code is the source of truth for behaviour. When they differ, fix the doc in the same commit as the code. Start with the [project README](../README.md).
 
-| File | Nội dung | Nguồn sự thật trong code |
+## Index
+
+| File | Content | Code it describes |
 | --- | --- | --- |
-| [00-overview.md](00-overview.md) | Mục tiêu, phạm vi, ngoài phạm vi, chỉ số thành công | — |
-| [01-architecture.md](01-architecture.md) | Process, luồng, crate, quy tắc tầng | `Cargo.toml`, `arch-lint.toml` |
-| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, marked text, máy trạng thái Idle/Composing/Pending/Raw, double Shift, UX theo app, lifecycle | `crates/nimk-engine/src/{composer,hotkey}.rs`, `crates/nimk-engine/src/engine/`, `macos/` |
-| [03-context-io.md](03-context-io.md) | `bundle_id`, `caret_rel`, đổi toạ độ | `macos/NeuralIMK/InputController.swift`, `nimk-types::CaretRel` |
-| [04-engine-ml.md](04-engine-ml.md) | Action model, encoding, `LinearAction`/`GruAction`, online learning, pretrain, kết quả đo | `crates/nimk-policy`, `crates/nimk-types/src/action.rs`, `crates/nimk-engine/src/{config,labeler,trainer}.rs` |
-| [05-storage-and-log.md](05-storage-and-log.md) | Trait `Storage`, schema sự kiện, replay, metric, log synthetic | `crates/nimk-storage`, `nimk-types::event`, `crates/nimk-replay`, `crates/nimk-synth` |
-| [06-gui.md](06-gui.md) | Overlay, status item, menu IME | `macos/NeuralIMK/Overlay.swift` |
-| [07-build-and-install.md](07-build-and-install.md) | Build, đóng gói, cài đặt, debug | `Makefile`, `scripts/` |
-| [08-coding-standard.md](08-coding-standard.md) | Quy ước code, contract arch-lint, test | `arch-lint.toml`, `Makefile` |
-| [09-app-compat.md](09-app-compat.md) | Tương thích marked text theo loại app, kế hoạch test tay | `macos/NeuralIMK/InputController.swift` |
-| [10-telex.md](10-telex.md) | Telex v2 (gõ tự do theo Unikey): quy tắc R1–R10, bảng kiểm thử, điểm lệch so với các bộ gõ, quy tắc bảo trì | `crates/nimk-telex/src` |
-| [11-config.md](11-config.md) | Cấu hình TOML: mọi khoá, khoảng giá trị, mặc định, ghi đè theo nhóm app, xử lý giá trị sai | `crates/nimk-engine/config/default.toml`, `crates/nimk-engine/src/config.rs` |
-| [research/](research/) | Bản nghiên cứu gốc làm căn cứ cho quyết định (ví dụ Telex v2) | — |
-| [adr/](adr/) | Quyết định kiến trúc, mỗi quyết định một file | — |
-| [devlog.md](devlog.md) | Nhật ký phát triển (working memory), mới nhất ở trên | — |
+| [00-overview.md](00-overview.md) | Goals, non-goals, success metrics, milestones | - |
+| [01-architecture.md](01-architecture.md) | Processes, data flow, crates, layer rules | `Cargo.toml`, `arch-lint.toml` |
+| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, state machine, double Shift, per-app UX | `crates/nimk-engine/src/{composer,hotkey}.rs`, `crates/nimk-engine/src/engine/`, `macos/` |
+| [03-context-io.md](03-context-io.md) | `bundle_id`, caret position | `macos/NeuralIMK/`, `nimk-types` |
+| [04-engine-ml.md](04-engine-ml.md) | Action model contract, online learning, pretraining | `crates/nimk-policy`, `crates/nimk-engine/src/{labeler,trainer}.rs` |
+| [05-storage-and-log.md](05-storage-and-log.md) | `Storage` trait, event schema, replay, metrics | `crates/nimk-storage`, `crates/nimk-replay`, `crates/nimk-synth` |
+| [06-gui.md](06-gui.md) | Overlay, status item, input menu | `macos/NeuralIMK/Overlay.swift` |
+| [07-build-and-install.md](07-build-and-install.md) | Build, bundle, install, debug | `Makefile`, `scripts/` |
+| [08-coding-standard.md](08-coding-standard.md) | Code rules, arch-lint, tests | `arch-lint.toml`, `Makefile` |
+| [09-app-compat.md](09-app-compat.md) | Marked-text compatibility per app type | `macos/NeuralIMK/InputController.swift` |
+| [10-telex.md](10-telex.md) | Telex rules R1-R10 and tests | `crates/nimk-telex` |
+| [11-config.md](11-config.md) | Every TOML key, range and default | `crates/nimk-engine/config/default.toml` |
+| [12-metrics.md](12-metrics.md) | Ground truth and every online/offline accuracy metric | `crates/nimk-types/src/truth.rs`, `crates/nimk-engine/src/trainer/stats.rs` |
+| [models/](models/) | One doc per model: [Linear](models/linear.md), [GRU](models/gru.md) (architecture, training, checkpoints, results) | `crates/nimk-policy` |
+| [research/](research/) | Historical research notes behind decisions | - |
+| [adr/](adr/) | Architecture decision records | - |
+| [devlog.md](devlog.md) | Short dated log, newest first | - |
 
-## Chuẩn viết tài liệu
+## Writing standard
 
-### Định dạng
+### Language and format
 
-- Markdown GitHub (GFM). Một file một chủ đề; tên file `NN-kebab-case.md`.
-- Văn xuôi tiếng Việt; identifier, tên crate, tên API giữ nguyên tiếng Anh trong `backtick`.
-- Dòng đầu là `# Tiêu đề`, ngay sau là khối metadata:
+- English only. Vietnamese appears only as subject matter (Telex examples such as `tieengs` -> `tiếng`) or quoted app labels, with an English gloss.
+- GitHub Markdown, one topic per file, file names `NN-kebab-case.md`.
+- Identifiers, crate names and APIs go in `backticks`.
+- Line 1 is `# Title`, then a metadata line:
 
   ```markdown
-  > **Trạng thái:** draft | stable · **Cập nhật:** YYYY-MM-DD · **Code:** `crates/...`
+  > **Status:** draft | stable · **Updated:** YYYY-MM-DD · **Code:** `crates/...`
   ```
 
-- Câu đầu tiên của file và của mỗi mục nêu kết luận, không mở đầu kiểu "Tài liệu này mô tả...".
-- Câu < 25 từ, đoạn ≤ 3 câu. Dùng bảng cho dữ liệu nhiều thuộc tính, danh sách đánh số cho quy trình tuần tự.
-- Code mẫu trong fence có ngôn ngữ (`rust`, `swift`, `c`, `toml`, `sh`). Chữ ký API trong tài liệu phải khớp code; nếu chỉ minh hoạ, ghi `// minh hoạ`.
+- Open each file and section with the conclusion. Sentences under 25 words, paragraphs of at most 3 sentences.
+- Use tables for multi-attribute data and numbered lists for ordered steps.
+- Code blocks have a language (`rust`, `swift`, `toml`, `sh`). Signatures must match the code.
+- Never commit raw user-typed text; only aggregate statistics.
 
-### Sơ đồ ASCII
+### ASCII diagrams
 
-- Mọi sơ đồ là ASCII trong fence ```` ```text ````, không dùng ảnh hay Mermaid, để đọc được trong terminal và diff được.
-- Chỉ dùng ký tự ASCII: `+ - | / \ < > v ^ * .` và chữ. Không dùng ký tự vẽ khung Unicode.
-- Rộng tối đa 100 cột. Hộp vẽ bằng `+---+` / `|   |`; mũi tên `-->`, `<--`, `<-->`, `|` + `v` cho chiều dọc.
-- Nhãn trên mũi tên đặt ngay trên hoặc cạnh mũi tên, không cắt qua hộp.
-- Mỗi sơ đồ có một câu ngay dưới giải thích điều cần rút ra.
-
-Ví dụ:
+- Diagrams are ASCII inside ```` ```text ```` fences. No images, no Mermaid, no Unicode box drawing.
+- Use `+ - | / \ < > v ^` and letters. At most 100 columns.
+- Boxes are `+---+` / `|   |`; arrows are `-->`, `<--`, or `|` with `v`.
+- Put one sentence under each diagram stating the takeaway.
 
 ```text
 +-------------+   NSEvent    +--------------+   C ABI    +-------------+
@@ -55,30 +57,34 @@ Ví dụ:
 +-------------+              +--------------+            +-------------+
 ```
 
-Swift chỉ chuyển tiếp; mọi quyết định nằm trong Rust core.
+Swift only forwards; every decision lives in the Rust core.
 
-### ADR
+### ADRs
 
-- File `adr/NNNN-kebab-title.md`, đánh số tăng dần, không sửa ADR đã `accepted`; thay bằng ADR mới với `Supersedes: NNNN`.
-- Mẫu:
+- File `adr/NNNN-kebab-title.md`, numbered in order. Do not rewrite an accepted ADR; add a new one that supersedes it.
+- Shape:
 
   ```markdown
-  # NNNN. Tiêu đề
+  # NNNN. Title
 
-  > **Trạng thái:** proposed | accepted | superseded by NNNN · **Ngày:** YYYY-MM-DD
+  > **Status:** proposed | accepted | superseded by NNNN · **Date:** YYYY-MM-DD
 
-  ## Bối cảnh
-  ## Quyết định
-  ## Hệ quả
+  ## Context
+  ## Decision
+  ## Consequences
   ```
+
+### Model docs
+
+Each model has `models/<name>.md` with: what it is, architecture (with diagram and parameter count), training, checkpoints, results with exact reproduction commands, date and commit, and known limitations. Unmeasured metrics say "not measured".
 
 ### Devlog
 
-- Bảng `Ngày | Loại | Ghi chú`, mới nhất ở trên. Loại: `quyết định`, `phát hiện`, `việc mở`, `xong`.
-- Mỗi milestone hoàn thành ghi một dòng `xong` kèm lệnh đã chạy để kiểm chứng.
+- Table `Date | Type | Note`, newest first. Types: `decision`, `finding`, `open`, `done`.
 
-### Khi nào cập nhật
+### When to update
 
-- Đổi API công khai, schema sự kiện, quy tắc tầng hay config mặc định → cập nhật file tương ứng trong cùng commit.
-- Thêm quy tắc vào `arch-lint.toml` → cập nhật `08-coding-standard.md` và `01-architecture.md`.
-- Quyết định có đánh đổi → viết ADR.
+- Public API, event schema, layer rules or config defaults change: update the matching doc in the same commit.
+- New `arch-lint.toml` rule: update `08-coding-standard.md` and `01-architecture.md`.
+- A decision with trade-offs: write an ADR.
+- Model code or training changes: re-measure and update `models/*.md` and the README table.

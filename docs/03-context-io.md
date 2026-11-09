@@ -1,13 +1,13 @@
 # Context I/O
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-types/src/ctx.rs`, `macos/NeuralIMK/{InputController,Context}.swift`
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `crates/nimk-types/src/ctx.rs`, `macos/NeuralIMK/{InputController,Context}.swift`
 
-Context chỉ gồm `bundle_id` của app và vị trí con trỏ tương đối trong cửa sổ app.
-Cả hai lấy được mà không cần quyền Accessibility hay Screen Recording; `field_id` chỉ dùng để nhận biết đổi ô nhập.
+The context is only the app's `bundle_id` and the caret position relative to the app window.
+Both come without Accessibility or Screen Recording permission. `field_id` is used only to detect a change of input field.
 
-## Kiểu dữ liệu
+## Types
 
-Shim gửi `AppContext` khi activate và ở phím đầu của mỗi từ; `caret = None` khi không biết.
+The shim sends an `AppContext` on activation and at the first key of each word. `caret = None` means unknown.
 
 ```rust
 pub struct CaretRel {
@@ -28,34 +28,33 @@ pub struct AppContext {
 }
 ```
 
-| Thuộc tính | Giá trị |
+| Property | Value |
 | --- | --- |
-| Gốc toạ độ | Góc trên–trái cửa sổ app, mỗi trục trong `[0, 1]` |
-| Unknown | Shim gửi `-1`; `CaretRel::new` trả `None` khi trục ngoài `[0, 1]` hoặc không hữu hạn |
-| Đồng hồ | `timestamp` cùng đồng hồ với `KeyEvent::timestamp` (giây từ lúc boot) |
+| Origin | Top-left of the app window; each axis in `[0, 1]` |
+| Unknown | The shim sends `-1`; `CaretRel::new` returns `None` for an axis outside `[0, 1]` or not finite |
+| Clock | `timestamp` shares the clock of `KeyEvent::timestamp` (seconds since boot) |
 
-## Nguồn dữ liệu
+## Sources
 
-Mỗi trường lấy từ một API công khai của IMK hoặc CoreGraphics.
+Each field comes from a public IMK or CoreGraphics API.
 
-| Trường | Lấy từ | Khi nào cập nhật |
+| Field | Source | Updated |
 | --- | --- | --- |
-| `bundle_id` | `client.bundleIdentifier()` (`IMKTextInput`) | `activateServer`, so lại ở phím đầu mỗi từ |
-| `field_id` | Hash của identity object IMK client (opaque) | Đổi khi focus sang ô nhập khác |
-| Rect con trỏ (screen, Cocoa) | `client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)` | Phím đầu mỗi từ |
-| Rect cửa sổ app (screen, Quartz) | `CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)` | Cùng lúc với rect con trỏ; cache 1 s theo PID |
+| `bundle_id` | `client.bundleIdentifier()` (`IMKTextInput`) | `activateServer`; rechecked at the first key of each word |
+| `field_id` | Hash of the IMK client object identity (opaque) | Changes when focus moves to another input field |
+| Caret rect (screen, Cocoa) | `client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)` | First key of each word |
+| Window rects (screen, Quartz) | `CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)` | With the caret rect; cached 1 s per PID |
 
-Chọn cửa sổ trong kết quả `CGWindowListCopyWindowInfo`:
+Window selection:
 
-1. Lọc `kCGWindowOwnerPID` = PID của `NSWorkspace.shared.frontmostApplication`.
-2. Lọc `kCGWindowLayer == 0` (cửa sổ thường, bỏ menu và panel nổi).
-3. Đọc `kCGWindowBounds`, chọn cửa sổ chứa tâm rect con trỏ (sau khi đổi sang Quartz).
-4. Không có cửa sổ nào chứa → `caret = None`.
+1. Keep windows whose `kCGWindowOwnerPID` is the client app's PID (the frontmost app if its bundle id matches).
+2. Keep `kCGWindowLayer == 0` (normal windows, not menus or floating panels).
+3. Read `kCGWindowBounds` and pick the window containing the caret rect's center, after converting to Quartz.
+4. No window contains it: `caret = None`.
 
-## Đổi toạ độ Cocoa → Quartz
+## Cocoa to Quartz
 
-IMK trả rect con trỏ theo Cocoa (gốc dưới–trái màn hình chính), còn `CGWindowList` dùng Quartz (gốc trên–trái).
-Phải lật trục y trước khi chia cho rect cửa sổ.
+IMK returns the caret rect in Cocoa coordinates (origin bottom-left of the main screen). `CGWindowList` uses Quartz (origin top-left). Flip y before dividing by the window rect.
 
 ```text
  Cocoa (IMK caret rect)                      Quartz (CGWindowList bounds)
@@ -75,31 +74,20 @@ Phải lật trục y trước khi chia cho rect cửa sổ.
             x_q = x_c
 ```
 
-Chỉ trục y đổi; `H_main` luôn là chiều cao màn hình chính (`screens[0]`), kể cả khi con trỏ ở màn hình phụ.
+Only y changes. `H_main` is always the main screen's height (`screens[0]`), even if the caret is on another display.
 
-Sau khi đổi:
+After the flip, using the caret rect's top-left corner:
 
 ```text
  x = clamp((caret.x_q - win.x) / win.width,  0, 1)
  y = clamp((caret.y_q - win.y) / win.height, 0, 1)
 ```
 
-Rect con trỏ bằng 0 hoặc không tìm thấy cửa sổ → shim gửi `(-1, -1)`.
+An empty caret rect or no matching window makes the shim send `(-1, -1)`.
 
-Mẫu Swift (minh hoạ):
+## Caret grid
 
-```swift
-// minh hoạ
-var line = NSRect.zero
-_ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
-let mainH = NSScreen.screens[0].frame.height
-let caretQ = CGRect(x: line.minX, y: mainH - line.minY - line.height,
-                    width: line.width, height: line.height)
-```
-
-## Lưới ô con trỏ
-
-`nimk_policy::encode` lưới hoá `caret` thành ô 8×8 (65 giá trị, 64 là "không biết") để có embedding "khu vực nhập"; log vẫn lưu số thực gốc.
+`nimk_policy::encode` bins `caret` into an 8x8 grid: 65 values, where 64 means unknown. This gives the model an "input area" feature. The log keeps the raw floats.
 
 ```text
         x:  0    1    2    3    4    5    6    7
@@ -114,17 +102,17 @@ let caretQ = CGRect(x: line.minX, y: mainH - line.minY - line.height,
           +----+----+----+----+----+----+----+----+
 ```
 
-`cell = qx + n * qy`, với `q(v) = min(floor(v * n), n - 1)`; vì vậy `x = 1.0` rơi vào cột 7, không tràn sang 8.
+`cell = qx + n * qy` with `q(v) = min(floor(v * n), n - 1)`, so `x = 1.0` lands in column 7.
 
-| Trường hợp | Feature |
+| Case | Feature |
 | --- | --- |
-| `caret = Some(c)` | `c.cell(8)` ∈ `0..=63` |
-| `caret = None` | bucket riêng "unknown" |
+| `caret = Some(c)` | `c.cell(8)`, in `0..=63` |
+| `caret = None` | Its own "unknown" bucket (64) |
 
-## Rủi ro đã biết
+## Known risks
 
-| Rủi ro | Xử lý trong PoC |
+| Risk | Handling |
 | --- | --- |
-| Terminal cũ, vài app Electron trả rect con trỏ = 0 hoặc sai | Chấp nhận `None` ("unknown") |
-| Màn hình phụ nằm trên/trái màn hình chính (toạ độ âm) | Dùng `screens[0]` để đổi; cần test M3 |
-| Cửa sổ chồng nhau cùng PID | Chọn cửa sổ chứa con trỏ; cache 1 s có thể lệch khi kéo cửa sổ |
+| Some terminals and Electron apps return a zero or wrong caret rect | Accept `None` (unknown) |
+| A second display above or left of the main one (negative coordinates) | Convert with `screens[0]`; not yet tested on hardware |
+| Overlapping windows of one PID | Pick the window containing the caret; the 1 s cache can lag while a window is dragged |

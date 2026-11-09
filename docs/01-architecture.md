@@ -1,21 +1,21 @@
-# Kiến trúc
+# Architecture
 
-> **Trạng thái:** stable · **Cập nhật:** 2026-11-08 · **Code:** `Cargo.toml`, `arch-lint.toml`, `crates/nimk-engine/src/{lib,engine}.rs`, `crates/nimk-ffi/src`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `arch-lint.toml`, `crates/nimk-engine/src/{lib,engine}.rs`, `crates/nimk-ffi/src`
 
-NeuralIMK là một process `NeuralIMK.app`: Swift shim mỏng nói chuyện với IMK/AppKit, mọi logic nằm trong Rust core link tĩnh qua C ABI.
-Hot path chỉ đọc snapshot model; trainer và log writer chạy nền nên phím không bao giờ chờ I/O hay training.
+NeuralIMK is one process, `NeuralIMK.app`. A thin Swift shim talks to IMK/AppKit; all logic lives in a Rust core linked statically through a C ABI.
+The hot path only reads a model snapshot. Training and log writing run in the background, so a keystroke never waits for I/O.
 
-## Process và luồng
+## Process and threads
 
-Một process, ba luồng Rust; chỉ module `trainer` và `logger` được tạo thread.
+One process, three Rust threads. Only the `trainer` and `logger` modules spawn threads.
 
-| Luồng | Chạy gì | Giao tiếp |
+| Thread | Runs | Communicates |
 | --- | --- | --- |
-| Main (IMK, gọi từ Swift) | `Engine::on_key` / `on_context` / `commit_pending` / `teach`: hotkey → composer → `ImeModel::score` → áp action | Đọc `Arc<dyn ImeModel>` hiện tại; gửi `Record` và `Example` qua channel |
-| Trainer | Replay buffer, cửa sổ correction, `ImeLearner::update`, lưu snapshot | Gửi `Arc<dyn ImeModel>` mới qua mpsc; engine `try_recv` ở ranh giới từ |
-| Log writer | Serialize `Record` → `EventSink::append` | Nhận record qua channel |
+| Main (IMK, called from Swift) | `Engine::on_key`, `on_context`, `commit_pending`, `teach`: hotkey, composer, model score, apply | Reads the current `Arc<dyn ImeModel>`; sends `Record` and `Example` over channels |
+| Trainer | Replay buffer, correction window, `ImeLearner::update`, snapshots, per-model stats | Sends new `Arc<dyn ImeModel>` over mpsc; the engine `try_recv`s at a word boundary |
+| Log writer | Serializes `Record` to `EventSink::append` | Receives records over a channel |
 
-Với `Threading::Inline` (test, replay, synth), cả ba chạy trên luồng gọi, kết quả tất định.
+With `Threading::Inline` (tests, replay, synth) all three run on the calling thread, so results are deterministic.
 
 ```text
 +------------+  C ABI   +-----------------------------+ Record  +--------+ bytes +---------+
@@ -30,11 +30,12 @@ Với `Threading::Inline` (test, replay, synth), cả ba chạy trên luồng g�
                         +-------------------------+
 ```
 
-Mũi tên duy nhất đi vào main thread từ nền là snapshot model, và main thread chỉ nhận nó ở ranh giới từ.
+The only arrow from the background into the main thread is a model snapshot, taken at a word boundary.
 
-## Vòng lặp action
+## Per-key loop
 
-Mỗi phím đi qua một vòng cố định: engine dựng `Observation`, model trả điểm, engine áp `Action` một cách cơ học.
+Each key follows a fixed loop: the engine builds an `Observation`, the model scores it, and the engine applies the result mechanically.
+Details of the states and edits are in [02](02-keyboard-io.md); the model is covered in [04](04-engine-ml.md).
 
 ```text
  KeyEvent
@@ -60,11 +61,11 @@ Mỗi phím đi qua một vòng cố định: engine dựng `Observation`, model
    marked, mode, overlay }            Example -> trainer
 ```
 
-Hotkey đứng trước model và không bao giờ vào `Observation`; mọi lựa chọn còn lại do model quyết định, engine chỉ che action vô nghĩa bằng `ActionMask`.
+The hotkey runs before the model and never enters `Observation`. The model only picks the rendering (VI or EN); the edit is structural and fixed by the state machine.
 
-## Crate và tầng
+## Crates and layers
 
-Workspace `crates/*` gồm 8 crate, edition 2024, phụ thuộc chỉ đi một chiều từ trên xuống.
+The workspace `crates/*` has 8 crates (edition 2024). Dependencies only point downward.
 
 ```text
  +--------------+  +--------------+  +--------------+      +-------------------------+
@@ -91,80 +92,63 @@ Workspace `crates/*` gồm 8 crate, edition 2024, phụ thuộc chỉ đi một 
                  +-----------------+
 ```
 
-Tầng trên được bỏ qua tầng giữa (ví dụ `nimk-synth` dùng thẳng `nimk-policy`), nhưng không bao giờ phụ thuộc ngược lên.
+A layer may skip the one below it (`nimk-synth` uses `nimk-policy` directly) but never depends upward.
 
-| Crate | Loại | Trách nhiệm | Dependency nội bộ (`Cargo.toml`) |
-| --- | --- | --- | --- |
-| `nimk-types` | lib | `Lang`, `KeyEvent`, `AppContext`, `CaretRel`, hợp đồng action (`Observation`, `Action`, `EditAction`, `ActionMask`, `ActionScores`, `Example`), schema sự kiện | — |
-| `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore`; `PlainFsStorage`, `MemStorage`, `LayeredStorage`, `ReadOnlyDirBlobs`; chỉ biết bytes | — |
-| `nimk-telex` | lib | `transform`, `encode`, `is_valid_syllable`; Telex là công cụ, không phải luật | `nimk-types` |
-| `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `build_action`, `decide`, `encode`; `LinearAction`, `GruAction` (backend `burn`) | `nimk-types` |
-| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, logger, từ pending ([02](02-keyboard-io.md)) | `types`, `storage`, `telex`, `policy` |
-| `nimk-ffi` | staticlib | C ABI cho Swift; crate duy nhất có `extern "C"`/`unsafe` | `types`, `engine`, `storage` |
-| `nimk-replay` | bin + lib | Replay log qua model, xuất metric ([05](05-storage-and-log.md)) | `types`, `storage`, `policy`, `engine` |
-| `nimk-synth` | lib + bin | Dữ liệu gõ synthetic, `write_log`, `pretrain` ([ADR 0006](adr/0006-synthetic-pretraining.md), [ADR 0007](adr/0007-neural-action-model.md)) | `types`, `telex`, `storage`, `policy`, `engine` |
-| `macos/NeuralIMK` | Swift | IMK shim, overlay, status item, `Debouncer` ([09](09-app-compat.md)) | `libnimk_ffi.a` qua header |
+| Crate | Kind | Role |
+| --- | --- | --- |
+| `nimk-types` | lib | `Lang`, `KeyEvent`, `AppContext`, action contract (`Observation`, `Action`, `ActionMask`, `Example`), event schema |
+| `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore` and their implementations; bytes only |
+| `nimk-telex` | lib | `transform`, `encode`, `is_valid_syllable` ([10](10-telex.md)) |
+| `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `LinearAction`, `GruAction` (backend `burn`); see [linear](models/linear.md), [gru](models/gru.md) |
+| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, logger |
+| `nimk-ffi` | staticlib | C ABI for Swift; the only crate with `extern "C"` and `unsafe` |
+| `nimk-replay` | bin + lib | Replays a log through a model and reports metrics ([05](05-storage-and-log.md)) |
+| `nimk-synth` | lib + bin | Synthetic typing data and pretraining ([ADR 0006](adr/0006-synthetic-pretraining.md)) |
+| `macos/NeuralIMK` | Swift | IMK shim, overlay, status item ([06](06-gui.md), [09](09-app-compat.md)) |
 
-Quy tắc tầng được khoá bằng `arch-lint.toml` và chạy trong `make check`; bảng đầy đủ ở [08](08-coding-standard.md#contract-arch-lint).
+`arch-lint.toml` enforces the layering in `make check`; see [08](08-coding-standard.md#contract-arch-lint).
 
-## Module trong `nimk-engine`
+## Modules in `nimk-engine`
 
-Năm module nội bộ độc lập với nhau; `engine.rs` nối chúng, và hai file con `engine/flow.rs`, `engine/switch.rs` giữ phần logic của `Engine`.
+The five inner modules do not `use` each other. `engine.rs` wires them together; `engine/*.rs` holds the rest of `Engine`.
 
-```text
-                      +-------------------------------------------+
-                      |                engine.rs                  |
-                      | Engine, EngineOutput, Overlay             |
-                      +-------------------------------------------+
-                        |  engine/flow.rs     engine/switch.rs  |
-                        |  (per-key loop)     (hotkey, flip)     |
-                        v        v         v          v         v
-                  +--------+ +-------+ +--------+ +--------+ +--------+
-                  |composer| |hotkey | |labeler | |trainer | |logger  |
-                  +--------+ +-------+ +--------+ +--------+ +--------+
-                                                   thread     thread
-```
-
-Module con không `use` nhau (`eng-*-independent`); thread chỉ được tạo trong `trainer` và `logger` (`hot-path-no-io`).
-
-| Module | Trách nhiệm |
+| Module | Role |
 | --- | --- |
-| `composer` | Buffer `raw` của từ hiện tại, bản `vi`, word id; không biết Telex hay biên từ ([02](02-keyboard-io.md)) |
-| `hotkey` | State machine double Shift / Ctrl+Space ([02](02-keyboard-io.md)) |
-| `labeler` | Commit, focus prior, correction → nhãn chốt và `Example` ([04](04-engine-ml.md)) |
-| `trainer` (+ `trainer/tests.rs`) | Replay buffer, cửa sổ correction, snapshot; nền hoặc inline |
-| `logger` | Serialize `Record` vào `EventSink` |
-| `engine/flow.rs` | Vòng lặp mỗi phím: `Observation`, gọi model, áp action, commit, nhãn |
-| `engine/switch.rs` | `manual_switch`: hotkey theo thời điểm, lật từ pending |
+| `composer` | Buffer for the current word: `raw`, `vi`, word id ([02](02-keyboard-io.md)) |
+| `hotkey` | Double-Shift / Ctrl+Space detector ([02](02-keyboard-io.md)) |
+| `labeler` | Commits, focus prior and corrections become labels and `Example`s ([04](04-engine-ml.md)) |
+| `trainer` | Replay buffer, correction window, snapshots, stats; background or inline |
+| `logger` | Serializes `Record` into the `EventSink` |
+| `engine/flow.rs`, `machine.rs` | Per-key loop and the 4-state machine |
+| `engine/switch.rs` | `manual_switch`: hotkey handling, flipping the pending word |
+| `engine/model.rs` | Model switch, reset, checkpoints, per-model online training and stats |
 
-## API công khai của `nimk-engine`
+Threads are spawned only in `trainer` and `logger` (lint `hot-path-no-io`).
 
-`Engine` là cửa duy nhất mà FFI, replay và synth dùng; không `Sync`, chỉ gọi từ một luồng.
+## Public API of `nimk-engine`
+
+`Engine` is the only entry point for FFI, replay and synth. It is not `Sync`; call it from one thread.
 
 ```rust
 impl Engine {
     pub fn new(cfg: EngineConfig, storage: Arc<dyn Storage>, session: SessionInfo) -> Self;
-    pub fn with_model(
-        cfg: EngineConfig,
-        storage: Arc<dyn Storage>,
-        session: SessionInfo,
-        learner: Box<dyn ImeLearner>,
-    ) -> Self;
+    pub fn with_model(cfg, storage, session, learner: Box<dyn ImeLearner>) -> Self;
+    pub fn with_models(cfg, storage, session, learners: Vec<(ModelKind, Box<dyn ImeLearner>)>) -> Self;
     pub fn on_context(&mut self, ctx: &AppContext) -> EngineOutput;
     pub fn on_key(&mut self, key: &KeyEvent) -> EngineOutput;
-    pub fn teach(
-        &mut self,
-        key: &KeyEvent,
-        target: Action,
-        edit_weight: f32,
-        render_weight: f32,
-    ) -> EngineOutput;
+    pub fn teach(&mut self, key: &KeyEvent, target: Action, edit_weight: f32, render_weight: f32)
+        -> EngineOutput;
     pub fn commit_pending(&mut self, timestamp: f64) -> EngineOutput;
+    pub fn idle_commit_secs(&self) -> f64;
+    pub fn note_navigation(&mut self);
+    pub fn reconfigure(&mut self, cfg: EngineConfig);
     pub fn switch_model(&mut self, kind: ModelKind, timestamp: f64) -> EngineOutput;
-    pub fn model_kind(&self) -> ModelKind;
-    pub fn has_checkpoint(&self, kind: ModelKind) -> bool;
-    pub fn checkpoint_source(&self, kind: ModelKind) -> CheckpointSource; // User | Bundled | None
     pub fn reset_model(&mut self, timestamp: f64) -> EngineOutput;
+    pub fn model_kind(&self) -> ModelKind;
+    pub fn checkpoint_source(&self, kind: ModelKind) -> CheckpointSource; // User | Bundled | None
+    pub fn model_stats(&self, kind: ModelKind) -> ModelStats;
+    pub fn online_training(&self, kind: ModelKind) -> bool;
+    pub fn set_online_training(&mut self, kind: ModelKind, on: bool);
     pub fn inject_label(&mut self, target: Target, label: Lang, weight: f32, source: LabelSource);
     pub fn mode(&self) -> Lang;
     pub fn policy_id(&self) -> Arc<str>;
@@ -179,87 +163,74 @@ pub struct EngineOutput {
     pub mode: Option<Lang>,
     pub overlay: Option<Overlay>,
 }
-
-pub struct SessionInfo {
-    pub id: String,
-    pub wall_unix_ms: u64,
-    pub app_version: String,
-}
 ```
 
-| Hành vi | Nội dung |
+| Behavior | Detail |
 | --- | --- |
-| `new` không bao giờ lỗi | Đọc blob `settings/model` (nếu hợp lệ thì ghi đè `cfg.policy`), rồi `model/<kind>/latest` (`linear_action` hoặc `gru_action`); thiếu hoặc hỏng → model mới từ `cfg.policy` (mặc định `GruAction`); sink lỗi → null sink; cả hai báo qua `take_diagnostics` |
-| `with_model` | Không nạp snapshot; dùng cho benchmark, pretrain và test |
-| `new` ghi `session_start` | Record đầu tiên chứa `EngineConfig` dạng JSON để replay dựng lại |
-| `on_key` không panic | Lỗi nội bộ → `consumed = false`, phím tới app |
-| `teach` | Như `on_key` nhưng áp `target` thay cho quyết định của model và xếp một `Example`; model không được gọi, `Decision.p_vi = None`. Edit bị mask chặn rơi về `Pass`; hotkey vẫn được nhận. Dùng cho pretrain ([04](04-engine-ml.md)) |
-| `on_context` | Đổi app hoặc `field_id` → commit từ đang gõ (`Boundary::External`), id focus mới, model chọn prior |
-| `switch_model` | Commit từ đang gõ như `commit_pending`, chốt nhãn treo, lưu model hiện tại vào checkpoint riêng, nạp `model/<kind>/latest` của model mới (thiếu/hỏng → model mới + diagnostic), publish snapshot, ghi `settings/model`, log `model_switch`. Cùng kind chỉ commit. Chạy được với cả `Background` và `Inline` ([04](04-engine-ml.md#chọn-model)) |
-| `shutdown` | Chốt nhãn còn treo, huấn luyện nốt phần dư của `teach`, flush log, lưu snapshot; lỗi duy nhất là `EngineError::Storage` |
+| `new` never fails | Reads blob `settings/model` (overrides `cfg.policy`) and `settings/models` (per-model `online_training`), then loads each `model/<kind>/latest`. Missing or corrupt: fresh model from `cfg.policy` (default `gru_action`). Failed sink: null sink. Both go to `take_diagnostics` |
+| `new` logs `session_start` | The first record holds `EngineConfig` as JSON so replay can rebuild it |
+| `with_model` | Loads no snapshot and has no shadow model; for benchmarks, pretrain and tests |
+| `with_models` | The `cfg.policy` learner serves; the others are shadows while their online training is on ([ADR 0013](adr/0013-shadow-training-and-model-stats.md)) |
+| `on_key` | Never panics; an internal error gives `consumed = false` |
+| `teach` | Like `on_key`, but applies `target` instead of the model's choice and queues an `Example`. The model is not called. Used for pretraining |
+| `on_context` | A new app or `field_id` commits the current word (`Boundary::External`), sets a new focus id and a prior |
+| `switch_model` | Commits like `commit_pending`, settles pending labels, saves the old model, loads the new one, writes `settings/model`, logs `model_switch`. Same kind only commits |
+| `shutdown` | Settles pending labels, trains the `teach` remainder, flushes the log, saves snapshots. Only error: `EngineError::Storage` |
 
-`mode()` là sticky mode: mode mà từ kế tiếp bắt đầu, không phải rendering đang hiện của từ dở.
+`mode()` is the sticky mode: the mode the next word starts in, not the rendering of the word being typed.
 
-## Đồng hồ và tất định
+## Clock and determinism
 
-Engine không đọc wall clock; đồng hồ duy nhất là `KeyEvent::timestamp` / `AppContext::timestamp` (giây từ lúc boot).
-Wall clock chỉ do host cấp (`SessionInfo::wall_unix_ms`) hoặc do sink đọc để đặt tên segment.
+The engine never reads the wall clock. Its only clock is `KeyEvent::timestamp` / `AppContext::timestamp` (seconds since boot).
+The host supplies wall time (`SessionInfo::wall_unix_ms`), and the storage sink reads it to name segments.
 
-| Ai | Được đọc wall clock? | Khoá bởi |
+| Who | May read wall clock? | Enforced by |
 | --- | --- | --- |
-| `nimk-types`, `nimk-telex`, `nimk-policy` | Không (cũng không I/O, thread, lock) | `pure-no-side-effects` |
-| `nimk-engine` | Không (`std::time`, `std::env` bị cấm) | `engine-event-clock` |
-| `nimk-storage` (sink) | Có, để đặt tên segment | — |
-| `nimk-ffi` | Có, để dựng `SessionInfo` | — |
+| `nimk-types`, `nimk-telex`, `nimk-policy` | No (also no I/O, threads, locks) | `pure-no-side-effects` |
+| `nimk-engine` | No (`std::time`, `std::env` banned) | `engine-event-clock` |
+| `nimk-storage` (sink) | Yes, to name segments | none |
+| `nimk-ffi` | Yes, to build `SessionInfo` | none |
 
-Nhờ vậy cùng log + cùng config cho ra cùng quyết định khi replay.
-`GruAction` tự giữ RNG theo seed vì RNG thiết bị của `burn` là global của process ([04](04-engine-ml.md)).
+The same log and config therefore replay to the same decisions. `GruAction` keeps its own seeded RNG because `burn`'s device RNG is process-global.
 
-## Hợp đồng C ABI
+## C ABI
 
-`nimk-ffi` xuất 16 hàm; header sinh bằng `make header` (cbindgen) ra `target/nimk_ffi.h`, bản dưới đây suy ra từ `exports.rs` và `abi.rs`.
+`nimk-ffi` exports 19 functions. The header is generated by `make header` (cbindgen) into `target/nimk_ffi.h`.
 
-```c
-// minh hoạ từ exports.rs; header thật do cbindgen sinh
-NimkCore   *nimk_new(const char *data_dir, const char *models_dir, const char *app_version);
-void        nimk_free(NimkCore *core);
-bool        nimk_shutdown(NimkCore *core);
-void        nimk_context(NimkCore *core, const NimkCtx *ctx, NimkOut *out);
-void        nimk_key(NimkCore *core, const NimkKey *key, NimkOut *out);
-void        nimk_commit_pending(NimkCore *core, double timestamp, NimkOut *out);
-bool        nimk_set_model(NimkCore *core, uint8_t kind, double timestamp, NimkOut *out);
-uint8_t     nimk_model(const NimkCore *core);
-bool        nimk_reset_model(NimkCore *core, double timestamp, NimkOut *out);
-uint8_t     nimk_checkpoint_source(const NimkCore *core, uint8_t kind);
-uint8_t     nimk_mode(const NimkCore *core);
-const char *nimk_policy_id(NimkCore *core);
-const char *nimk_take_diagnostics(NimkCore *core);
-uint32_t    nimk_set_config(NimkCore *core, const char *config_toml);
-double      nimk_idle_commit_secs(const NimkCore *core);
-void        nimk_note_navigation(NimkCore *core);
-```
-
-`nimk_set_config` nhận văn bản `config.toml` của người dùng (hoặc null), ghép lên mặc định nhúng và trả số giá trị bị bỏ (chi tiết ở `nimk_take_diagnostics`, [11](11-config.md)); `nimk_idle_commit_secs` cho timer rảnh của Swift (0 = tắt, đổi theo nhóm app của focus); `nimk_note_navigation` báo con trỏ đổi do chuột (thoát `Raw`). Hợp đồng `NimkOut` không đổi: `commit` luôn được áp trước, rồi phím tới app khi `consumed = false` ([ADR 0012](adr/0012-unified-boundary-commit.md)).
-`NIMK_MODEL_LINEAR` = 0 và `NIMK_MODEL_GRU` = 1 là mã `kind`; `nimk_set_model` trả `false` (và để `out` ở dạng pass-through) khi `kind` lạ hoặc core null.
-`nimk_checkpoint_source` trả `NIMK_CHECKPOINT_NONE` (0), `NIMK_CHECKPOINT_BUNDLED` (1) hoặc `NIMK_CHECKPOINT_USER` (2); `nimk_reset_model` xoá checkpoint của người dùng và nạp lại model gốc.
-
-`NimkOut` mirror `EngineOutput`. Hợp đồng đầu ra: Swift áp `commit` (`insertText`), rồi `marked` (`setMarkedText`); từ model kết thúc ở lại `marked` (từ + ranh giới) cho tới khi từ kế tiếp bắt đầu, lúc đó `commit` mang từ pending ([ADR 0011](adr/0011-pending-word-commit.md)).
-
-| Trường `NimkOut` | Nghĩa |
+| Group | Functions |
 | --- | --- |
-| `consumed` | `false` → trả phím nguyên vẹn cho app |
-| `commit`, `marked` | Null = không đổi; `marked = ""` xoá preedit; `commit` là từ đang gõ hoặc từ pending cộng ranh giới |
+| Lifecycle | `nimk_new(data_dir, models_dir, app_version)`, `nimk_free`, `nimk_shutdown` |
+| Input | `nimk_context`, `nimk_key`, `nimk_commit_pending`, `nimk_note_navigation` |
+| Model | `nimk_set_model`, `nimk_model`, `nimk_reset_model`, `nimk_checkpoint_source`, `nimk_model_stats`, `nimk_set_online_training`, `nimk_online_training` |
+| State and config | `nimk_mode`, `nimk_policy_id`, `nimk_take_diagnostics`, `nimk_set_config`, `nimk_idle_commit_secs` |
+
+- `nimk_set_config` takes the user's `config.toml` text (or null), merges it onto the embedded defaults, and returns the number of rejected values ([11](11-config.md)).
+- `nimk_idle_commit_secs` feeds the Swift idle timer (0 = off; varies by app category).
+- `nimk_note_navigation` reports a mouse caret move and leaves `Raw`.
+- `kind` codes: `NIMK_MODEL_LINEAR` = 0, `NIMK_MODEL_GRU` = 1. `nimk_set_model` returns `false` for an unknown kind or null core.
+- `nimk_checkpoint_source` returns `NIMK_CHECKPOINT_NONE` (0), `BUNDLED` (1) or `USER` (2). `nimk_reset_model` deletes the user checkpoint and reloads the bundled model.
+- `nimk_model_stats` fills `NimkModelStats` with per-model counters (aggregate only, [05](05-storage-and-log.md)).
+
+`NimkOut` mirrors `EngineOutput`. Swift applies `commit` (`insertText`) first, then `marked` (`setMarkedText`) ([ADR 0011](adr/0011-pending-word-commit.md), [ADR 0012](adr/0012-unified-boundary-commit.md)).
+
+| `NimkOut` field | Meaning |
+| --- | --- |
+| `consumed` | `false`: give the key back to the app untouched |
+| `commit`, `marked` | Null = unchanged; `marked = ""` clears the preedit |
 | `mode` | `NIMK_MODE_EN` (0), `NIMK_MODE_VI` (1), `NIMK_MODE_UNCHANGED` (255) |
 | `overlay` | `NIMK_OVERLAY_NONE` (0), `NIMK_OVERLAY_AUTO` (1), `NIMK_OVERLAY_MANUAL` (2) |
 
-Quy tắc FFI: mỗi hàm bọc `catch_unwind`, lỗi → `NimkOut::pass_through()` (`consumed = false`); chuỗi trong `NimkOut` sống đến lần gọi kế.
-`nimk_new` trả null khi engine không dựng được; mọi hàm khác chấp nhận null và cho phím đi qua. Panic ghi vào diagnostics (tối đa 256 dòng).
-Không mở được data dir thì dùng `MemStorage` và báo qua diagnostics.
-`data_dir` do Swift lấy từ SDK (không hard-code); `models_dir` là thư mục model đóng gói trong app, null hoặc thiếu thì chạy không có model gốc và báo qua diagnostics ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
+FFI rules:
 
-### Phân tầng storage
+- Every function wraps `catch_unwind`; on error it returns `NimkOut::pass_through()` (`consumed = false`). Panics go to diagnostics (at most 256 lines).
+- Strings in `NimkOut` live until the next call; Swift copies them at once.
+- `nimk_new` returns null if the engine cannot be built. Every other function accepts null and passes keys through.
+- If the data dir cannot be opened, the core uses `MemStorage` and reports it in diagnostics.
+- Swift takes `data_dir` from the SDK. `models_dir` is the bundled model folder; if null or missing, no bundled model is used ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
 
-`nimk_new` dựng `LayeredStorage(PlainFsStorage(data_dir), ReadOnlyDirBlobs(models_dir))`; engine vẫn chỉ cầm `Arc<dyn Storage>`.
+### Storage layers
+
+`nimk_new` builds `LayeredStorage(PlainFsStorage(data_dir), ReadOnlyDirBlobs(models_dir))`. The engine still holds only `Arc<dyn Storage>`.
 
 ```text
  Swift: FileManager                     Swift: Bundle.main.resourceURL
@@ -275,4 +246,4 @@ Không mở được data dir thì dùng `MemStorage` và báo qua diagnostics.
 +-----------------------------------------------------------+
 ```
 
-Checkpoint học thêm luôn ghi vào tầng người dùng và che bản gốc; xoá nó đưa model về bản gốc.
+Learned checkpoints always go to the user layer and shadow the bundled one; deleting it restores the bundled model.

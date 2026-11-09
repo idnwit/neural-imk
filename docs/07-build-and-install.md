@@ -1,27 +1,26 @@
-# Build & cài đặt
+# Build and install
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `Makefile`, `Cargo.toml`, `scripts/`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Makefile`, `scripts/`, `Cargo.toml`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
 
-Build không dùng Xcode project: `cargo` tạo `libnimk_ffi.a`, `cbindgen` sinh header, `swiftc` link thành `NeuralIMK.app`.
-`make check` phải xanh trước mỗi commit.
+There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the C header, and `swiftc` links `NeuralIMK.app`.
+`make check` must pass before every commit.
 
-## Target của `Makefile`
+## Makefile targets
 
-| Target | Lệnh | Ghi chú |
+| Target | Runs | Notes |
 | --- | --- | --- |
-| `check` | `fmt lint test arch` | Cổng trước commit |
+| `check` | `fmt lint test arch` | Pre-commit gate |
 | `fmt` | `cargo fmt --all -- --check` | |
-| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | Workspace lint cấm `unwrap_used`, `expect_used`, `print_stdout` |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | See [08](08-coding-standard.md) |
 | `test` | `cargo test --workspace` | |
-| `arch` | `cargo arch-lint check` rồi `cargo arch-lint check --rules no-panic-in-lib` | Contract trong `arch-lint.toml` (arch-lint 0.11), xem [08](08-coding-standard.md) |
-| `header` | `cbindgen --config crates/nimk-ffi/cbindgen.toml --crate nimk-ffi --output target/nimk_ffi.h` | Sinh header C cho Swift |
-| `app` | `./scripts/build-app.sh` | Đóng gói `NeuralIMK.app` |
-| `install` | `app` rồi `./scripts/install.sh` | Copy vào `~/Library/Input Methods/`; dừng bản cũ bằng SIGTERM nên engine flush trước khi thoát |
+| `arch` | `cargo arch-lint check`, then `--rules no-panic-in-lib` | Contract in `arch-lint.toml` |
+| `swift-test` | `swiftc` + run the tests in `macos/tests/` | `Debouncer`, `IdleCommit`, `StatsText`; not part of `check` |
+| `header` | `cbindgen ... --output target/nimk_ffi.h` | C header for Swift |
+| `models` | Pretrain both bundled models | See below |
+| `app` | `scripts/build-app.sh` | Builds `build/NeuralIMK.app` |
+| `install` | `app`, then `scripts/install.sh` | Copies into `~/Library/Input Methods/` |
 
-`scripts/build-app.sh`, `scripts/install.sh`, `scripts/make-icon.swift` (icon template "Vi") và `crates/nimk-ffi/cbindgen.toml` đã có; `/build` nằm trong `.gitignore`.
-IME mới cài và chưa kiểm chứng trên máy thật; xem [Chưa kiểm chứng](02-keyboard-io.md#lifecycle-imk) và [09](09-app-compat.md).
-
-## Pipeline build
+## Build pipeline
 
 ```text
 +-------------------+  cargo build   +------------------+
@@ -32,92 +31,104 @@ IME mới cài và chưa kiểm chứng trên máy thật; xem [Chưa kiểm ch�
         v                            +------------------+  +---------------------------+
 +-------------------+  import        | macos/NeuralIMK/ |  | NeuralIMK.app/Contents/   |
 | target/nimk_ffi.h | -------------> | *.swift (swiftc) |->|   MacOS/NeuralIMK         |
-+-------------------+  objc-header   +------------------+  |   Info.plist              |
++-------------------+  objc-header   +------------------+  |   Info.plist, Resources/  |
                                                            +---------------------------+
                                                                   | codesign -s -
                                                                   v
                                                      ~/Library/Input Methods/
 ```
 
-Header là hợp đồng duy nhất giữa hai ngôn ngữ; đổi `nimk-ffi` mà quên `make header` thì Swift build lỗi ngay.
+The generated header is the only contract between Rust and Swift. If you change `nimk-ffi`, rebuild the header or the Swift build fails.
 
-`scripts/build-app.sh` làm theo thứ tự: sinh header, `cargo build --release -p nimk-ffi`, `swiftc -O` link thư viện và các framework `Cocoa`, `InputMethodKit`, `CoreGraphics`, ghép `Info.plist`, vẽ icon, rồi `codesign -s -` (ad hoc).
-Biến môi trường `ARCHS="arm64 x86_64"` cho bản universal (dùng `lipo`); mặc định chỉ kiến trúc của máy; macOS tối thiểu là 13.0.
+`scripts/build-app.sh` runs these steps in order:
 
-## Profile build
+1. Generate the header.
+2. Run `make models` if the bundled models are missing.
+3. `cargo build --release -p nimk-ffi`, then `swiftc -O` with `Cocoa`, `InputMethodKit` and `CoreGraphics`.
+4. Copy the models, a reference `default-config.toml`, and `Info.plist` into the bundle, and render the icon.
+5. Sign ad hoc with `codesign -s -`.
 
-Dependency chạy tối ưu hoá trong cả build dev vì `burn` chậm khoảng 40 lần khi không tối ưu.
-`Cargo.toml` gốc đặt `[profile.dev.package."*"] opt-level = 3`; code của workspace vẫn là debug.
+Set `ARCHS="arm64 x86_64"` for a universal binary (joined with `lipo`). The default is the host architecture. Minimum macOS is 13.0.
 
-```toml
-# burn is ~40x slower unoptimized; keep dependencies fast in dev/test builds.
-[profile.dev.package."*"]
-opt-level = 3
-```
+## Build profile
 
-`nimk-policy` phụ thuộc `burn = { version = "=0.22.1", default-features = false, features = ["std", "flex", "autodiff", "optim"] }` ([ADR 0009](adr/0009-burn-nn-backend.md)).
-Tắt feature mặc định nghĩa là không rayon: kernel chạy đơn luồng, hợp với process IME. Không dùng backend GPU.
-Test học `GruAction` chỉ chạy ở bản release (273 s ở debug): `cargo test --release -p nimk-policy` hoặc `--include-ignored`; bài đo latency cần `--release ... --ignored`.
+`burn` is about 40x slower without optimization. The root `Cargo.toml` sets `opt-level = 3` for dependencies in dev builds.
+Workspace code stays at debug level.
 
-## Pretrain model
+`nimk-policy` pins `burn = "=0.22.1"` with default features off ([ADR 0009](adr/0009-burn-nn-backend.md)). That means no rayon and no GPU backend: kernels run on one thread, which suits an IME process.
+The GRU learning test is slow in debug builds. It runs under `cargo test --release -p nimk-policy`, or with `--include-ignored` in debug. The latency test needs `--release --test action_latency -- --ignored`.
 
-App đóng gói sẵn model pretrain trên dữ liệu synthetic; lần chạy đầu bắt đầu từ chúng và học tiếp online ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
+## Bundled models
 
-1. `make models` pretrain `linear_action` và `gru_action` (seed 42, 200 session x 500 từ, 2 epoch) vào `target/models/<kind>/`, rồi copy mỗi checkpoint tới `target/models/bundle/model/<kind>/latest`.
-2. Kind nào đã có bản trong `bundle/` thì bỏ qua; `make models FORCE=1` pretrain lại (GRU mất khoảng 100 s).
-3. `scripts/build-app.sh` chạy `make models` nếu `bundle/` thiếu, rồi copy nó vào `NeuralIMK.app/Contents/Resources/models/` (khoảng 0.8 MB). File sinh ra nằm dưới `target/`, không commit.
-4. Lần chạy đầu: `ReadOnlyDirBlobs` phục vụ model gốc, menu ghi `(gốc)`. Khi học, checkpoint ghi vào `<Application Support>/<bundle id>/blobs/model/<kind>/latest`, menu ghi `(đã học thêm)`.
-5. Menu bộ gõ > `Khôi phục model gốc` (các mục model nằm thẳng ở menu chính, dạng `Model: GRU (gốc) ✓`) xoá checkpoint người dùng của model đang dùng và nạp lại bản gốc.
+The app ships models pretrained on synthetic data. A fresh install starts from them and keeps learning online ([ADR 0010](adr/0010-sdk-storage-and-bundled-models.md)).
 
-Pretrain thủ công vẫn dùng được; `--out` là bắt buộc và không bao giờ mặc định vào data dir:
+1. `make models` pretrains `linear_action` and `gru_action` (seed 42, 200 sessions x 500 words, 2 epochs) into `target/models/<kind>/`.
+2. It copies each checkpoint to `target/models/bundle/model/<kind>/latest`.
+3. A kind that is already in `bundle/` is skipped. `make models FORCE=1` retrains it (GRU takes about 100 s).
+4. `build-app.sh` copies `bundle/` to `NeuralIMK.app/Contents/Resources/models/`, so the app holds `Contents/Resources/models/model/<kind>/latest`.
+5. Output stays under `target/` and is not committed.
+
+At runtime the bundled checkpoint is read-only. Learned checkpoints go to `<Application Support>/<bundle id>/blobs/model/<kind>/latest` and shadow the bundled one.
+The input menu item `Khôi phục model gốc` ("Restore original model") deletes the learned checkpoint of the active model and reloads the bundled one.
+
+To pretrain by hand (`--out` is required and never defaults to the data directory):
 
 ```sh
 cargo run --release -p nimk-synth --bin nimk-synth -- pretrain \
     --model gru_action --out target/models/gru_action --sessions 200 --words 500 --epochs 2
 ```
 
-Đọc báo cáo in ra (`edit_accuracy`, `render_accuracy`, `ambiguous_acc`, `text_match_rate`); kỳ vọng xem [04](04-engine-ml.md#kết-quả-đo).
-So sánh offline: `nimk-replay --data <dir> --init target/models/gru_action --model gru_action [--frozen]`.
+The command prints a report (`edit_accuracy`, `render_accuracy`, `ambiguous_acc`, `text_match_rate`); see [04](04-engine-ml.md).
 
-`nimk-synth gen --out DIR` ghi event log synthetic thay vì model; flag chung `--sessions N --words N --seed S`, riêng `pretrain` có `--model`, `--epochs N`, `--eval-frac F`, `--batch N`.
-Mặc định 100 session x 500 từ, seed 42, 2 epoch, `eval-frac` 0.1, batch 128.
-Snapshot cũ từ trước khi sửa rò nhãn `SHOWN_VI` phải pretrain lại ([04](04-engine-ml.md#encoding)).
+| Subcommand | Purpose | Flags |
+| --- | --- | --- |
+| `gen` | Write a synthetic event log | `--out --sessions --words --seed` |
+| `pretrain` | Train and save a model | the above, plus `--model --epochs --eval-frac --batch` |
+| `eval` | Score a saved model on held-out scripts | `--model --init --margins --eval-frac` |
 
-## Vị trí lưu trữ
+Defaults: 100 sessions, 500 words, seed 42, 2 epochs, `eval-frac` 0.1, batch 128. Retrain whenever the Telex engine or the feature encoding changes.
 
-Mọi vị trí do SDK macOS trả về, không viết cứng trong Swift: data dir là `FileManager.url(for: .applicationSupportDirectory)` nối bundle id; log là `.libraryDirectory`/`Logs`/`<bundle id>.log`; model gốc là `Bundle.main.resourceURL/models`.
-Ngoại lệ duy nhất là `scripts/install.sh` copy vào `$HOME/Library/Input Methods`, vị trí Apple quy định cho input method của người dùng.
+## Storage locations
+
+The macOS SDK supplies every location; none is hard-coded in Swift.
+
+| What | Where |
+| --- | --- |
+| Data (checkpoints, event log) | `<Application Support>/<bundle id>` |
+| Diagnostics log | `<Library>/Logs/<bundle id>.log` |
+| Bundled models | `Bundle.main.resourceURL/models` |
+| Installed app | `~/Library/Input Methods/NeuralIMK.app` (set by Apple, used by `install.sh`) |
 
 ## `Info.plist`
 
-Thiếu hoặc sai một key dưới đây thì macOS không liệt kê IME trong Input Sources.
+If a key below is missing or wrong, macOS does not list the IME in Input Sources.
 
-| Key | Giá trị | Ghi chú |
+| Key | Value | Note |
 | --- | --- | --- |
-| `CFBundleIdentifier` | `com.giangndm.inputmethod.NeuralIMK` | Phải chứa `.inputmethod.` |
-| `InputMethodConnectionName` | `com.giangndm.inputmethod.NeuralIMK_Connection` | Truyền cho `IMKServer` trong `main.swift` |
-| `InputMethodServerControllerClass` | `InputController` | Swift khai báo `@objc(InputController)` để tránh namespace module |
-| `LSBackgroundOnly` | `true` | Không icon Dock |
+| `CFBundleIdentifier` | `com.giangndm.inputmethod.NeuralIMK` | Must contain `.inputmethod.` |
+| `InputMethodConnectionName` | `com.giangndm.inputmethod.NeuralIMK_Connection` | Passed to `IMKServer` in `main.swift` |
+| `InputMethodServerControllerClass` | `InputController` | Swift declares `@objc(InputController)` |
+| `LSBackgroundOnly` | `true` | No Dock icon |
 | `TISIntendedLanguage` | `vi` | |
 | `tsInputMethodCharacterRepertoireKey` | `["Latn"]` | |
 
-## Cài đặt
+## Install
 
-1. `make install` (pretrain model nếu chưa có, build, đóng gói kèm model, copy vào `$HOME/Library/Input Methods/`).
-2. `killall NeuralIMK` để process cũ thoát; hệ thống tự chạy bản mới khi IME được chọn.
-3. Lần đầu: System Settings → Keyboard → Input Sources → thêm NeuralIMK.
-4. Giữ input source ABC bật làm đường lùi.
+1. `make install` builds, bundles the models (pretraining them if needed), stops the old process, and copies the app.
+2. First time only: System Settings, Keyboard, Input Sources, add NeuralIMK.
+3. Keep the ABC input source enabled as a fallback.
+4. After an update, select NeuralIMK again in the input menu.
 
-## Debug & phục hồi
+## Debug and recovery
 
-| Tình huống | Làm gì |
+| Situation | Action |
 | --- | --- |
-| Xem log debug | Menu IME → `Show diagnostics log` (`<Library>/Logs/<bundle id>.log`), hoặc `log stream --predicate 'subsystem == "com.giangndm.inputmethod.NeuralIMK"'` |
-| Xem dữ liệu, event log | Menu IME → `Open data folder` (`<Application Support>/<bundle id>`) |
-| IME treo hoặc crash, không gõ được | Chuyển sang ABC bằng menu input; `killall NeuralIMK` |
-| IME không hiện trong Input Sources | Kiểm tra `Info.plist` ở bảng trên; log out/in để hệ thống quét lại |
-| Bản mới không có hiệu lực | `killall NeuralIMK`, chọn lại input source |
-| Model học sai hoặc checkpoint hỏng | Menu bộ gõ > `Khôi phục model gốc`; checkpoint hỏng thì engine dựng model mới và báo diagnostics |
-| Gỡ cài đặt | Xoá `$HOME/Library/Input Methods/NeuralIMK.app`, bỏ khỏi Input Sources |
+| Read the debug log | Menu `Show diagnostics log`, or `log stream --predicate 'subsystem == "com.giangndm.inputmethod.NeuralIMK"'` |
+| Inspect data and event log | Menu `Open data folder` |
+| IME hangs or crashes | Switch to ABC, then `killall NeuralIMK` |
+| IME missing from Input Sources | Check `Info.plist`; log out and back in |
+| New build has no effect | `killall NeuralIMK`, then select the input source again |
+| Model learned badly | Menu `Khôi phục model gốc`; a corrupt checkpoint makes the engine build a fresh model and log it |
+| Uninstall | Delete `~/Library/Input Methods/NeuralIMK.app` and remove it from Input Sources |
 
-Lỗi trong hot path không bao giờ làm mất phím: Engine trả `consumed = false` và phím đi thẳng vào app.
+An error on the key path never loses a key. The engine returns `consumed = false` and the key goes to the app.

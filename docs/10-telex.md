@@ -1,150 +1,133 @@
-# Kiểu gõ Telex của NeuralIMK (v2, gõ tự do)
+# Telex
 
-> **Trạng thái:** stable · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-telex/src`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `crates/nimk-telex/src`
 
-NeuralIMK dùng Telex tự viết (không dùng vi-rs), theo kiểu "gõ tự do" của Unikey với cách đặt dấu kiểu mới (`hoà`, `thuý`). Telex là **công cụ tất định**: nó sinh bản tiếng Việt và các cờ cho model. Model NN mới quyết định hiển thị VI hay EN ([ADR 0007](adr/0007-neural-action-model.md)).
+`nimk-telex` is a custom Telex engine in the free-typing style of Unikey, with modern tone placement (`hoà`, `thuý`).
+It is deterministic. It produces a Vietnamese candidate plus validity flags, and the model decides whether to show it ([ADR 0007](adr/0007-neural-action-model.md)).
 
-v2 thay v1 ở năm điểm: dấu và `dd` gõ muộn được (`theme` → thêm, `dungd` → đung), `ưo` tự hoàn chỉnh thành `ươ`, dấu mũ/móc chỉ áp khi kết quả còn là âm tiết hợp lệ, `uơ` gõ được (`thuở`), và huỷ một dấu thì khoá cả từ ở dạng thô.
-
-## 1. Vai trò trong hệ thống
+## Role in the system
 
 ```text
  raw keys --> nimk_telex::transform(raw) --> Transformed { text, has_telex, valid_vi, viable_vi }
                                                   |
                                                   v
-                          Observation.vi / valid_vi / viable_vi  (feature cho model)
+                          Observation.vi / valid_vi / viable_vi  (model features)
 ```
 
-Telex không quyết định ngôn ngữ, nó chỉ cung cấp ứng viên tiếng Việt và cờ hợp lệ. Chuỗi phím thô không bao giờ bị xoá.
+Telex never picks the language, and the raw key string is never deleted.
 
-| API | Ý nghĩa |
+| API | Meaning |
 | --- | --- |
-| `transform(raw) -> Transformed` | Diễn giải chuỗi phím của một từ theo Telex (đặt dấu kiểu mới) |
-| `transform_with(raw, ToneStyle)` | Như trên, `ToneStyle::Old` đặt dấu kiểu cũ (`hòa`, `thủy`) |
-| `Transformed.text` | Bản tiếng Việt; giống `raw` nếu không có biến đổi nào |
+| `transform(raw)` | Interpret one word's keys (modern tone placement) |
+| `transform_with(raw, ToneStyle)` | Same; `ToneStyle::Old` gives `hòa`, `thủy` |
+| `Transformed.text` | Vietnamese candidate; equals `raw` if nothing changed |
 | `Transformed.has_telex` | `text != raw` |
-| `Transformed.valid_vi` | `text` là một âm tiết tiếng Việt hoàn chỉnh, hợp lệ |
-| `Transformed.viable_vi` | `text` hợp lệ, hoặc là tiền tố của một âm tiết hợp lệ (dấu đã gõ phải khớp, chữ chưa có dấu còn thêm dấu được) |
-| `encode(word)` | Chuỗi phím chuẩn gõ ra `word` (dấu ngay sau chữ, thanh gõ cuối) |
-| `encode_variants(word)` | Tối đa 8 cách gõ thực tế khác, thứ tự cố định, mỗi cách đã kiểm `transform` ra đúng `word` |
-| `is_valid_syllable`, `is_viable_prefix` | Kiểm tra âm tiết |
+| `Transformed.valid_vi` | `text` is a complete valid syllable |
+| `Transformed.viable_vi` | `text` is valid, or a prefix of a valid syllable |
+| `encode(word)` | Canonical keys that type `word` |
+| `encode_variants(word)` | Up to 8 other realistic key orders, each checked to round-trip |
+| `is_valid_syllable`, `is_viable_prefix` | Syllable checks |
 
-**Quy tắc bảo trì:** model học trên đầu ra của Telex. **Mọi thay đổi Telex phải đi kèm `make models FORCE=1`** để pre-train lại hai model đóng gói trong app. Kiểu gõ mới cho dữ liệu tổng hợp thì thêm vào `encode_variants` (`MixProfile::p_variant`).
+**Maintenance rule:** models learn from Telex output. Any Telex change needs `make models FORCE=1` to retrain the bundled models.
+To teach synthetic data a new typing style, add it to `encode_variants` (`MixProfile::p_variant`).
 
-## 2. Quy tắc v2 (R1–R10)
+## Rules
 
-Mẫu tham chiếu là Unikey kiểu modern. Mỗi quy tắc có test trong `crates/nimk-telex/tests/conformance.rs`.
+Reference behavior is Unikey in modern mode. `crates/nimk-telex/tests/conformance.rs` tests each rule.
 
-**R1. Mô hình âm tiết.** Từ là (phụ âm đầu, cụm nguyên âm, phụ âm cuối) cộng dấu và một thanh. Thanh gắn vào âm tiết chứ không vào ký tự, và được đặt lại sau mỗi phím. Đầu ra là ứng viên VI tốt nhất, cờ hợp lệ và chuỗi thô.
+**R1. Syllable model.** A word is (initial, vowel group, final) plus marks and one tone. The tone belongs to the syllable and is recomputed after every key.
 
-**R2. Phím thanh `s f r x j`.** Áp được ở bất kỳ đâu sau cụm nguyên âm: ngay sau nguyên âm, sau phụ âm cuối, sau dấu gõ muộn (`toasn`, `toans`, `tieesng`). Chưa có nguyên âm (`xin`) thì gõ chữ thật. Gõ lại cùng thanh thì bỏ thanh, gõ phím thật và khoá từ (R7). Thanh khác thì thay thanh. `z` bỏ thanh, nếu chưa có thanh thì là chữ `z`. Nếu từ đã có hai cụm nguyên âm tách nhau (`status`) thì phím thanh là chữ thật.
+**R2. Tone keys `s f r x j`.** They apply anywhere after the vowel group: right after the vowel, after the final, or after a late mark (`toasn`, `toans`, `tieesng`).
+With no vowel yet (`xin`) they are plain letters. Repeating the same tone key removes the tone, types the letter, and locks the word (R7). A different tone key replaces the tone.
+`z` clears the tone, or is a letter if there is none. A word with two separate vowel groups (`status`) treats tone keys as letters.
 
-**R3. Phụ âm cuối `c ch p t`** chỉ nhận sắc `s` và nặng `j`. `f r x` ở đó là chữ thật và ứng viên không hợp lệ (`bacr`, `catr`).
+**R3. Finals `c ch p t`** take only sắc `s` and nặng `j`. `f r x` there are letters and the candidate is invalid (`bacr`, `catr`).
 
-**R4. Vị trí thanh (modern).** Nguyên âm có dấu (â ê ô ơ ư ă) thắng: `iê yê uô ươ uyê` mang thanh ở `ê ô ơ`, `ưa` ở `ư`, `uâ` ở `â`. Một nguyên âm: chính nó. Hai nguyên âm: `oa oe uy` ở chữ thứ hai (`hoà`, `thuỷ`, `quý`); cặp khác không có phụ âm cuối ở chữ đầu (`mía`, `múa`, `hái`, `lìu`); có phụ âm cuối ở chữ thứ hai (`toán`, `loạn`). Ba nguyên âm: chữ giữa (`ngoại`, `khuýa`). Vì vậy thêm phụ âm cuối không làm thanh nhảy chỗ (`hoà` → `hoàn`). Tuỳ chọn `ToneStyle::Old` cho `hòa`, `thủy`.
+**R4. Tone position (modern).**
+- A marked vowel (â ê ô ơ ư ă) wins: `iê yê uô ươ uyê` put the tone on `ê ô ơ`; `ưa` on `ư`; `uâ` on `â`.
+- One vowel: that vowel.
+- Two vowels: `oa oe uy` use the second (`hoà`, `thuỷ`, `quý`). Other pairs use the first with no final (`mía`, `múa`, `hái`) and the second with a final (`toán`, `loạn`).
+- Three vowels: the middle one (`ngoại`).
+- Adding a final never moves the tone (`hoà` to `hoàn`). `ToneStyle::Old` gives `hòa`, `thủy`.
 
-**R5. Phụ âm đầu `gi` và `qu`** là phụ âm khi sau còn nguyên âm (`gì`, `giữ`, `giá`, `quả`, `quý`, `quốc`). Chỉ có `gi` và phụ âm cuối (`gin`) thì `i` là nguyên âm (`gìn`).
+**R5. `gi` and `qu` initials.** They are initials when a vowel follows (`gì`, `giá`, `quả`, `quốc`). With only `gi` plus a final (`gin`), `i` is the vowel (`gìn`).
 
-**R6. Phím dạng `a e o` (đôi), `w`, `d`.**
+**R6. Mark keys `aa ee oo`, `w`, `dd`.**
+- `aa ee oo` act on the matching plain vowel in the last vowel group, even with a final in between (`theme` gives `thêm`, `toio` gives `tôi`, `quocos` gives `quốc`). They apply only if the result is valid or viable. `ươ`/`uơ` plus `o` gives `uô` (`nguoio` gives `nguôi`).
+- `w` adds a hook to the last vowel group: `a` to `ă`, `o` to `ơ`, `u` to `ư`, even late (`tuongw`, `duocw`). `uo` plus `w` gives `ươ`, except after `h kh th qu` with nothing following, which gives `uơ` (`thuow` gives `thuơ`, `thuowr` gives `thuở`).
+  With no vowel yet, `w` gives `ư` (`tw` gives `tư`, `giw` gives `gư`). Otherwise `w` is a letter. `ưo` completes to `ươ` once a final or `i/u` follows (`tuwong`, `duwoi`, `huowu`).
+- `dd` changes only the first `d` of a syllable, at any time if the result is valid (`dungd` gives `đung`, `dad` gives `đa`). A word that starts with `dd` always works (abbreviations).
 
-- `aa ee oo` áp cho nguyên âm trơn cùng tên ở cụm nguyên âm cuối, dù có phụ âm cuối chen giữa (`theme` → thêm, `toio` → tôi, `quocos` → quốc), nhưng chỉ khi kết quả là âm tiết hợp lệ hoặc tiền tố khả dĩ. `ươ`, `uơ` + `o` thành `uô` (`nguoio` → nguôi).
-- `w`: (1) móc lên cụm nguyên âm cuối, `a`→`ă`, `o`→`ơ`, `u`→`ư`, kể cả gõ muộn (`tuongw`, `duocw`); `uo` + `w` thành `ươ`, trừ khi phụ âm đầu là `h kh th qu` và sau đó chưa có gì thì ra `uơ` (`thuow` → thuơ, `thuowr` → thuở). (2) Chưa có nguyên âm (đầu từ hoặc sau phụ âm đầu): `ư` (`w`, `tw` → tư), `giw` → `gư`. (3) Còn lại là chữ `w` thật. `ưo` tự hoàn chỉnh thành `ươ` ngay khi có phụ âm cuối hoặc `i/u` theo sau (`tuwong`, `duwoi`, `huowu`).
-- `dd`: chỉ `d` đầu âm tiết, ở bất kỳ thời điểm nào sau đó nếu kết quả là âm tiết hợp lệ (`dungd` → đung, `dad` → đa). Từ bắt đầu bằng `dd` (`dd`, `ddk`) luôn được (viết tắt).
+**R7. Cancel.** Repeating a key with the same effect undoes it and types the key (`aaa` gives `aa`, `ass` gives `as`, `ww` gives `w`, `tooss` gives `tôs`).
+After any cancel, the rest of the word is raw. This avoids transform-then-cancel loops.
 
-**R7. Huỷ.** Lặp lại phím cùng hiệu ứng thì huỷ đúng biến đổi đó và gõ phím thật (`aaa` → aa, `ass` → as, `ww` → w, `ddd` → dd, `uww` → uw, `tooss` → tôs). Sau mọi lần huỷ, **phần còn lại của từ là chữ thô** (kiểu `tempDisableKey` của OpenKey): tránh vòng lặp biến đổi rồi huỷ.
+**R8. Validity.** A syllable is valid when its initial is in `b c ch d đ g gh gi h k kh l m n ng ngh nh p ph qu r s t th tr v x`, its vowel group is in bamboo's `vowelSeqs` table, its final is in `c ch m n ng nh p t`, the pair is allowed, and the tone obeys R3.
+An invalid word still gets the best Vietnamese string with `valid_vi = false`; the model decides. Only mark keys (R6) are blocked by viability, never the raw string.
 
-**R8. Hợp lệ.** Âm tiết hợp lệ khi phụ âm đầu thuộc `b c ch d đ g gh gi h k kh l m n ng ngh nh p ph qu r s t th tr v x`, cụm nguyên âm thuộc bảng `vowelSeqs` của bamboo, phụ âm cuối thuộc `c ch m n ng nh p t`, tổ hợp đầu/vần hợp lệ và thanh theo R3. Không hợp lệ vẫn sinh chuỗi VI tốt nhất và đặt `valid_vi = false`; thanh không dừng lại (model quyết định). Chỉ phím dấu (R6) bị chặn bởi tính khả dĩ, không bao giờ chuỗi thô.
+**R9. Case.** Output keeps the input case. Effect keys ignore case (`VIEETJ` gives `VIỆT`, `DD` gives `Đ`). `w` becoming `ư` takes the case of `w`.
 
-**R9. Hoa thường.** Chữ kết quả giữ hoa thường của chữ gốc; phím hiệu ứng không phân biệt hoa thường (`VIEETJ` → VIỆT, `NGUOIW` → NGƯƠI, `DD` → Đ). `w` thành `ư` lấy hoa thường của `w`.
+**R10. Mixed case** (`Dd`, `dD`) works: `Duwowcj` gives `Dược`.
 
-**R10. Hoa thường lẫn lộn** (`Dd`, `dD`) đều chuyển được; `Duwowcj` → Dược.
+## Differences from other engines
 
-## 3. Quyết định khi các engine khác nhau
-
-| Chủ đề | Unikey / OpenKey / bamboo | NeuralIMK |
+| Topic | Unikey / OpenKey / bamboo | NeuralIMK |
 | --- | --- | --- |
-| `www` | bamboo ra `wư`, Unikey `ww` | `ww` (R7: sau huỷ khoá từ, `w` thứ ba là chữ thật) |
-| `oddp` | bamboo `ođp` (đổi `d` phải nhất hợp lệ); Unikey chỉ `d` đầu | `oddp`: chỉ `d` đầu âm tiết (R6) |
-| Vị trí thanh | bamboo std `hòa`; Unikey modern `hoà` | modern mặc định, `ToneStyle::Old` tuỳ chọn |
-| `class`, `status` | Unikey: thanh là chữ thật nếu onset sai | thanh vẫn áp như bamboo (`tnoss` → tnos), trừ khi có hai cụm nguyên âm (`status`); `class` ra `clas` |
-| Khôi phục khi hết từ | Unikey khôi phục chữ thô; OpenKey chỉ khi có dấu; bamboo giữ cả hai | Telex không xoá chuỗi thô; model chọn rendering |
-| `w` đứng riêng | bamboo "Telex 2" ra `ư`; Telex thường không | `ư` (R6) |
-| Telex của macOS | không có tài liệu chính thức | không mã hoá hành vi riêng của Apple |
+| `www` | bamboo `wư`; Unikey `ww` | `ww` (R7: cancel locks the word) |
+| `oddp` | bamboo `ođp`; Unikey only the first `d` | `oddp` (R6) |
+| Tone position | bamboo `hòa`; Unikey modern `hoà` | Modern by default; `ToneStyle::Old` optional |
+| `class`, `status` | Unikey: tone key is a letter when the initial is invalid | Tone applies like bamboo (`tnoss` gives `tnos`) unless there are two vowel groups (`status`); `class` gives `clas` |
+| Restore at word end | Unikey restores raw; OpenKey only with marks; bamboo keeps both | Telex keeps the raw string; the model picks |
+| Lone `w` | bamboo "Telex 2" gives `ư`; plain Telex does not | `ư` (R6) |
+| Apple's Telex | Undocumented | Not modeled |
 
-## 4. Bảng kiểm thử (đại diện)
+## Test table
 
-Bảng đầy đủ 110 dòng nằm trong `crates/nimk-telex/tests/conformance.rs` (`MODERN`, `OLD`, `DEVIATIONS`). Nguồn: **B** = assert trong `bamboo_test.go`; **U/O** = đọc từ mã Unikey/OpenKey, chưa chạy; **N** = quyết định của NeuralIMK.
+All 110 rows are in `crates/nimk-telex/tests/conformance.rs` (`MODERN`, `OLD`, `DEVIATIONS`). Source: **B** = assert in bamboo's `bamboo_test.go`; **U/O** = read from Unikey/OpenKey code, not run; **N** = NeuralIMK decision. A sample:
 
-| Gõ | Ra | Hợp lệ | Nguồn | | Gõ | Ra | Hợp lệ | Nguồn |
+| Keys | Output | Valid | Src | | Keys | Output | Valid | Src |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `hoaf` | hoà | có | U | | `theme` | thêm | có | U |
-| `hoanf` | hoàn | có | U | | `toio` | tôi | có | U |
-| `thuyr` | thuỷ | có | U | | `nguoio` | nguôi | có | U |
-| `quys` | quý | có | U | | `quocos` | quốc | có | U |
-| `gifn` | gìn | có | U | | `tosos` | tôs | không | B |
-| `gisa` | giá | có | B | | `tooss` | tôs | không | B |
-| `giuwax` | giữa | có | U | | `aaa` | aa | không | U |
-| `giamaf` | giầm | có | B | | `uww` | uw | không | U |
-| `mias` | mía | có | U | | `www` | ww | không | N |
-| `toans` | toán | có | U | | `w` | ư | có | U/O |
-| `loanj` | loạn | có | B | | `tw` | tư | có | U |
-| `chuaarn` | chuẩn | có | B | | `giw` | gư | có | B |
-| `khuyeenr` | khuyển | có | B | | `tuongw` | tương | có | U |
-| `tieesng` | tiếng | có | U | | `tuwong` | tương | có | U |
-| `bieecs` | biếc | có | B | | `tuwowng` | tương | có | B |
-| `uese` | uế | có | B | | `nuocws` | nước | có | U |
-| `choas` | choá | có | B | | `duwoi` | dươi | có | B |
-| `nguowif` | người | có | B | | `thuow` | thuơ | có | B |
-| `wowfi` | ười | có | B | | `huowu` | hươu | có | U |
-| `bacr` | bacr | không | U | | `duwongw` | duongw | không | B |
-| `catr` | catr | không | B | | `dduocwj` | được | có | U |
-| `toanfz` | toan | có | U | | `dungd` | đung | có | U |
-| `az` | az | không | U | | `dad` | đa | có | U |
-| `xin` | xin | có | U | | `ddafi` | đài | có | B |
-| `kimso` | kímo | không | B | | `NGUOIW` | NGƯƠI | có | B |
-| `tnoss` | tnos | không | B | | `VIEETJ` | VIỆT | có | B |
-| `noww` | now | không | B | | `when` | ưhen | không | U |
+| `hoaf` | hoà | yes | U | | `theme` | thêm | yes | U |
+| `thuyr` | thuỷ | yes | U | | `toio` | tôi | yes | U |
+| `gifn` | gìn | yes | U | | `nguoio` | nguôi | yes | U |
+| `giamaf` | giầm | yes | B | | `tooss` | tôs | no | B |
+| `mias` | mía | yes | U | | `aaa` | aa | no | U |
+| `loanj` | loạn | yes | B | | `www` | ww | no | N |
+| `tieesng` | tiếng | yes | U | | `tw` | tư | yes | U |
+| `nguowif` | người | yes | B | | `tuongw` | tương | yes | U |
+| `bacr` | bacr | no | U | | `thuow` | thuơ | yes | B |
+| `xin` | xin | yes | U | | `dungd` | đung | yes | U |
+| `tnoss` | tnos | no | B | | `VIEETJ` | VIỆT | yes | B |
 
-### Điểm lệch khỏi bảng nghiên cứu
+### Deviations from the research table
 
-Các dòng này giữ nguyên `text` của bảng (trừ khi ghi khác) và được khoá bởi `deviations_are_stable`:
+`deviations_are_stable` locks these rows. They keep the table's `text` unless noted.
 
-| # | Gõ | Bảng | Thực tế | Lý do |
-| --- | --- | --- | --- | --- |
-| 63, 70, 86, 97, 99, 93 | `aw`, `ww`, `dd`, `DD`, `wow`, `ddawks` | hợp lệ = có | text đúng, `valid_vi` = không | `ă`, `w`, `đ`, `ươ` đứng một mình, hoặc phụ âm cuối `k` (Đắk Lắk), không phải âm tiết đầy đủ |
-| 92 | `oddp` | ođp | oddp | R6 chỉ đổi `d` đầu âm tiết; bamboo đổi `d` phải nhất, R6 thắng |
-| 103 | `class` | class | clas | Dòng U (thanh là chữ thật vì `cl` không phải onset) mâu thuẫn dòng B `tnoss` → tnos; theo R8 và B, thanh áp rồi bị huỷ |
-| 104 | `status` | status | status | Khớp bảng, nhờ luật hai cụm nguyên âm |
+| Keys | Table | Actual | Reason |
+| --- | --- | --- | --- |
+| `aw`, `ww`, `dd`, `DD`, `wow`, `ddawks` | valid = yes | text correct, `valid_vi` = no | A lone `ă`, `w`, `đ` or `ươ`, or final `k` (Đắk Lắk), is not a full syllable |
+| `oddp` | ođp | oddp | R6 changes only the first `d` of a syllable |
+| `class` | class | clas | R8 and row `tnoss` win over the Unikey row: the tone applies, then cancels |
+| `status` | status | status | Matches, through the two-vowel-group rule |
 
-Không dòng nào bị `#[ignore]`. Dòng U/O chưa được chạy trên bản Unikey/OpenKey thật; cần đối chiếu trước khi coi là cố định.
+No row is `#[ignore]`d. U/O rows were never run against real Unikey or OpenKey; confirm them before treating them as fixed.
 
-### Khác v1 có chủ đích
+## Typing orders for training data
 
-- `show` ra `show` (v1: `shơ`): `w` chỉ áp khi kết quả còn khả dĩ.
-- `bacr` ra `bacr` (v1: `bảc`): R3.
-- Huỷ khoá cả từ (v1 chỉ tắt đúng nhóm phím): `assf` ra `asf` (v1: `à`).
-- `toio`, `dungd`, `tuwong`, `thuở` hết nằm trong danh sách thiếu.
+`encode_variants` emits these styles, alone or combined, in fixed order, at most 8:
 
-Mọi dòng khác của bảng kiểm chứng v1 (`theme`, `vietej`, `nguoiwf`, `tiengse`, `xinsh`, ...) vẫn đúng (`v1_verified_table_still_holds`).
-
-## 5. Thứ tự gõ thực tế cho dữ liệu học
-
-`encode_variants` sinh các kiểu gõ sau (một hoặc nhiều kiểu cùng lúc), theo thứ tự cố định, tối đa 8:
-
-| Kiểu | Ví dụ cho `thêm`, `việt`, `đường` |
+| Style | Examples for `thêm`, `việt`, `đường` |
 | --- | --- |
-| Thanh ngay sau nguyên âm | `toasn`, `hoafn`, `dduwowfng` |
-| Dấu gõ muộn | `theme`, `vietej`, `dduongwf` |
-| `w` đứng riêng cho `ư` đầu | `nhw`, `ddwowngf` |
-| `d` gõ muộn | `dungd`, `duwowngdf` |
+| Tone right after the vowel | `toasn`, `hoafn`, `dduwowfng` |
+| Late marks | `theme`, `vietej`, `dduongwf` |
+| Lone `w` for initial `ư` | `nhw`, `ddwowngf` |
+| Late `d` | `dungd`, `duwowngdf` |
 
-Nguồn tần suất là heuristic, chưa đo trên log thật. Synthetic dùng `MixProfile::p_variant` (mặc định 0.5), xem [04](04-engine-ml.md). `theme` trong câu Vietnamese vs English: xem mục "Kết quả đo" của 04.
+These frequencies are a heuristic, not measured on real logs. Synthetic data uses `MixProfile::p_variant` (default 0.5); see [04](04-engine-ml.md).
 
-## 6. Nguồn
+## Sources
 
-- Unikey (fcitx5-unikey): `unikey/ukengine.cpp` (processRoof, processHookWithUO, processHook, getTonePosition, processTone, processDd, processTelexW, processAppend, processWordEnd, lastWordIsNonVn), `unikey/inputproc.cpp` (TelexMethodMapping): https://github.com/fcitx/fcitx5-unikey
-- OpenKey: `Engine.cpp` (handleMainKey, insertW, handleModernMark, checkSpelling, checkRestoreIfWrongSpelling): https://github.com/tuyenvm/OpenKey
+- Unikey (fcitx5-unikey): `unikey/ukengine.cpp`, `unikey/inputproc.cpp`: https://github.com/fcitx/fcitx5-unikey
+- OpenKey: `Engine.cpp`: https://github.com/tuyenvm/OpenKey
 - bamboo-core: `bamboo_test.go`, `bamboo_utils.go`, `spelling.go`: https://github.com/BambooEngine/bamboo-core
-- Telex của Apple: chỉ biết là dẫn xuất từ UniKey (https://en.wikipedia.org/wiki/UniKey_(software), https://discussions.apple.com/thread/250411576), chưa kiểm chứng trên máy thật.
 
-Liên quan: [04-engine-ml.md](04-engine-ml.md) (feature từ Telex), [ADR 0007](adr/0007-neural-action-model.md).
+Related: [04-engine-ml.md](04-engine-ml.md) (Telex features), [ADR 0007](adr/0007-neural-action-model.md).

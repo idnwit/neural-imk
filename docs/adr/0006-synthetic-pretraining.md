@@ -1,24 +1,25 @@
-# 0006. Pretrain bằng dữ liệu gõ synthetic
+# 0006. Pretrain on synthetic typing data
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08
+> **Status:** accepted · **Date:** 2026-11-08
 
-## Bối cảnh
+## Context
 
-Học online từ con số 0 nghĩa là những ngày đầu model đoán gần ngẫu nhiên ở vùng mập mờ, và người dùng phải sửa nhiều.
-Log thật chỉ có sau M3, mà M4 cần dữ liệu để so sánh policy và benchmark.
-Phần lớn tín hiệu "từ này là VI hay EN" nằm ở chính chuỗi phím, không cần context app.
+Learning online from zero means the model guesses near-randomly on ambiguous words in the first days, and users must correct a lot.
+Real logs only exist after M3, but M4 needs data to compare policies and benchmark.
+Most of the "is this word VI or EN" signal is in the key sequence itself and needs no app context.
 
-## Quyết định
+## Decision
 
-- Thêm crate `nimk-synth` sinh script gõ VI/EN trộn kiểu người Việt (văn xuôi VI chen thuật ngữ EN, câu EN chen từ VI), không có context app (`SYNTHETIC_BUNDLE_ID = "synthetic"`).
-- Chuỗi phím Telex sinh bằng `nimk_telex::encode`, nghịch đảo của `transform`; từ EN mập mờ (`has`, `for`, `user`) được lấy mẫu dày hơn.
-- Hai đầu ra: `write_log` ghi thành event log thường để `nimk-replay` đọc; `pretrain` cho script chạy qua engine inline (`hotkeys = false`, nhãn qua `Engine::inject_label`) rồi lưu model làm snapshot khởi đầu của IME.
-- Corpus viết tay cho dự án, không dùng corpus bên thứ ba; cùng `SynthConfig` + seed cho cùng output.
+- Add a `nimk-synth` crate that generates mixed VI/EN typing scripts in the style of Vietnamese users, with no app context (`SYNTHETIC_BUNDLE_ID = "synthetic"`).
+- Telex key sequences come from `nimk_telex::encode`, the inverse of `transform`. Ambiguous EN words (`has`, `for`, `user`) are sampled more densely.
+- Two outputs: `write_log` writes a normal event log for `nimk-replay`; `pretrain` runs the script through the engine inline (`hotkeys = false`, labels via `Engine::inject_label`) and saves the model as the IME's starting snapshot.
+- The corpus is hand-written for the project, with no third-party corpus. The same `SynthConfig` and seed give the same output.
 
-## Hệ quả
+## Consequences
 
-- IME khởi động với model đã biết phân biệt n-gram VI/EN; online learning chỉ còn học phần riêng theo app và người dùng.
-- Có benchmark tất định cho policy trước khi có log thật.
-- Feature app/vị trí không học được từ synthetic; model phải học chúng online.
-- Phân phối synthetic lệch với cách người dùng thật gõ; metric trên synthetic không thay được metric dùng thật.
-- Nhãn synthetic ghi là `correction` weight 1.0, nên log synthetic phải tách khỏi log thật khi tính metric.
+- The IME starts with a model that already separates VI/EN n-grams; online learning only adds per-app and per-user knowledge.
+- A deterministic policy benchmark exists before real logs.
+- App and position features cannot be learned from synthetic data; the model learns them online.
+- The synthetic distribution differs from real typing, so synthetic metrics do not replace real-use metrics.
+- Synthetic labels are written as `correction` with weight 1.0, so synthetic logs must be kept apart from real logs when computing metrics.
+- Note: the generator was later made realistic and aligned with the ADR 0012 state machine (see [devlog](../devlog.md), [real-log-stats](../research/real-log-stats.md)).

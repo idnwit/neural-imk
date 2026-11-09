@@ -1,32 +1,32 @@
-# 0012. Commit và ranh giới thống nhất: Idle, Composing, Pending, Raw
+# 0012. Unified commit and boundary: Idle, Composing, Pending, Raw
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-09 · **Supersedes:** phần ranh giới của [0011](0011-pending-word-commit.md) ("pending giữ tối đa 16 ký tự ranh giới")
+> **Status:** accepted · **Date:** 2026-11-09 · **Supersedes:** the boundary part of [0011](0011-pending-word-commit.md) ("pending keeps up to 16 boundary chars")
 
-## Bối cảnh
+## Context
 
-ADR 0011 cho từ pending nối nhiều ký tự ranh giới và để model quyết định mọi phím, kể cả `Pass` giữa từ.
-Hệ quả: ở terminal, IDE và trình duyệt, `ls -la`, `user_name`, `http://x.com` hay `/help` cho kết quả khó đoán và marked text kéo dài ngoài ý muốn.
-Cần một quy tắc duy nhất, giải thích được bằng một bảng, và mọi tham số nằm trong cấu hình thay vì hằng số trong code.
+ADR 0011 let a pending word accumulate boundary chars and let the model decide every key, including `Pass` mid-word.
+In terminals, IDEs and browsers, `ls -la`, `user_name`, `http://x.com` and `/help` gave unpredictable results and marked text stayed open longer than expected.
+We need one rule, explainable with a single table, and every parameter in config instead of code constants.
 
-## Quyết định
+## Decision
 
-Máy trạng thái 4 trạng thái là nguồn sự thật duy nhất; bảng chuyển trạng thái nằm ở `crates/nimk-engine/src/engine/machine.rs` (hàm `transition`, có test đối chiếu) và được trình bày ở [02](../02-keyboard-io.md#máy-trạng-thái).
+A 4-state machine is the single source of truth. The transition table is `transition` in `crates/nimk-engine/src/engine/machine.rs` (tested), described in [02](../02-keyboard-io.md).
 
-- Trạng thái: `Idle`, `Composing(word)`, `Pending(word + đúng một ký tự ranh giới)`, `Raw`.
-- Phím chia lớp: chữ cái (ngôn ngữ), ký tự in được không phải chữ (ranh giới; một số là `command_triggers`), Backspace, phím commit (Return kể cả Shift/⌘/⌃/⌥, Tab, Escape, mũi tên, Home/End/PageUp/PageDown, Delete tới, phím chức năng, mọi phím tắt ⌘/⌃/⌥), còn lại bị bỏ qua.
-- Cạnh tranh giữa các quy tắc không còn: edit do phím quyết định (chữ = `Append`, Backspace = `Pop`, phím kết thúc = `Commit`); model chỉ chọn rendering và `p_vi`.
-- Ký tự không phải chữ khi `Composing` thành `Pending` với đúng một ký tự (vẫn lật được bằng nháy Shift). Ký tự không phải chữ thứ hai khi `Pending` commit từ rồi cho ký tự đó đi thẳng tới app, về `Idle`, kể cả khi nó là trigger: `http:/` commit `http:` rồi `/` sau đó từ `Idle` mới vào `Raw`.
-- `Idle` + trigger (mặc định `/`, `@`, `!`) vào `Raw`: phím đi thẳng tới app, không buffer, không Telex, không gọi model, chỉ ghi record `key`. `Raw` kết thúc ở ký tự trong `command_end_chars` (mặc định space) hoặc keycode trong `command_end_keycodes` (Return, Tab, Escape, điều hướng) hoặc phím tắt; phím kết thúc vẫn tới app. Backspace trong `Raw` đi qua và ở lại `Raw`. Trigger giữa từ chỉ là ranh giới (`và/hoặc`).
-- Nháy Shift: `Composing` lật từ và khoá; `Pending` lật từ pending (nhãn `Correction`, sticky mode); `Idle` đổi sticky mode (trước khi gõ thì nhãn prior của focus); `Raw` chỉ đổi sticky mode, không nhãn.
-- Mọi lần commit (Return, Tab, Escape, điều hướng, phím tắt, click chuột, mất focus, đổi model, timer rảnh) theo thứ tự: `insertText` trước, rồi phím tới app (`consumed = false`). `Composing` commit quyết định mới nhất của model.
-- Timer rảnh nằm ở Swift (engine không có đồng hồ): sau `idle_commit_secs` không có phím, khi đang `Composing` hoặc `Pending`, Swift gọi `nimk_commit_pending`. Mỗi phím đặt lại timer; commit và deactivate huỷ nó. `Raw` không buffer gì nên không cần timer.
-- Nhãn: commit bằng timer, Return, ký tự ranh giới thứ hai hoặc chữ cái là `Implicit` (không sửa); nháy Shift là `Correction`.
-- Cấu hình: mọi tham số nằm trong TOML, mặc định ở `crates/nimk-engine/config/default.toml` (nhúng bằng `include_str!`, `EngineConfig::default()` là kết quả parse của nó), ghi đè của người dùng ở `<Application Support>/<bundle id>/config.toml` do Swift đọc và đưa văn bản qua `nimk_set_config`. Ghi đè theo nhóm app (`[[app_category]]`: terminal, ide, browser, editor) được chọn theo `bundle_id` mỗi lần focus đổi. Giá trị sai kiểu hoặc ngoài khoảng bị bỏ, báo diagnostic, giữ mặc định; không bao giờ làm hỏng khởi tạo. Chi tiết ở [11](../11-config.md).
+- States: `Idle`, `Composing(word)`, `Pending(word + exactly one boundary char)`, `Raw`.
+- Key classes: letters (language), printable non-letters (boundary; some are `command_triggers`), Backspace, commit keys (Return, Tab, Escape, arrows, Home/End/PageUp/PageDown, forward Delete, function keys, every Cmd/Ctrl/Opt shortcut), and ignored keys.
+- Edits are decided by the key (letter = `Append`, Backspace = `Pop`, ending key = `Commit`). The model only picks the rendering and `p_vi`.
+- A non-letter while `Composing` becomes `Pending` with one char (still flippable by double Shift). A second non-letter while `Pending` commits the word and sends that char straight to the app, going to `Idle`.
+- `Idle` plus a trigger (default `/`, `@`, `!`) enters `Raw`: keys go straight to the app, with no buffer, Telex or model, and only a `key` record is written. `Raw` ends on a char in `command_end_chars` (default space), a keycode in `command_end_keycodes`, or a shortcut; the ending key still reaches the app. A trigger mid-word is only a boundary.
+- Double Shift: `Composing` flips and locks the word; `Pending` flips the pending word (label `Correction`, sticky mode); `Idle` changes the sticky mode (before typing, a focus-prior label); `Raw` changes only the sticky mode, with no label.
+- Every commit (Return, Tab, Escape, navigation, shortcut, click, focus loss, model change, idle timer) does `insertText` first, then the key reaches the app (`consumed = false`).
+- The idle timer lives in Swift (the engine has no clock): after `idle_commit_secs` without a key while `Composing` or `Pending`, Swift calls `nimk_commit_pending`.
+- Labels: commit by timer, Return, a second boundary or a letter is `Implicit`; double Shift is `Correction`.
+- Config: all parameters are TOML. Defaults live in `crates/nimk-engine/config/default.toml` (embedded via `include_str!`); the user override is `<Application Support>/<bundle id>/config.toml`, read by Swift and passed through `nimk_set_config`. Per-app-category overrides (`[[app_category]]`: terminal, ide, browser, editor) are chosen by `bundle_id` on each focus change. Bad values are dropped with a diagnostic and defaults are kept. See [11](../11-config.md).
 
-## Hệ quả
+## Consequences
 
-- Hành vi dự đoán được trong mọi app: tối đa một ký tự ranh giới nằm trong marked text, app thấy trễ không quá một ký tự hoặc `idle_commit_secs`.
-- Dữ liệu huấn luyện: `ActionMask` của quan sát giờ chỉ còn một quyền; phím không phải chữ khi `Idle` và mọi phím `Raw` không còn mẫu nào; từ có ký tự không phải chữ giữa chừng (`user_name`) tách thành nhiều từ. Model đã pretrain vẫn dùng được (đầu rendering không đổi) nhưng nên pretrain lại sau khi generator (`nimk-synth`) khớp ngữ nghĩa mới; dòng `/src/home/config` trong log synthetic nay là `Raw`, không sinh `word_commit`.
-- Log: `word_commit` vẫn đến muộn hơn phím ranh giới; word id vẫn độc lập với mode.
-- Thay đổi ABI: thêm `nimk_set_config`, `nimk_idle_commit_secs`, `nimk_note_navigation`.
-- Rủi ro: URL và đường dẫn gõ sau trigger là `Raw` nên không bao giờ được Telex (đúng ý); ngược lại `/` đầu câu tiếng Việt ("/" làm dấu gạch) cũng vào `Raw` tới khi gõ space.
+- Predictable in every app: at most one boundary char sits in marked text, so the app lags by at most one char or `idle_commit_secs`.
+- Training data: `ActionMask` now has one allowed action; non-letters in `Idle` and all `Raw` keys produce no samples; a word with a mid-word non-letter (`user_name`) splits into several words. Pretrained models still work (the render head is unchanged) but should be retrained once the generator matches the new semantics (done later, see [devlog](../devlog.md)).
+- Log: `word_commit` still arrives after the boundary key; word ids are still independent of mode.
+- ABI additions: `nimk_set_config`, `nimk_idle_commit_secs`, `nimk_note_navigation`.
+- Risk: URLs and paths typed after a trigger are `Raw` and never Telex (intended); a Vietnamese sentence starting with `/` also enters `Raw` until the next space.

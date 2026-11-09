@@ -1,24 +1,25 @@
-# 0002. Swift shim mỏng, Rust core link tĩnh qua C ABI
+# 0002. Thin Swift shim, statically linked Rust core over a C ABI
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08
+> **Status:** accepted · **Date:** 2026-11-08
 
-## Bối cảnh
+## Context
 
-InputMethodKit và AppKit chỉ dùng thuận tiện từ Swift/Objective-C.
-Logic chính (composer, Telex, policy, trainer, log) cần test thuần, replay tất định và kiểm soát cấp phát trên hot path.
-Bỏ marked text (commit từng ký tự rồi backspace giả để sửa) dễ vỡ trên nhiều app.
+InputMethodKit and AppKit are only convenient from Swift/Objective-C.
+The core logic (composer, Telex, policy, trainer, log) needs pure tests, deterministic replay and control over hot-path allocation.
+Dropping marked text (committing each character and faking backspaces) is fragile across apps.
 
-## Quyết định
+## Decision
 
-- Một process `NeuralIMK.app`: Swift shim (≤ 300 dòng) + `libnimk_ffi.a` link tĩnh.
-- Swift chỉ chuyển `NSEvent`/context sang Rust và thực thi `NimkOut`; không có logic quyết định trong Swift.
-- `nimk-ffi` là crate duy nhất được dùng `unsafe` và `extern "C"`; mọi hàm export bọc `catch_unwind` và lỗi thì trả `consumed = false`.
-- Header sinh bằng `cbindgen`; build bằng `cargo` + `swiftc`, không dùng Xcode project.
-- Giữ từ đang gõ dưới dạng marked text; chấp nhận gạch chân của preedit.
+- One process, `NeuralIMK.app`: a Swift shim plus a statically linked `libnimk_ffi.a`.
+- Swift only forwards `NSEvent`/context to Rust and executes `NimkOut`. No decision logic lives in Swift.
+- `nimk-ffi` is the only crate allowed `unsafe` and `extern "C"`. Every exported function wraps `catch_unwind` and returns `consumed = false` on failure.
+- The header is generated with `cbindgen`. The build uses `cargo` and `swiftc`, not an Xcode project.
+- The word being typed is kept as marked text; the preedit underline is accepted.
 
-## Hệ quả
+## Consequences
 
-- Toàn bộ hành vi test được bằng `cargo test` và replay mà không cần AppKit.
-- Đổi mode giữa từ chỉ là thay preedit; không cần backspace giả.
-- Hai ngôn ngữ, một ranh giới ABI: chuỗi do Rust sở hữu sống đến lần gọi kế, Swift phải copy ngay.
-- Gạch chân luôn hiện dưới từ đang gõ; ẩn nó nằm ngoài phạm vi PoC.
+- All behavior is testable with `cargo test` and replay, without AppKit.
+- Changing mode mid-word just replaces the preedit; no fake backspaces.
+- One ABI boundary: Rust-owned strings live until the next call, so Swift must copy them immediately.
+- The underline always shows under the word being typed; hiding it is out of scope.
+- Note: the original "<= 300 lines" size goal for the shim no longer holds (about 870 lines of Swift today); the no-logic rule still does.

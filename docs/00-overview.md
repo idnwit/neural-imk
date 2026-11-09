@@ -1,68 +1,57 @@
-# Tổng quan NeuralIMK
+# NeuralIMK overview
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `Cargo.toml`, `crates/` · **Kiến trúc:** [01](01-architecture.md)
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `crates/` · **Architecture:** [01](01-architecture.md)
 
-NeuralIMK là một IME duy nhất trên macOS, trong đó một neural action model quyết định mọi thao tác trên từ đang gõ: thêm phím, xoá phím, commit, và chọn VI (Telex) hay EN.
-Nó học online từ mỗi lần người dùng nháy Shift hai lần để sửa, mục tiêu đưa số lần sửa tay về gần 0.
+NeuralIMK is a single macOS input method. A neural model picks Vietnamese (Telex) or English for each word, and learns online from the user's double-Shift corrections. The goal is to push manual corrections toward zero.
 
-## Mục tiêu
+## Goals
 
-PoC phải chứng minh ba điều: auto-switch theo ngữ cảnh khả thi, học online đủ nhanh, và hot path đủ rẻ.
-
-| # | Mục tiêu | Tài liệu |
+| # | Goal | Docs |
 | --- | --- | --- |
-| 1 | Một input source (IMK), VI/EN là chế độ nội bộ, Telex là kiểu gõ duy nhất | [02](02-keyboard-io.md), [ADR 0001](adr/0001-single-imk-input-source.md) |
-| 2 | Hotkey chuyển nhận ngay trong IME: nháy Shift hai lần (lật từ pending), dự phòng Ctrl+Space | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
-| 3 | Context chỉ gồm `bundle_id` và vị trí con trỏ tương đối trong cửa sổ app | [03](03-context-io.md) |
-| 4 | Neural action model (`LinearAction`, `GruAction`) học online, thay qua trait; pretrain bằng dữ liệu synthetic | [04](04-engine-ml.md), [ADR 0007](adr/0007-neural-action-model.md), [ADR 0009](adr/0009-burn-nn-backend.md) |
-| 5 | Ghi toàn bộ sự kiện để replay offline và so sánh model | [05](05-storage-and-log.md), [ADR 0004](adr/0004-storage-behind-trait.md) |
-| 6 | Overlay VI/EN tại con trỏ và status item trên menu bar | [06](06-gui.md) |
+| 1 | One IMK input source; VI/EN is an internal mode; Telex is the only typing method | [02](02-keyboard-io.md), [ADR 0001](adr/0001-single-imk-input-source.md) |
+| 2 | Switch hotkey handled inside the IME: double Shift flips the word, Ctrl+Space as fallback | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
+| 3 | Context is only `bundle_id` and the relative caret position | [03](03-context-io.md) |
+| 4 | Swappable action models (`LinearAction`, `GruAction`), pretrained on synthetic data, learning online | [04](04-engine-ml.md), [models](models/linear.md), [ADR 0007](adr/0007-neural-action-model.md) |
+| 5 | Log every event for offline replay and model comparison | [05](05-storage-and-log.md) |
+| 6 | VI/EN overlay at the caret and a menu-bar status item | [06](06-gui.md) |
 
-## Ngoài phạm vi
+## Non-goals
 
-Phase research cố ý bỏ qua các mục sau; mỗi mục có đường mở rộng đã tính trước.
-
-| Bỏ qua | Lý do / đường mở rộng |
+| Skipped | Why |
 | --- | --- |
-| Mã hoá log, blocklist app nhạy cảm | Log plaintext; mã hoá sau bằng decorator `EncryptedStorage<S: Storage>` |
-| Ẩn gạch chân marked text | Chấp nhận gạch chân ([ADR 0002](adr/0002-swift-shim-rust-core.md)) |
-| Backspace giả qua `CGEvent` hay `replacementRange` để sửa từ đã chèn | Từ model kết thúc ở lại marked text nên lật được tại chỗ ([ADR 0011](adr/0011-pending-word-commit.md)) |
-| VNI, gõ tắt, macro | Chỉ Telex |
-| Codesign/notarize | Chỉ chạy máy dev, ad-hoc sign (`codesign -s -`) |
-| Đa người dùng, đồng bộ model | Một máy, một model |
+| Log encryption, sensitive-app blocklist | Logs are plaintext; a decorator over `Storage` is the planned path |
+| Hiding the marked-text underline | Accepted ([ADR 0002](adr/0002-swift-shim-rust-core.md)) |
+| Fake backspaces to fix committed text | The last word stays marked text until committed, so it can flip in place ([ADR 0011](adr/0011-pending-word-commit.md)) |
+| VNI, abbreviations, macros | Telex only |
+| Codesign, notarize | Dev machine only, ad-hoc signed |
+| Multi-user, model sync | One machine, one model |
 
-## Chỉ số thành công
+## Success metrics
 
-PoC đạt khi cả ba chỉ số sau đúng sau 1 tuần dùng thật (M5).
-
-| Chỉ số | Ngưỡng | Đo bằng |
+| Metric | Target | Measured by |
 | --- | --- | --- |
-| Manual switch / 1000 từ | Giảm ≥ 50% so với `nimk-replay --frozen` (model đã pretrain, không học online) trên log thật | `nimk-replay` + log thật |
-| Latency `nimk_key` p99 | < 2 ms, gồm inference | Đo trong process thật |
-| Độ ổn định | Không crash trong 1 ngày gõ liên tục | Dogfood |
+| Manual switches per 1000 words | At least 50% below `nimk-replay --frozen` on real logs | `nimk-replay` |
+| `nimk_key` latency p99 | Under 2 ms including inference | Real process |
+| Stability | No crash in a day of typing | Dogfooding |
 
-## Lộ trình milestone
+## Milestones
 
-Milestone chạy tuần tự; mỗi milestone chỉ xong khi đạt tiêu chí và `make check` xanh.
-
-| Milestone | Nội dung | Tiêu chí xong |
+| Milestone | Content | Done when |
 | --- | --- | --- |
-| M0 | Workspace `crates/*` (8 crate), `arch-lint.toml`, `make check` | fmt + clippy + test + arch-lint chạy được |
-| M1 | Rust core không UI: Telex, composer, hotkey, storage, action model, log writer | Golden test xanh |
-| M2 | Hello IMK: Swift shim + `libnimk_ffi.a` | Gõ "tiếng Việt" trong TextEdit, Notes, Chrome, VS Code; nháy Shift hai lần lật từ đang gõ hoặc sửa từ vừa commit |
-| M3 | Context & log thật, overlay, status item | Log có `bundle_id`, `caret` đúng khi đổi app và kéo cửa sổ |
-| M4 | `LinearAction`, `GruAction`, pretrain synthetic, cửa sổ correction | `nimk-replay` vượt `--frozen` trên log thật |
-| M5 | Dogfood 1 tuần | Đạt chỉ số thành công; ghi kết luận vào [devlog](devlog.md) |
+| M0 | 8-crate workspace, `arch-lint.toml`, `make check` | fmt, clippy, tests, arch-lint pass |
+| M1 | Rust core without UI | Golden tests pass |
+| M2 | Swift shim and `libnimk_ffi.a` | Typing works in TextEdit, Notes, Chrome, VS Code; double Shift flips |
+| M3 | Real context and logs, overlay, status item | Logs carry correct `bundle_id` and caret |
+| M4 | Both models, synthetic pretraining, correction window | `nimk-replay` beats `--frozen` on real logs |
+| M5 | One week of dogfooding | Success metrics met; conclusion in [devlog](devlog.md) |
 
-## Thuật ngữ
+## Glossary
 
-| Thuật ngữ | Nghĩa |
+| Term | Meaning |
 | --- | --- |
-| `raw` | Chuỗi phím thô của từ đang gõ, ví dụ `tieengs` |
-| marked text / preedit | Text đang soạn, hiển thị gạch chân, chưa commit vào app |
-| prior | Quyết định mode lúc focus app, trước khi gõ từ nào |
-| manual switch | Người dùng nháy Shift hai lần hoặc bấm Ctrl+Space; là nguồn nhãn chắc chắn |
-| `Observation` / `Action` | Input và output của model cho mỗi phím ([04](04-engine-ml.md)); `Action` gồm `edit` và `render` |
-| `p_vi` | Xác suất người dùng muốn rendering VI, đầu ra render của `ActionScores` |
-| từ pending | Từ model đã kết thúc nhưng còn là marked text; nháy Shift hai lần lật rendering của nó ([02](02-keyboard-io.md)) |
-| `DecisionRule` | Luật cứng cũ; chỉ còn để đọc log cũ, log mới ghi `null` ([ADR 0007](adr/0007-neural-action-model.md)) |
+| `raw` | Raw keys of the current word, e.g. `tieengs` |
+| marked text | Text being composed and underlined, not yet committed |
+| pending word | A finished word still marked; double Shift flips its rendering |
+| manual switch | Double Shift or Ctrl+Space; the source of reliable labels |
+| `Observation` / `Action` | Model input and output per key; `Action` is `edit` plus `render` |
+| `p_vi` | Probability that Vietnamese is wanted; the render output |

@@ -1,24 +1,24 @@
-# 0003. Hotkey chuyển = gõ nhanh Shift trái, dự phòng Ctrl+Space
+# 0003. Switch hotkey = quick tap of left Shift, Ctrl+Space fallback
 
-> **Trạng thái:** superseded by 0008 · **Ngày:** 2026-11-08
+> **Status:** superseded by [0008](0008-double-shift-retro-correction.md) · **Date:** 2026-11-08
 
-## Bối cảnh
+## Context
 
-Hotkey chuyển vừa là thao tác người dùng vừa là nguồn nhãn chắc chắn, nên IME phải nhận được nó trực tiếp.
-⌘+Space bị hệ thống nuốt trước khi tới IME. Event tap toàn cục cần quyền Accessibility, trái với mục tiêu không xin quyền.
+The switch hotkey is both a user action and a source of reliable labels, so the IME must receive it directly.
+Cmd+Space is swallowed by the system before it reaches the IME. A global event tap needs the Accessibility permission, which conflicts with the goal of asking for none.
 
-## Quyết định
+## Decision
 
-- Mặc định: nhấn và nhả Shift trái một mình trong ≤ `shift_tap_secs` (0.3 s), không xen `keyDown` nào.
-- IME khai báo `recognizedEvents(_:)` = `[.keyDown, .flagsChanged]` để nhận sự kiện modifier.
-- Dự phòng: Ctrl+Space qua `keyDown`, bật bằng `EngineConfig::ctrl_space` (mặc định `true`).
-- Nhận diện là state machine trong Rust (`HotkeyDetector`), theo `KeyEvent::timestamp`; Swift không xử lý.
-- Hotkey ngay sau commit (`after_commit`) chỉ đổi mode cho từ kế tiếp và sinh nhãn sửa; không viết lại text đã commit.
+- Default: press and release left Shift alone within `shift_tap_secs` (0.3 s), with no `keyDown` in between.
+- The IME declares `recognizedEvents(_:)` = `[.keyDown, .flagsChanged]` to receive modifier events.
+- Fallback: Ctrl+Space via `keyDown`, enabled by `EngineConfig::ctrl_space` (default `true`).
+- Detection is a Rust state machine (`HotkeyDetector`) driven by `KeyEvent::timestamp`; Swift does not handle it.
+- A hotkey right after a commit only changes the mode for the next word and produces a correction label; it does not rewrite committed text.
 
-## Hệ quả
+## Consequences
 
-- Không cần quyền Accessibility hay event tap.
-- Shift giữ để gõ hoa không kích hoạt vì luôn có `keyDown` xen giữa.
-- App nào nuốt `flagsChanged` thì chỉ còn Ctrl+Space, và Ctrl+Space trùng shortcut của một số app.
-- Từ vừa commit sai mode vẫn sai trên màn hình; người dùng tự xoá nếu muốn. Sửa text đã commit nằm ngoài phạm vi PoC dù review kiến trúc đã nêu.
-- Vì hotkey sinh nhãn, ngữ nghĩa của nó theo `SwitchScope` là một phần của hợp đồng học ([02](../02-keyboard-io.md)).
+- No Accessibility permission or event tap needed.
+- Holding Shift to type capitals never triggers it, because a `keyDown` always intervenes.
+- Apps that swallow `flagsChanged` leave only Ctrl+Space, which clashes with some apps' shortcuts.
+- A word committed in the wrong mode stays wrong on screen. This was fixed in 0008.
+- Because the hotkey produces labels, its semantics are part of the learning contract ([02](../02-keyboard-io.md)).
