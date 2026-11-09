@@ -80,6 +80,29 @@ fn has_dot_stays_marked_and_flippable() {
     );
 }
 
+/// Regression (real install, 2026-11-09): the old engine appended the
+/// boundary to the raw word, so Telex saw `taij:` and rendered `taị:`.
+/// A boundary must end the word before Telex runs.
+#[test]
+fn boundary_after_tone_key_keeps_tone_placement() {
+    for (typed, word) in [
+        ("taij", "t\u{1ea1}i"),
+        ("loaij", "lo\u{1ea1}i"),
+        ("hoaij", "ho\u{1ea1}i"),
+        ("muaf", "m\u{f9}a"),
+    ] {
+        for boundary in [':', ',', '.', ';', ')'] {
+            let (mut e, _s) = vi();
+            let mut t = 0.0;
+            let outs = type_str(&mut e, &format!("{typed}{boundary}"), &mut t);
+            let shown = outs.last().and_then(|o| o.marked.clone());
+            assert_eq!(shown, Some(format!("{word}{boundary}")), "{typed}{boundary}");
+            let o = type_str(&mut e, " ", &mut t).remove(0);
+            assert_eq!(o.commit, Some(format!("{word}{boundary}")), "{typed}{boundary}");
+        }
+    }
+}
+
 #[test]
 fn hello_world_commits_hello_comma_on_the_space_and_passes_it() {
     let (mut e, _s) = en();
