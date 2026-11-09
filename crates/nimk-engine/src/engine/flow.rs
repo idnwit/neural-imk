@@ -7,6 +7,7 @@ use nimk_types::{
     RECENT_WINDOW, Target,
 };
 
+use super::machine::{Class, Move, State, transition};
 use super::{Engine, EngineOutput, Overlay, PendingWord, TelexFlags};
 use crate::composer::{Committed, boundary_of, printable_char};
 use crate::labeler::{FinalLabel, Step};
@@ -16,18 +17,24 @@ use crate::trainer::TrainerOut;
 /// recording instead of growing without bound).
 const MAX_STEPS: usize = 128;
 
-/// Most boundary characters kept after a pending word; more commit it.
-const MAX_BOUNDARY: usize = 16;
+/// The mask a step allows: the structural part of the edit (ADR 0012).
+fn mask_of(step: Move) -> ActionMask {
+    ActionMask {
+        append: matches!(step, Move::Append | Move::CommitThenAppend),
+        pop: step == Move::Pop,
+        commit: matches!(step, Move::EndWordPending | Move::CommitWord),
+    }
+}
 
-/// Whether `c` may join a pending word's boundary: space and sentence
-/// punctuation. Anything else printable commits the pending word.
-fn is_boundary_char(c: char) -> bool {
-    c == ' '
-        || matches!(
-            c,
-            '.' | ',' | '?' | '!' | ':' | ';' | '\'' | '"' | '(' | ')' | '\u{2026}'
-        )
-        || matches!(c, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
+/// The edit a mask leaves no choice about (exactly one structural edit
+/// legal), if any.
+fn structural_edit(mask: ActionMask) -> Option<EditAction> {
+    match (mask.append, mask.pop, mask.commit) {
+        (true, false, false) => Some(EditAction::Append),
+        (false, true, false) => Some(EditAction::Pop),
+        (false, false, true) => Some(EditAction::Commit),
+        _ => None,
+    }
 }
 
 /// Teacher-forced action for [`Engine::teach`].
@@ -44,7 +51,8 @@ impl Engine {
         let t = key.timestamp;
         let mut out = EngineOutput::default();
         self.tick(t);
-        let mask = self.mask_for(key);
+        let step = transition(self.state(), self.classify(key));
+        let mask = mask_of(step);
         let word_id = (!self.composer.is_empty() || mask.append).then(|| self.composer.word_id());
         self.logger.log(
             t,
@@ -70,51 +78,85 @@ impl Engine {
         if key.kind == KeyKind::FlagsChanged {
             return out;
         }
-        if self.pending.is_some() && self.pending_key(key, t, &mut out) {
-            self.note_key(key);
-            return out;
+        match step {
+            Move::Pass => {}
+            Move::EnterRaw => self.raw = true,
+            Move::ExitRaw => self.raw = false,
+            Move::PendingBackspace => self.pending_backspace(&mut out),
+            Move::CommitThenPass => self.finalize_pending(t, &mut out),
+            Move::CommitThenAppend => {
+                self.finalize_pending(t, &mut out);
+                self.model_step(key, mask, t, forced, &mut out);
+                return out;
+            }
+            Move::Append | Move::Pop | Move::EndWordPending | Move::CommitWord => {
+                self.model_step(key, mask, t, forced, &mut out);
+                return out;
+            }
         }
-        if !mask.append && self.composer.is_empty() {
-            // Structural mask: only `Pass` is legal, so the model is not
-            // consulted and the key goes straight to the app.
-            self.note_key(key);
-            return out;
-        }
-        self.model_step(key, mask, t, forced, &mut out);
+        // Everything else never consults the model: the key either goes
+        // straight to the app or was handled mechanically above.
+        self.note_key(key);
         out
     }
 
-    /// A key arrives while a word is pending (ADR 0011). Returns `true`
-    /// when the key was fully handled here; `false` when the pending word
-    /// has been committed and the key continues through the normal flow.
-    fn pending_key(&mut self, key: &KeyEvent, t: f64, out: &mut EngineOutput) -> bool {
-        let printable = printable_char(key);
-        if let Some(c) = printable.filter(|c| is_boundary_char(*c)) {
-            let room = self
-                .pending
-                .as_ref()
-                .is_some_and(|p| p.boundary.chars().count() < MAX_BOUNDARY);
-            if room && let Some(p) = self.pending.as_mut() {
-                p.boundary.push(c);
-                out.consumed = true;
-                out.marked = Some(p.text());
-                return true;
-            }
+    /// Where typing is now (ADR 0012).
+    fn state(&self) -> State {
+        if self.raw {
+            State::Raw
+        } else if !self.composer.is_empty() {
+            State::Composing
+        } else if self.pending.is_some() {
+            State::Pending
+        } else {
+            State::Idle
         }
-        if printable.is_none()
-            && key.keycode == nimk_types::keycode::BACKSPACE
-            && !key.mods.is_shortcut()
-        {
-            self.pending_backspace(out);
-            return true;
-        }
-        // A letter starts the next word; everything else is passed on.
-        self.finalize_pending(t, out);
-        false
     }
 
-    /// Backspace over the pending text: drops the last boundary character;
-    /// when that was the last one the word becomes the composing word again
+    /// Whether `key` ends the word being composed or pending: a configured
+    /// commit keycode, a Cmd/Ctrl/Opt chord, or text the buffer cannot hold.
+    fn commits(&self, key: &KeyEvent) -> bool {
+        key.mods.is_shortcut()
+            || self.live.commit_keycodes.contains(&key.keycode)
+            || !key.chars.is_empty() && !key.chars.chars().all(char::is_control)
+    }
+
+    /// Classifies `key` for the transition table.
+    fn classify(&self, key: &KeyEvent) -> Class {
+        if key.kind != KeyKind::KeyDown {
+            return Class::Ignored;
+        }
+        let printable = printable_char(key);
+        if self.raw {
+            let ends = key.mods.is_shortcut()
+                || self.live.command_end_keycodes.contains(&key.keycode)
+                || printable.is_some_and(|c| self.live.command_end_chars.contains(c));
+            return if ends {
+                Class::Terminator
+            } else {
+                Class::Ignored
+            };
+        }
+        match printable {
+            Some(c) if self.live.is_letter(c) => {
+                if self.composer.is_full() {
+                    Class::LetterFull
+                } else {
+                    Class::Letter
+                }
+            }
+            Some(c) if self.live.is_trigger(c) => Class::Trigger,
+            Some(_) => Class::Boundary,
+            None if key.keycode == nimk_types::keycode::BACKSPACE && !key.mods.is_shortcut() => {
+                Class::Backspace
+            }
+            None if self.commits(key) => Class::Commit,
+            None => Class::Ignored,
+        }
+    }
+
+    /// Backspace over the pending text: drops the boundary character and the
+    /// word becomes the composing word again
     /// (so the next Backspace erases a letter).
     fn pending_backspace(&mut self, out: &mut EngineOutput) {
         out.consumed = true;
@@ -167,19 +209,6 @@ impl Engine {
         }
     }
 
-    /// Structural legality of each edit for `key` (not a language rule).
-    fn mask_for(&self, key: &KeyEvent) -> ActionMask {
-        let filled = !self.composer.is_empty();
-        ActionMask {
-            // A word starts with a letter; once started it may take any
-            // printable key (the model decides when it ends).
-            append: printable_char(key).is_some_and(|c| filled || c.is_alphabetic())
-                && !self.composer.is_full(),
-            pop: filled,
-            commit: filled,
-        }
-    }
-
     fn secs_since_switch(&self, t: f64) -> f32 {
         self.last_switch_t
             .map_or(f32::INFINITY, |s| (t - s).max(0.0) as f32)
@@ -220,7 +249,7 @@ impl Engine {
             return (None, base);
         }
         let p = p.clamp(0.0, 1.0);
-        let chosen = if (p - 0.5).abs() > self.cfg.switch_margin {
+        let chosen = if (p - 0.5).abs() > self.live.switch_margin {
             Lang::from_p_vi(p)
         } else {
             base
@@ -256,24 +285,24 @@ impl Engine {
         out: &mut EngineOutput,
     ) {
         let obs = self.observation(Some(key), mask, t);
+        let structural = structural_edit(mask);
         let (action, p_vi) = match forced {
-            Some(f) => {
-                let edit = if mask.allows(f.target.edit) {
-                    f.target.edit
-                } else {
-                    EditAction::Pass
-                };
-                (
-                    Action {
-                        edit,
-                        render: f.target.render,
+            Some(f) => (
+                Action {
+                    edit: match structural {
+                        Some(edit) => edit,
+                        None => EditAction::Pass,
                     },
-                    None,
-                )
-            }
+                    render: f.target.render,
+                },
+                None,
+            ),
             None => {
                 let scores = self.model.score(&obs);
-                let edit = decide(&scores, mask).edit;
+                let edit = match structural {
+                    Some(edit) => edit,
+                    None => decide(&scores, mask).edit,
+                };
                 let base = self.shown;
                 let (p, held) = self.hysteresis(base, scores.p_vi);
                 let render = if self.locked {
@@ -357,10 +386,11 @@ impl Engine {
                 }
             }
             EditAction::Commit => {
-                // Space and sentence punctuation keep the word pending as
-                // marked text; any other ender commits it and passes on.
+                // A non-letter character keeps the word pending as marked
+                // text with that one character; any other ender commits it
+                // now and the key passes on.
                 self.end_word(boundary_of(key), out);
-                match printable_char(key).filter(|c| is_boundary_char(*c)) {
+                match printable_char(key).filter(|c| !self.live.is_letter(*c)) {
                     Some(c) => {
                         if let Some(p) = self.pending.as_mut() {
                             p.boundary.push(c);

@@ -45,7 +45,9 @@ fn smoke(kind: ModelKind) {
     let evs = events(&storage);
     let keys = evs
         .iter()
-        .filter(|ev| matches!(ev, Event::Key { key, .. } if key.kind == KeyKind::KeyDown))
+        .filter(
+            |ev| matches!(ev, Event::Key { key, word_id: Some(_) } if key.kind == KeyKind::KeyDown),
+        )
         .count();
     let decisions = evs
         .iter()

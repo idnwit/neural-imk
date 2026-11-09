@@ -1,0 +1,120 @@
+# NeuralIMK engine defaults: the single source of truth (embedded in the
+# engine with include_str!). A user override at
+# <Application Support>/<bundle id>/config.toml is merged on top, key by key.
+# Every key is documented, with its range, in docs/11-config.md.
+
+# ---- model and learning ----
+# Action model to build when no snapshot exists: "gru_action" | "linear_action".
+policy = "gru_action"
+seed = 24301
+# Hysteresis: leave the shown rendering only if |p - 0.5| > margin. [0, 0.5]
+switch_margin = 0.02
+# Train online from labels; replay sets false and injects labels instead.
+hotkeys = true
+# Weight of implicit (uncorrected) labels. [0, 1]
+implicit_weight = 0.3
+# Weight of the edit-head loss in online examples (0 = pretrain only). [0, 1]
+edit_online_weight = 0.0
+# Words after a commit during which a hotkey still corrects that commit. [0, 20]
+correction_words = 2
+# Seconds after a commit before its implicit label is finalized. [0.5, 600]
+label_timeout_secs = 10.0
+# Teacher-forced examples per learner update. [1, 4096]
+teach_batch = 1
+# Samples re-trained around a correction. [1, 1000]
+correction_window = 20
+# Gradient steps over the correction window. [0, 100]
+correction_steps = 5
+# Replay buffer capacity. [16, 1000000]
+replay_capacity = 10000
+# Train one minibatch every N new samples (0 = never). [0, 100000]
+replay_every = 50
+# Minibatch size for replay training. [1, 4096]
+replay_batch = 32
+# Seconds between model snapshots to storage. [10, 86400]
+snapshot_every_secs = 300.0
+# "background" (production) | "inline" (tests, replay).
+threading = "background"
+
+# ---- switch hotkey ----
+# Accept a double Shift tap as the switch hotkey.
+double_shift = true
+# Max seconds between the releases of the two taps. [0.05, 2]
+double_shift_secs = 0.4
+# Max seconds between a Shift down and up to count as a tap. [0.05, 1]
+shift_tap_secs = 0.3
+# Also accept Ctrl+Space as the switch hotkey.
+ctrl_space = true
+
+# ---- commit / boundary ----
+# Seconds without a key after which the host commits the composing or pending
+# word. 0 = off, otherwise [0.3, 10].
+idle_commit_secs = 1.5
+# Characters that count as language (letters) although they are not alphabetic.
+extra_letters = ""
+# Characters that count as boundaries although they are alphabetic.
+extra_boundaries = ""
+# Keycodes that commit the word and then reach the app: Return, keypad Enter,
+# Tab, Escape, Home/End/PageUp/PageDown, arrows, forward Delete, F1-F20.
+commit_keycodes = [
+  36, 76, 48, 53, 115, 119, 116, 121, 123, 124, 125, 126, 117,
+  122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+]
+
+# ---- raw (command) mode ----
+# A trigger typed with nothing composing starts raw mode: that key and the
+# ones after it go straight to the app (no buffer, no Telex, no model) until a
+# terminator. A trigger typed mid-word is only a boundary (`va/hoac`), and a
+# second boundary after a word commits it first (`http://`).
+command_triggers = ["/", "@", "!"]
+# Characters that end raw mode (the character still reaches the app).
+command_end_chars = " "
+# Keycodes that end raw mode: Return, keypad Enter, Tab, Escape, Home/End,
+# PageUp/PageDown, arrows, forward Delete. A Cmd/Ctrl/Opt chord ends it too.
+command_end_keycodes = [36, 76, 48, 53, 115, 119, 116, 121, 123, 124, 125, 126, 117]
+
+# ---- per-app-category overrides ----
+# `bundle_ids` entries ending in `*` match by prefix. The first category that
+# matches the focused app wins; `params` overrides the keys of the same name.
+[[app_category]]
+name = "terminal"
+bundle_ids = [
+  "com.github.wez.wezterm",
+  "com.googlecode.iterm2",
+  "com.apple.Terminal",
+  "com.mitchellh.ghostty",
+  "net.kovidgoyal.kitty",
+  "org.alacritty",
+  "dev.warp.Warp-Stable",
+]
+[app_category.params]
+idle_commit_secs = 1.0
+
+[[app_category]]
+name = "ide"
+bundle_ids = [
+  "com.microsoft.VSCode",
+  "com.todesktop.230313mzl4w4u92",
+  "dev.zed.Zed",
+  "com.apple.dt.Xcode",
+  "com.jetbrains.*",
+]
+[app_category.params]
+idle_commit_secs = 1.0
+
+[[app_category]]
+name = "browser"
+bundle_ids = [
+  "com.google.Chrome",
+  "com.microsoft.edgemac",
+  "com.apple.Safari",
+  "org.mozilla.firefox",
+]
+[app_category.params]
+idle_commit_secs = 0.8
+
+[[app_category]]
+name = "editor"
+bundle_ids = ["com.apple.Notes", "com.apple.TextEdit"]
+[app_category.params]
+idle_commit_secs = 2.0

@@ -10,7 +10,7 @@ Chưa có mục nào dưới đây được thử trên máy thật.
 
 | Hành vi | Vì sao |
 | --- | --- |
-| `setMarkedText` hiển thị marked text liên tục tới 16 ký tự ranh giới sau từ | Từ pending gồm từ cộng space và dấu câu |
+| `setMarkedText` hiển thị marked text liên tục tới đúng 1 ký tự ranh giới sau từ | Từ pending gồm từ cộng một ký tự không phải chữ (ADR 0012) |
 | Phím Return, Tab, mũi tên tới app sau khi `insertText` commit | Engine commit pending rồi trả phím, nên gửi tin nhắn và di chuyển vẫn hoạt động |
 | `commitComposition` được gọi khi click chuột hoặc mất focus | Chốt từ pending; nếu app không gọi, `deactivateServer` cũng commit |
 | Hai client kích hoạt xen kẽ khi click (Electron) | `Debouncer` gộp việc gửi context trong 120 ms; phím tới trước thì gửi ngay |

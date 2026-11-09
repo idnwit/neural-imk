@@ -9,7 +9,7 @@ khi hai bên lệch nhau, sửa tài liệu trong cùng commit với code.
 | --- | --- | --- |
 | [00-overview.md](00-overview.md) | Mục tiêu, phạm vi, ngoài phạm vi, chỉ số thành công | — |
 | [01-architecture.md](01-architecture.md) | Process, luồng, crate, quy tắc tầng | `Cargo.toml`, `arch-lint.toml` |
-| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, marked text, double Shift, từ pending, lifecycle | `crates/nimk-engine/src/{composer,hotkey}.rs`, `crates/nimk-engine/src/engine/`, `macos/` |
+| [02-keyboard-io.md](02-keyboard-io.md) | IMK, composer, marked text, máy trạng thái Idle/Composing/Pending/Raw, double Shift, UX theo app, lifecycle | `crates/nimk-engine/src/{composer,hotkey}.rs`, `crates/nimk-engine/src/engine/`, `macos/` |
 | [03-context-io.md](03-context-io.md) | `bundle_id`, `caret_rel`, đổi toạ độ | `macos/NeuralIMK/InputController.swift`, `nimk-types::CaretRel` |
 | [04-engine-ml.md](04-engine-ml.md) | Action model, encoding, `LinearAction`/`GruAction`, online learning, pretrain, kết quả đo | `crates/nimk-policy`, `crates/nimk-types/src/action.rs`, `crates/nimk-engine/src/{config,labeler,trainer}.rs` |
 | [05-storage-and-log.md](05-storage-and-log.md) | Trait `Storage`, schema sự kiện, replay, metric, log synthetic | `crates/nimk-storage`, `nimk-types::event`, `crates/nimk-replay`, `crates/nimk-synth` |
@@ -18,6 +18,7 @@ khi hai bên lệch nhau, sửa tài liệu trong cùng commit với code.
 | [08-coding-standard.md](08-coding-standard.md) | Quy ước code, contract arch-lint, test | `arch-lint.toml`, `Makefile` |
 | [09-app-compat.md](09-app-compat.md) | Tương thích marked text theo loại app, kế hoạch test tay | `macos/NeuralIMK/InputController.swift` |
 | [10-telex.md](10-telex.md) | Telex v2 (gõ tự do theo Unikey): quy tắc R1–R10, bảng kiểm thử, điểm lệch so với các bộ gõ, quy tắc bảo trì | `crates/nimk-telex/src` |
+| [11-config.md](11-config.md) | Cấu hình TOML: mọi khoá, khoảng giá trị, mặc định, ghi đè theo nhóm app, xử lý giá trị sai | `crates/nimk-engine/config/default.toml`, `crates/nimk-engine/src/config.rs` |
 | [research/](research/) | Bản nghiên cứu gốc làm căn cứ cho quyết định (ví dụ Telex v2) | — |
 | [adr/](adr/) | Quyết định kiến trúc, mỗi quyết định một file | — |
 | [devlog.md](devlog.md) | Nhật ký phát triển (working memory), mới nhất ở trên | — |

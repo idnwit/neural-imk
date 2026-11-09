@@ -1,10 +1,11 @@
-//! Double-Shift hotkey and the pending word (ADR 0011).
+//! Double-Shift hotkey and the pending word flip (ADR 0011, 0012). The boundary
+//! table of ADR 0012 lives in `boundary.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 
 use common::*;
-use nimk_engine::{EngineConfig, EngineOutput, Overlay};
+use nimk_engine::{EngineConfig, Overlay};
 use nimk_types::{
     EditAction, Event, KeyEvent, LabelSource, Lang, Modifiers, SwitchScope, Target, keycode,
 };
@@ -254,25 +255,6 @@ fn unflipped_pending_word_is_labelled_implicitly() {
 }
 
 #[test]
-fn punctuation_extends_the_pending_boundary_and_stays_flippable() {
-    let (mut e, storage) = const_engine(0.1, inline_cfg());
-    let mut t = 0.0;
-    let outs = type_str(&mut e, "has. ", &mut t);
-    assert!(commits(&outs).is_empty());
-    assert_eq!(outs[3].marked.as_deref(), Some("has."));
-    assert_eq!(outs[4].marked.as_deref(), Some("has. "));
-    let o = double_shift(&mut e, &mut t);
-    assert_eq!(o.marked.as_deref(), Some("h\u{e1}. "));
-    assert_eq!(o.mode, Some(Lang::Vi));
-    let o = type_str(&mut e, "q", &mut t).remove(0);
-    assert_eq!(o.commit.as_deref(), Some("h\u{e1}. "));
-    assert_eq!(
-        labels(&events(&storage)),
-        vec![(Target::Word(0), Lang::Vi, 1.0, LabelSource::Correction)]
-    );
-}
-
-#[test]
 fn model_decides_the_rendering_of_the_pending_word() {
     for (p, want) in [(0.1, "has "), (0.9, "h\u{e1} ")] {
         let (mut e, _s) = const_engine(p, inline_cfg());
@@ -281,97 +263,6 @@ fn model_decides_the_rendering_of_the_pending_word() {
         let o = type_str(&mut e, "x", &mut t).remove(0);
         assert_eq!(o.commit.as_deref(), Some(want));
     }
-}
-
-#[test]
-fn keys_that_commit_pending_and_pass() {
-    type Case = (&'static str, u16, &'static str, u32);
-    let cases: Vec<Case> = vec![
-        ("return", keycode::RETURN, "\r", 0),
-        ("tab", keycode::TAB, "\t", 0),
-        ("arrow", keycode::LEFT, "\u{F702}", 0),
-        ("escape", keycode::ESCAPE, "\u{1b}", 0),
-        ("shortcut", 8, "c", Modifiers::COMMAND),
-        ("at sign", 19, "@", 0),
-        ("digit", 18, "1", 0),
-    ];
-    for (name, code, chars, mods) in cases {
-        let (mut e, storage) = const_engine(0.9, inline_cfg());
-        let mut t = 0.0;
-        type_str(&mut e, "tieengs ", &mut t);
-        let o = e.on_key(&key_at(code, chars, mods, &mut t));
-        assert_eq!(o.commit.as_deref(), Some("ti\u{1ebf}ng "), "case {name}");
-        assert!(!o.consumed, "case {name}: the key goes to the app");
-        // No pending word is left to flip.
-        let o = double_shift(&mut e, &mut t);
-        assert_eq!(o.marked, None, "case {name}");
-        let evs = events(&storage);
-        assert_eq!(word_commit_ids(&storage), vec![0], "case {name}");
-        assert!(
-            labels(&evs).is_empty(),
-            "case {name}: flip after commit labels nothing"
-        );
-    }
-}
-
-#[test]
-fn non_letter_with_empty_buffer_skips_the_model() {
-    let (mut e, storage, seen) = scripted_engine(const_typist(0.9), inline_cfg());
-    let mut t = 0.0;
-    for (code, chars) in [
-        (19, "@"),
-        (18, "1"),
-        (keycode::BACKSPACE, "\u{7f}"),
-        (47, "."),
-    ] {
-        let o = e.on_key(&key_at(code, chars, 0, &mut t));
-        assert_eq!(o, EngineOutput::default(), "{chars:?}");
-    }
-    let evs = events(&storage);
-    assert!(!evs.iter().any(|ev| matches!(ev, Event::Decision { .. })));
-    let keys = evs
-        .iter()
-        .filter(|ev| matches!(ev, Event::Key { .. }))
-        .count();
-    assert_eq!(keys, 4);
-    assert!(seen.lock().unwrap().is_empty());
-}
-
-#[test]
-fn backspace_walks_back_through_boundary_into_the_word() {
-    let (mut e, storage) = const_engine(0.9, inline_cfg());
-    let mut t = 0.0;
-    type_str(&mut e, "tieengs. ", &mut t);
-    let mut bs =
-        |e: &mut nimk_engine::Engine| e.on_key(&key_at(keycode::BACKSPACE, "\u{7f}", 0, &mut t));
-    let o = bs(&mut e);
-    assert!(o.consumed);
-    assert_eq!(o.marked.as_deref(), Some("ti\u{1ebf}ng."));
-    // The last boundary character is gone: the word composes again.
-    let o = bs(&mut e);
-    assert!(o.consumed);
-    assert_eq!(o.marked.as_deref(), Some("ti\u{1ebf}ng"));
-    assert!(word_commit_ids(&storage).is_empty());
-    let o = bs(&mut e);
-    assert_eq!(o.marked.as_deref(), Some("ti\u{ea}ng"));
-    assert!(o.commit.is_none());
-    let outs = type_str(&mut e, "s ", &mut t);
-    assert!(commits(&outs).is_empty());
-    assert_eq!(outs[1].marked.as_deref(), Some("ti\u{1ebf}ng "));
-    let o = type_str(&mut e, "a", &mut t).remove(0);
-    assert_eq!(o.commit.as_deref(), Some("ti\u{1ebf}ng "));
-    assert_eq!(word_commit_ids(&storage), vec![0], "one commit, id kept");
-}
-
-#[test]
-fn commit_composition_commits_pending() {
-    let (mut e, _s) = const_engine(0.9, inline_cfg());
-    let mut t = 0.0;
-    type_str(&mut e, "tieengs, ", &mut t);
-    let o = e.commit_pending(t + 1.0);
-    assert_eq!(o.commit.as_deref(), Some("ti\u{1ebf}ng, "));
-    let o = e.commit_pending(t + 2.0);
-    assert_eq!(o, EngineOutput::default());
 }
 
 #[test]

@@ -8,6 +8,7 @@
 //! user starts the next word (ADR 0011).
 
 mod flow;
+mod machine;
 mod model;
 mod switch;
 
@@ -22,6 +23,7 @@ use nimk_storage::{EventSink, Storage};
 use nimk_types::{Action, AppContext, Event, Example, KeyEvent, LabelSource, Lang, Target};
 
 use crate::composer::Composer;
+use crate::config::LiveParams;
 use crate::hotkey::{HotkeyDetector, HotkeyParams};
 use crate::labeler::{Labeler, LabelerParams, Step};
 use crate::logger::{Logger, NullSink};
@@ -207,6 +209,11 @@ pub struct Engine {
     recent: VecDeque<KeyEvent>,
     /// The word the model ended and the user has not moved past yet.
     pending: Option<PendingWord>,
+    /// Parameters in force for the focused app (category overrides applied).
+    live: LiveParams,
+    /// Raw mode: a command is being typed and keys pass straight to the app
+    /// (ADR 0012).
+    raw: bool,
     focus: Option<Focus>,
     next_focus: u64,
     /// Renderings of up to 3 previous words in this field, most recent first.
@@ -270,11 +277,12 @@ impl Engine {
             implicit_weight: cfg.implicit_weight,
             edit_weight: cfg.edit_online_weight,
         });
+        let live = cfg.live_for("");
         let hotkey = HotkeyDetector::new(HotkeyParams {
-            tap_secs: cfg.shift_tap_secs,
-            double_secs: cfg.double_shift_secs,
-            double_shift: cfg.double_shift,
-            ctrl_space: cfg.ctrl_space,
+            tap_secs: live.shift_tap_secs,
+            double_secs: live.double_shift_secs,
+            double_shift: live.double_shift,
+            ctrl_space: live.ctrl_space,
         });
         let config_json = match serde_json::to_string(&cfg) {
             Ok(json) => json,
@@ -303,6 +311,8 @@ impl Engine {
             taught: Vec::new(),
             recent: VecDeque::with_capacity(nimk_types::RECENT_WINDOW + 1),
             pending: None,
+            live,
+            raw: false,
             focus: None,
             next_focus: 0,
             prev_langs: Vec::with_capacity(3),
@@ -358,6 +368,8 @@ impl Engine {
         });
         self.prev_langs.clear();
         self.recent.clear();
+        self.apply_live(&ctx.bundle_id);
+        self.raw = false;
         self.committed_since_focus = false;
         self.locked = false;
         self.decide_prior(id, ctx.timestamp, &mut out);
@@ -425,6 +437,62 @@ impl Engine {
         self.commit_word(nimk_types::Boundary::External, timestamp, &mut out);
         self.drain_trainer(timestamp);
         out
+    }
+
+    /// Seconds of silence after which the host should call
+    /// [`Engine::commit_pending`] while text is marked (0 = never). Follows
+    /// the focused app's category.
+    #[must_use]
+    pub fn idle_commit_secs(&self) -> f64 {
+        self.live.idle_commit_secs
+    }
+
+    /// The user moved the caret without a key (mouse click): raw mode ends.
+    pub fn note_navigation(&mut self) {
+        self.raw = false;
+    }
+
+    /// Replaces the live parameters (everything but the model, the seed and
+    /// the trainer settings, which apply at the next start) with those of
+    /// `cfg`, for the focused app.
+    pub fn reconfigure(&mut self, cfg: EngineConfig) {
+        let keep = (self.cfg.policy, self.cfg.seed, self.cfg.threading);
+        self.cfg = EngineConfig {
+            policy: keep.0,
+            seed: keep.1,
+            threading: keep.2,
+            ..cfg
+        };
+        let bundle = match &self.focus {
+            Some(f) => f.ctx.bundle_id.clone(),
+            None => String::new(),
+        };
+        self.apply_live(&bundle);
+    }
+
+    /// Resolves the category parameters for `bundle_id`; rebuilds the hotkey
+    /// detector when its parameters changed.
+    fn apply_live(&mut self, bundle_id: &str) {
+        let live = self.cfg.live_for(bundle_id);
+        if (
+            live.shift_tap_secs,
+            live.double_shift_secs,
+            live.double_shift,
+            live.ctrl_space,
+        ) != (
+            self.live.shift_tap_secs,
+            self.live.double_shift_secs,
+            self.live.double_shift,
+            self.live.ctrl_space,
+        ) {
+            self.hotkey = HotkeyDetector::new(HotkeyParams {
+                tap_secs: live.shift_tap_secs,
+                double_secs: live.double_shift_secs,
+                double_shift: live.double_shift,
+                ctrl_space: live.ctrl_space,
+            });
+        }
+        self.live = live;
     }
 
     /// Feeds an external label (replay ground truth, synthetic data) exactly

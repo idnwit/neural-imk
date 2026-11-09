@@ -25,7 +25,8 @@ pub use abi::{
     NIMK_OVERLAY_AUTO, NIMK_OVERLAY_MANUAL, NIMK_OVERLAY_NONE, NimkCtx, NimkKey, NimkOut,
 };
 pub use exports::{
-    nimk_commit_pending, nimk_context, nimk_free, nimk_key, nimk_mode, nimk_new, nimk_policy_id,
-    nimk_shutdown, nimk_take_diagnostics,
+    nimk_commit_pending, nimk_context, nimk_free, nimk_idle_commit_secs, nimk_key, nimk_mode,
+    nimk_new, nimk_note_navigation, nimk_policy_id, nimk_set_config, nimk_shutdown,
+    nimk_take_diagnostics,
 };
 pub use handle::NimkCore;

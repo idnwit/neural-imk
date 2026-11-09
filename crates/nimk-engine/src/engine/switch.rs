@@ -13,6 +13,8 @@ impl Engine {
     ///   committed);
     /// - before any typing after focus: flips the sticky mode (focus prior
     ///   correction);
+    /// - in raw mode (a command is being typed): flips the sticky mode only,
+    ///   with no label;
     /// - otherwise (typed past the last word): flips the sticky mode only.
     ///
     /// The result becomes the sticky mode, and corrections become labels.
@@ -32,6 +34,9 @@ impl Engine {
             out.marked = Some(p.text());
             let id = p.id;
             (SwitchScope::AfterCommit, Some(id), to)
+        } else if self.raw {
+            // Raw mode: flips the sticky mode only, no label.
+            (SwitchScope::AfterCommit, None, self.mode.flip())
         } else if self.committed_since_focus {
             (
                 SwitchScope::AfterCommit,

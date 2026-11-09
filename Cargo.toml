@@ -18,6 +18,7 @@ nimk-synth = { path = "crates/nimk-synth" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+toml = "1"
 tempfile = "3"
 
 [workspace.lints.rust]
