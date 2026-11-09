@@ -164,7 +164,10 @@ pub(crate) fn accumulate(
                 let c = session.entry(b.to_owned()).or_default();
                 c.words += 1;
                 if let Some(&l) = labels.get(&Target::Word(*word_id)) {
-                    let ok = u64::from(l == *m);
+                    let ok = u64::from(nimk_types::word_correct(
+                        *m,
+                        nimk_types::ground_truth(*m, Some(l)),
+                    ));
                     c.labelled_words += 1;
                     c.correct_words += ok;
                     if raw != vi {

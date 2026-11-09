@@ -58,6 +58,13 @@ pub(crate) struct FinalLabel {
     /// disagrees with the commit). Only these trigger correction
     /// re-training; a `Correction` that confirms the commit does not.
     pub(crate) corrected: bool,
+    /// The rendering the model chose for the word (the opposite of the
+    /// label for a mid-word switch).
+    pub(crate) committed: Lang,
+    /// `Some(previous truth)` when this label replaces one already counted
+    /// (a late correction through [`Labeler::refinalize`]); the statistics
+    /// amend the earlier record instead of counting the word again.
+    pub(crate) amends: Option<Lang>,
 }
 
 /// Labeler tuning (from `EngineConfig`).
@@ -90,7 +97,8 @@ pub(crate) struct Labeler {
     params: LabelerParams,
     pending: VecDeque<Pending>,
     /// Steps of recently finalized implicit items, oldest first.
-    done: VecDeque<(Target, Lang, Vec<Step>)>,
+    /// `(target, committed rendering, steps, current ground truth)`.
+    done: VecDeque<(Target, Lang, Vec<Step>, Lang)>,
 }
 
 impl Labeler {
@@ -104,6 +112,7 @@ impl Labeler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make(
         &self,
         target: Target,
@@ -111,7 +120,8 @@ impl Labeler {
         label: Lang,
         weight: f32,
         steps: Vec<Step>,
-        corrected: bool,
+        committed: Lang,
+        amends: Option<Lang>,
     ) -> FinalLabel {
         let edit_weight = self.params.edit_weight;
         let examples = steps
@@ -132,7 +142,9 @@ impl Labeler {
             label,
             weight,
             examples,
-            corrected,
+            corrected: label != committed,
+            committed,
+            amends,
         }
     }
 
@@ -168,7 +180,17 @@ impl Labeler {
         }
         match correction {
             Some(label) => {
-                let f = self.make(word, LabelSource::Correction, label, 1.0, steps, true);
+                // The user switched the word mid-word, so the model's own
+                // rendering was the opposite of the label.
+                let f = self.make(
+                    word,
+                    LabelSource::Correction,
+                    label,
+                    1.0,
+                    steps,
+                    label.flip(),
+                    None,
+                );
                 out.push(f);
             }
             None => self.push(Pending {
@@ -208,8 +230,8 @@ impl Labeler {
     ) -> Option<FinalLabel> {
         let idx = self.pending.iter().position(|p| p.target == target)?;
         let p = self.pending.remove(idx)?;
-        self.remember(target, p.mode, &p.steps);
-        Some(self.make(target, source, label, weight, p.steps, label != p.mode))
+        self.remember(target, p.mode, &p.steps, label);
+        Some(self.make(target, source, label, weight, p.steps, p.mode, None))
     }
 
     /// Like [`Labeler::finalize`], but when `target` was already finalized
@@ -225,9 +247,12 @@ impl Labeler {
         if let Some(f) = self.finalize(target, label, weight, source) {
             return Some(f);
         }
-        let idx = self.done.iter().position(|(t, _, _)| *t == target)?;
-        let (_, mode, steps) = self.done.get(idx)?.clone();
-        Some(self.make(target, source, label, weight, steps, label != mode))
+        let idx = self.done.iter().position(|(t, ..)| *t == target)?;
+        let (_, mode, steps, prev) = self.done.get(idx)?.clone();
+        if let Some(entry) = self.done.get_mut(idx) {
+            entry.3 = label;
+        }
+        Some(self.make(target, source, label, weight, steps, mode, Some(prev)))
     }
 
     /// Number of pending items.
@@ -237,12 +262,12 @@ impl Labeler {
         self.pending.len()
     }
 
-    fn remember(&mut self, target: Target, mode: Lang, steps: &[Step]) {
-        self.done.retain(|(t, _, _)| *t != target);
+    fn remember(&mut self, target: Target, mode: Lang, steps: &[Step], truth: Lang) {
+        self.done.retain(|(t, ..)| *t != target);
         if self.done.len() >= DONE_KEPT {
             self.done.pop_front();
         }
-        self.done.push_back((target, mode, steps.to_vec()));
+        self.done.push_back((target, mode, steps.to_vec(), truth));
     }
 
     fn push(&mut self, p: Pending) {
@@ -258,14 +283,15 @@ impl Labeler {
         while i < self.pending.len() {
             if self.pending.get(i).is_some_and(&due) {
                 if let Some(p) = self.pending.remove(i) {
-                    self.remember(p.target, p.mode, &p.steps);
+                    self.remember(p.target, p.mode, &p.steps, p.mode);
                     let f = self.make(
                         p.target,
                         LabelSource::Implicit,
                         p.mode,
                         weight,
                         p.steps,
-                        false,
+                        p.mode,
+                        None,
                     );
                     out.push(f);
                 }
@@ -397,6 +423,44 @@ mod tests {
             l.refinalize(Target::Word(9), Lang::En, 1.0, LabelSource::Correction)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn late_correction_carries_the_previous_truth() {
+        let mut l = Labeler::new(params(true));
+        let mut out = Vec::new();
+        l.on_commit(Target::Word(0), steps(), Lang::Vi, 1.0, None, &mut out);
+        l.tick(100.0, &mut out);
+        assert_eq!(out[0].amends, None, "first label: a new word");
+        assert_eq!(out[0].committed, Lang::Vi);
+        // Implicit truth was the committed rendering (Vi); now En.
+        let f = l
+            .refinalize(Target::Word(0), Lang::En, 1.0, LabelSource::Correction)
+            .unwrap();
+        assert_eq!(
+            (f.amends, f.corrected, f.committed),
+            (Some(Lang::Vi), true, Lang::Vi)
+        );
+        // A second late correction amends the amendment.
+        let f = l
+            .refinalize(Target::Word(0), Lang::Vi, 1.0, LabelSource::Correction)
+            .unwrap();
+        assert_eq!((f.amends, f.corrected), (Some(Lang::En), false));
+    }
+
+    #[test]
+    fn explicit_label_is_a_new_word_and_a_later_one_amends() {
+        let mut l = Labeler::new(params(false));
+        let mut out = Vec::new();
+        l.on_commit(Target::Word(0), steps(), Lang::Vi, 1.0, None, &mut out);
+        let f = l
+            .refinalize(Target::Word(0), Lang::En, 1.0, LabelSource::Correction)
+            .unwrap();
+        assert_eq!(f.amends, None);
+        let f = l
+            .refinalize(Target::Word(0), Lang::Vi, 1.0, LabelSource::Correction)
+            .unwrap();
+        assert_eq!(f.amends, Some(Lang::En));
     }
 
     #[test]

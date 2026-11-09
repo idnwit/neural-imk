@@ -252,13 +252,19 @@ impl Core {
         }
     }
 
-    /// Counts the finalized word, before the learner sees it. The active
-    /// model's rendering is the committed one; a shadow's is its own display
-    /// decision at the commit step (its latest one when the word ended
-    /// without a commit step). A shadow that saw no keystroke of the word
-    /// does not count it.
+    /// Counts the finalized word, before the learner sees it, against its
+    /// ground truth (`info.label`). The active model's rendering is the
+    /// committed one; a shadow's is its own display decision at the commit
+    /// step (its latest one when the word ended without a commit step). A
+    /// shadow that saw no keystroke of the word does not count it. A late
+    /// correction (`info.amends`) amends the earlier record instead.
     fn record_word(&mut self, info: WordInfo, out: &mut Vec<TrainerOut>) {
         if !self.counts() {
+            return;
+        }
+        if info.amends.is_some() {
+            self.stats.amend(info.word_id, info.label);
+            out.push(TrainerOut::Stats(self.kind, self.stats.summary()));
             return;
         }
         let found = match self.accs.iter().rposition(|(id, _)| *id == info.word_id) {
@@ -269,16 +275,17 @@ impl Core {
             Some(a) => (a.last(), a),
             None => (None, WordAcc::default()),
         };
-        let corrected = if self.active {
-            info.corrected
+        let render = if self.active {
+            info.committed
         } else {
             let Some(last) = last else {
                 return;
             };
-            last != info.label
+            last
         };
         self.stats.record(WordResult {
-            corrected,
+            word_id: info.word_id,
+            render,
             category: info.category,
             served: self.active,
             acc,
