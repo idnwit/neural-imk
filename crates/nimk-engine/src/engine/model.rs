@@ -1,20 +1,66 @@
-//! Runtime model selection: per-model checkpoints and the persisted choice.
+//! Runtime model selection: per-model checkpoints, statistics and the
+//! persisted choices.
 //!
-//! Each [`ModelKind`] keeps its own snapshot at `model/<kind>/latest`; the
-//! chosen kind is remembered in the blob [`SETTINGS_KEY`] and read back by
-//! [`Engine::new`].
+//! Each [`ModelKind`] keeps its own snapshot at `model/<kind>/latest` and
+//! its counters at `stats/<kind>`; the chosen kind is remembered in the
+//! blob [`SETTINGS_KEY`] and the per-model online-training toggles of the
+//! IME menu in [`MODELS_KEY`]; [`Engine::new`] reads both back.
 
 use nimk_policy::ModelKind;
-use nimk_storage::{BlobOrigin, MemStorage, Storage};
+use nimk_storage::{BlobOrigin, Storage};
 use nimk_types::{Boundary, Event};
 
 use super::{
-    Engine, EngineOutput, Threading, TrainerOut, build_action, load_learner, new_trainer,
-    snapshot_key,
+    Engine, EngineOutput, ModelStats, Started, TrainerOut, load_all, snapshot_key, start_trainer,
 };
+use crate::config::ModelsConfig;
+use crate::trainer::{Trainer, stats_key};
 
 /// Blob holding the selected model, `{ "model": "linear_action" }`.
 const SETTINGS_KEY: &str = "settings/model";
+
+/// Blob holding the menu's online-training toggles,
+/// `{ "online_training": { "gru_action": false } }`. Only models the user
+/// toggled appear; the others follow `config.toml` / the defaults.
+const MODELS_KEY: &str = "settings/models";
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct ModelsSetting {
+    #[serde(default)]
+    online_training: std::collections::BTreeMap<String, bool>,
+}
+
+fn read_models_blob(storage: &dyn Storage, diagnostics: &mut Vec<String>) -> ModelsSetting {
+    match storage.blobs().get(MODELS_KEY) {
+        Ok(None) => ModelsSetting::default(),
+        Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+            Ok(saved) => saved,
+            Err(e) => {
+                diagnostics.push(format!("{MODELS_KEY} invalid ({e}); using config"));
+                ModelsSetting::default()
+            }
+        },
+        Err(e) => {
+            diagnostics.push(format!("cannot read {MODELS_KEY} ({e}); using config"));
+            ModelsSetting::default()
+        }
+    }
+}
+
+/// Applies the persisted toggles over `models` (the menu wins over the
+/// config file).
+pub(super) fn read_models_setting(
+    storage: &dyn Storage,
+    models: &mut ModelsConfig,
+    diagnostics: &mut Vec<String>,
+) {
+    let saved = read_models_blob(storage, diagnostics);
+    for kind in ModelKind::ALL {
+        if let Some(on) = saved.online_training.get(kind.name()) {
+            models.set_online_training(kind, *on);
+        }
+    }
+}
 
 /// Where the checkpoint of a model kind would be loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,19 +142,15 @@ impl Engine {
         let kind = self.cfg.policy;
         // The old trainer saves on shutdown, which must happen before the
         // delete. A throwaway trainer over scratch storage holds the slot.
-        let scratch_cfg = super::EngineConfig {
-            threading: Threading::Inline,
-            ..self.cfg.clone()
-        };
-        let scratch = new_trainer(
-            &scratch_cfg,
-            kind,
-            std::sync::Arc::new(MemStorage::new()),
-            build_action(kind, self.cfg.seed),
-        );
+        let scratch = Trainer::new(Vec::new(), false);
         let old = std::mem::replace(&mut self.trainer, scratch);
         self.finish_trainer(old, timestamp);
 
+        // Its counters restart with it.
+        if let Err(e) = self.storage.blobs().delete(&stats_key(kind)) {
+            self.diagnostics
+                .push(format!("reset {kind:?}: cannot delete its stats ({e})"));
+        }
         let key = snapshot_key(kind);
         let note = match self.storage.blobs().delete(&key) {
             Ok(true) => format!("reset {key}: user checkpoint deleted"),
@@ -117,21 +159,71 @@ impl Engine {
         };
         self.diagnostics.push(note);
 
-        let learner = load_learner(
-            self.storage.as_ref(),
-            kind,
-            self.cfg.seed,
-            &mut self.diagnostics,
-        );
-        let model = learner.snapshot();
-        let trainer = new_trainer(&self.cfg, kind, self.storage.clone(), learner);
-        let scratch = std::mem::replace(&mut self.trainer, trainer);
-        // Nothing of the scratch trainer is worth keeping.
-        self.finish_trainer(scratch, timestamp);
-        self.model_id = std::sync::Arc::from(model.id());
-        self.model = model;
+        self.restart_trainer(kind);
         self.last_snapshot_t = Some(timestamp);
         out
+    }
+
+    /// Reloads every model from storage into a new trainer with `kind`
+    /// serving; the previous trainer must already be shut down.
+    fn restart_trainer(&mut self, kind: ModelKind) {
+        let learners = load_all(self.storage.as_ref(), self.cfg.seed, &mut self.diagnostics);
+        self.cfg.policy = kind;
+        let started = start_trainer(
+            &self.cfg,
+            kind,
+            &self.storage,
+            learners,
+            &mut self.diagnostics,
+        );
+        let Started {
+            trainer,
+            model,
+            stats,
+            loaded,
+        } = started;
+        self.trainer = trainer;
+        self.stats = stats;
+        self.loaded = loaded;
+        self.model_id = std::sync::Arc::from(model.id());
+        self.model = model;
+    }
+
+    /// Counters of `kind` as of the last drained trainer output (all zero
+    /// for a model the engine does not hold). `words_total` counts words
+    /// with a final label; see docs/04-engine-ml.md.
+    #[must_use]
+    pub fn model_stats(&self, kind: ModelKind) -> ModelStats {
+        self.stats[kind.index()]
+    }
+
+    /// Whether online training of `kind` is on.
+    #[must_use]
+    pub fn online_training(&self, kind: ModelKind) -> bool {
+        self.cfg.models.online_training(kind)
+    }
+
+    /// Turns online training of `kind` on or off now (a frozen model keeps
+    /// its weights and is neither shadow-scored nor saved) and remembers the
+    /// choice in the blob `settings/models` (it wins over `config.toml` at
+    /// the next start).
+    pub fn set_online_training(&mut self, kind: ModelKind, on: bool) {
+        self.cfg.models.set_online_training(kind, on);
+        self.trainer.set_learn(kind, on);
+        let mut saved = read_models_blob(self.storage.as_ref(), &mut self.diagnostics);
+        saved.online_training.insert(kind.name().to_owned(), on);
+        match serde_json::to_vec(&saved) {
+            Ok(bytes) => {
+                if let Err(e) = self.storage.blobs().put(MODELS_KEY, &bytes) {
+                    self.diagnostics.push(format!(
+                        "cannot save {MODELS_KEY} ({e}); choice not remembered"
+                    ));
+                }
+            }
+            Err(e) => self
+                .diagnostics
+                .push(format!("cannot encode {MODELS_KEY}: {e}")),
+        }
     }
 
     /// Shuts `old` down, logging its final updates and noting failures.
@@ -153,8 +245,8 @@ impl Engine {
                     },
                 ),
                 TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
-                // The old model is being replaced.
-                TrainerOut::Snapshot(_) => {}
+                // The old model is being replaced; counters were saved.
+                TrainerOut::Snapshot(_) | TrainerOut::Stats(..) => {}
             }
         }
         if let Err(e) = saved {
@@ -185,21 +277,11 @@ impl Engine {
         self.emit_labels(timestamp, finals);
         // A correction can no longer reach the old model's pending words.
 
-        let learner = load_learner(
-            self.storage.as_ref(),
-            kind,
-            self.cfg.seed,
-            &mut self.diagnostics,
-        );
-        let model = learner.snapshot();
-        let trainer = new_trainer(&self.cfg, kind, self.storage.clone(), learner);
-        let old = std::mem::replace(&mut self.trainer, trainer);
+        // The old trainer saves every model it trained before the reload.
+        let old = std::mem::replace(&mut self.trainer, Trainer::new(Vec::new(), false));
         self.finish_trainer(old, timestamp);
-
         let from = self.model_id.to_string();
-        self.model_id = std::sync::Arc::from(model.id());
-        self.model = model;
-        self.cfg.policy = kind;
+        self.restart_trainer(kind);
         self.last_snapshot_t = Some(timestamp);
         self.write_setting(kind);
         self.logger.log(

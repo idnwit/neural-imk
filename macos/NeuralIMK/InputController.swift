@@ -117,19 +117,27 @@ class InputController: IMKInputController {
         // actions of submenu items (unverified), so none are nested.
         menu.addItem(.separator())
         let active = Core.shared.model
-        for kind in [UInt8(NIMK_MODEL_LINEAR), UInt8(NIMK_MODEL_GRU)] {
-            var title = "Model: \(Core.modelName(kind))"
-            switch Core.shared.checkpointSource(kind) {
-            case UInt8(NIMK_CHECKPOINT_USER): title += " (đã học thêm)"
-            case UInt8(NIMK_CHECKPOINT_BUNDLED): title += " (gốc)"
-            default: title += " (chưa pre-train)"
-            }
-            if kind == active { title += " ✓" }
+        let kinds = [UInt8(NIMK_MODEL_LINEAR), UInt8(NIMK_MODEL_GRU)]
+        for kind in kinds {
+            var title = StatsText.modelLine(name: Core.modelName(kind), active: kind == active,
+                                            learning: Core.shared.onlineTraining(kind),
+                                            quality: Core.shared.qualityText(kind))
+            if Core.shared.checkpointSource(kind) == UInt8(NIMK_CHECKPOINT_NONE) { title += " (chưa pre-train)" }
             let item = NSMenuItem(title: title, action: #selector(selectModel(_:)), keyEquivalent: "")
             item.target = self
             item.tag = Int(kind)
             item.representedObject = NSNumber(value: kind)
             item.state = kind == active ? .on : .off
+            menu.addItem(item)
+        }
+        for kind in kinds {
+            let on = Core.shared.onlineTraining(kind)
+            let item = NSMenuItem(title: "Học online: \(Core.modelName(kind))\(on ? " ✓" : "")",
+                                  action: #selector(toggleOnline(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(kind)
+            item.representedObject = NSNumber(value: kind)
+            item.state = on ? .on : .off
             menu.addItem(item)
         }
         let reset = NSMenuItem(title: "Khôi phục model gốc", action: #selector(resetModel(_:)), keyEquivalent: "")
@@ -173,6 +181,16 @@ class InputController: IMKInputController {
         ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
         let caret = client.map { ContextProbe.caretRect($0) } ?? .zero
         Overlay.shared.showText(Core.modelName(Core.shared.model), caret: caret)
+    }
+
+    @objc func toggleOnline(_ sender: Any?) {
+        guard let item = menuItem(from: sender) else {
+            Core.shared.log("menu: toggle online: no menu item in sender \(String(describing: sender))")
+            return
+        }
+        let kind = (item.representedObject as? NSNumber).map { UInt8(truncatingIfNeeded: $0.intValue) }
+            ?? UInt8(truncatingIfNeeded: item.tag)
+        Core.shared.setOnlineTraining(kind, !Core.shared.onlineTraining(kind))
     }
 
     @objc func resetModel(_ sender: Any?) {

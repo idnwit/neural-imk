@@ -73,6 +73,17 @@ command_end_chars = " "
 # PageUp/PageDown, arrows, forward Delete. A Cmd/Ctrl/Opt chord ends it too.
 command_end_keycodes = [36, 76, 48, 53, 115, 119, 116, 121, 123, 124, 125, 126, 117]
 
+# ---- per-model options ----
+# Online training per model (shadow training, ADR 0013): when true the model
+# learns from every labelled word even while another model is active, and its
+# quality is measured on the user's real input. false freezes it (no updates,
+# no saves, no shadow statistics; the active model is always measured). The
+# IME menu's saved choice overrides these values.
+[models.gru_action]
+online_training = true
+[models.linear_action]
+online_training = true
+
 # ---- per-app-category overrides ----
 # `bundle_ids` entries ending in `*` match by prefix. The first category that
 # matches the focused app wins; `params` overrides the keys of the same name.

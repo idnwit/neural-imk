@@ -61,6 +61,18 @@ pub enum ModelKind {
 }
 
 impl ModelKind {
+    /// Every kind, in a stable order (index = [`ModelKind::index`]).
+    pub const ALL: [Self; 2] = [Self::LinearAction, Self::GruAction];
+
+    /// Position in [`ModelKind::ALL`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::LinearAction => 0,
+            Self::GruAction => 1,
+        }
+    }
+
     /// Stable snake_case name (blob keys, settings, `FromStr`).
     #[must_use]
     pub const fn name(self) -> &'static str {

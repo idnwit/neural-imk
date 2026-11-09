@@ -88,6 +88,62 @@ pub struct NimkCtx {
     pub timestamp: f64,
 }
 
+/// Quality counters of one model, filled by `nimk_model_stats`. Counted per
+/// committed word with a final label: for the active model corrected = the
+/// user corrected the word; for a shadow model (online training on, not
+/// serving) = its own fresh decision at the commit step would have been
+/// corrected. `*_recent` cover the last 500 words. Keystroke counters measure
+/// how often the model's display decision (with its own hysteresis) equalled
+/// the final label; flips are display changes within a word.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NimkModelStats {
+    /// Words counted, lifetime.
+    pub words_total: u64,
+    /// Corrected (or would-have-been corrected) words, lifetime.
+    pub corrected_total: u64,
+    /// Words in the rolling window (at most 500).
+    pub words_recent: u32,
+    /// Corrected words in the rolling window.
+    pub corrected_recent: u32,
+    /// Words (of `words_total`) typed while this model was the active one.
+    pub served_words_total: u64,
+    /// Lifetime corrected words by app category: terminal, ide, browser,
+    /// editor, other.
+    pub corrected_by_category: [u64; 5],
+    /// Keystrokes counted for display accuracy, lifetime.
+    pub keys_total: u64,
+    /// Of those, keystrokes whose display equalled the final label.
+    pub keys_match_total: u64,
+    /// Display flips within words, lifetime.
+    pub flips_total: u64,
+    /// `keys_total` over the rolling window.
+    pub keys_recent: u32,
+    /// `keys_match_total` over the rolling window.
+    pub keys_match_recent: u32,
+    /// `flips_total` over the rolling window.
+    pub flips_recent: u32,
+}
+
+impl From<nimk_engine::ModelStats> for NimkModelStats {
+    fn from(s: nimk_engine::ModelStats) -> Self {
+        Self {
+            words_total: s.words_total,
+            corrected_total: s.corrected_total,
+            words_recent: s.words_recent,
+            corrected_recent: s.corrected_recent,
+            served_words_total: s.served_words_total,
+            corrected_by_category: s.corrected_by_category,
+            keys_total: s.keys_total,
+            keys_match_total: s.keys_match_total,
+            flips_total: s.flips_total,
+            keys_recent: s.keys_recent,
+            keys_match_recent: s.keys_match_recent,
+            flips_recent: s.flips_recent,
+        }
+    }
+}
+
 /// What Swift must do after a call. Strings are owned by the core and stay
 /// valid until the next call on the same core; copy them immediately.
 #[repr(C)]

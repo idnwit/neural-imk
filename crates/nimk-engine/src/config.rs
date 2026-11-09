@@ -19,6 +19,53 @@ pub enum Threading {
     Inline,
 }
 
+/// Options of one model (`[models.<kind>]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelOptions {
+    /// Train this model online from labels, also while it is not the active
+    /// one (shadow training, ADR 0013). Off freezes it: no updates, no
+    /// saves, no shadow statistics.
+    pub online_training: bool,
+}
+
+impl Default for ModelOptions {
+    fn default() -> Self {
+        Self {
+            online_training: true,
+        }
+    }
+}
+
+/// Per-model options, one table per [`ModelKind`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelsConfig {
+    /// Options of `gru_action`.
+    pub gru_action: ModelOptions,
+    /// Options of `linear_action`.
+    pub linear_action: ModelOptions,
+}
+
+impl ModelsConfig {
+    /// Whether online training of `kind` is on.
+    #[must_use]
+    pub fn online_training(&self, kind: ModelKind) -> bool {
+        match kind {
+            ModelKind::GruAction => self.gru_action.online_training,
+            ModelKind::LinearAction => self.linear_action.online_training,
+        }
+    }
+
+    /// Turns online training of `kind` on or off.
+    pub fn set_online_training(&mut self, kind: ModelKind, on: bool) {
+        match kind {
+            ModelKind::GruAction => self.gru_action.online_training = on,
+            ModelKind::LinearAction => self.linear_action.online_training = on,
+        }
+    }
+}
+
 /// Parameters a category may override (the keys of `[app_category.params]`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -152,6 +199,10 @@ pub struct EngineConfig {
     pub command_end_chars: String,
     /// Keycodes that end raw mode (Return, Tab, Escape, navigation).
     pub command_end_keycodes: Vec<u16>,
+    /// Per-model options. The IME menu's saved choices (blob
+    /// `settings/models`) override these at start.
+    #[serde(default)]
+    pub models: ModelsConfig,
     /// Per-app-category overrides; the first match wins.
     pub app_category: Vec<AppCategory>,
 }
@@ -207,6 +258,14 @@ impl EngineConfig {
             apply_params(&mut live, &cat.params);
         }
         live
+    }
+
+    /// Name of the category of the app with `bundle_id`, if any matches.
+    pub(crate) fn category_name(&self, bundle_id: &str) -> Option<&str> {
+        self.app_category
+            .iter()
+            .find(|c| c.matches(bundle_id))
+            .map(|c| c.name.as_str())
     }
 
     fn base_live(&self) -> LiveParams {
@@ -442,6 +501,7 @@ impl EngineConfig {
             command_triggers: Vec::new(),
             command_end_chars: String::new(),
             command_end_keycodes: Vec::new(),
+            models: ModelsConfig::default(),
             app_category: Vec::new(),
         }
     }
@@ -520,6 +580,10 @@ fn apply_layer(table: &mut toml::Table, layer: toml::Table, diags: &mut Vec<Diag
             apply_categories(table, value, diags);
             continue;
         }
+        if key == "models" {
+            apply_models(table, value, diags);
+            continue;
+        }
         if !table.contains_key(&key) {
             diags.push(Diagnostic {
                 key,
@@ -543,6 +607,69 @@ fn apply_layer(table: &mut toml::Table, layer: toml::Table, diags: &mut Vec<Diag
                 message: format!("{message}; default kept"),
             });
             table.insert(key, old);
+        }
+    }
+}
+
+/// Merges a `[models.<kind>]` layer key by key; a value of the wrong type
+/// or an unknown model/key is dropped with a diagnostic.
+fn apply_models(table: &mut toml::Table, value: toml::Value, diags: &mut Vec<Diagnostic>) {
+    let toml::Value::Table(models) = value else {
+        diags.push(Diagnostic {
+            key: "models".into(),
+            message: "must be a table of tables".into(),
+        });
+        return;
+    };
+    for (kind, opts) in models {
+        let known = ModelKind::ALL.iter().any(|k| k.name() == kind);
+        let toml::Value::Table(opts) = opts else {
+            diags.push(Diagnostic {
+                key: format!("models.{kind}"),
+                message: "must be a table".into(),
+            });
+            continue;
+        };
+        if !known {
+            diags.push(Diagnostic {
+                key: format!("models.{kind}"),
+                message: "unknown model, ignored".into(),
+            });
+            continue;
+        }
+        for (key, v) in opts {
+            let path = format!("models.{kind}.{key}");
+            if key != "online_training" {
+                diags.push(Diagnostic {
+                    key: path,
+                    message: "unknown key, ignored".into(),
+                });
+                continue;
+            }
+            let Some(toml::Value::Table(cur)) = table.get_mut("models") else {
+                continue;
+            };
+            let slot = cur
+                .entry(kind.clone())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            let toml::Value::Table(slot) = slot else {
+                continue;
+            };
+            let old = slot.insert(key, v);
+            if let Err(e) = check(table) {
+                diags.push(Diagnostic {
+                    key: path,
+                    message: format!("{e}; default kept"),
+                });
+                if let Some(toml::Value::Table(cur)) = table.get_mut("models")
+                    && let Some(toml::Value::Table(slot)) = cur.get_mut(&kind)
+                {
+                    match old {
+                        Some(o) => slot.insert("online_training".into(), o),
+                        None => slot.remove("online_training"),
+                    };
+                }
+            }
         }
     }
 }
@@ -750,6 +877,48 @@ command_triggers = ["", "ab"]
         ] {
             assert!(keys.contains(&k), "{k} not reported: {keys:?}");
         }
+    }
+
+    #[test]
+    fn models_default_on_and_user_layer_merges_per_model() {
+        let d = EngineConfig::default();
+        assert!(d.models.online_training(ModelKind::GruAction));
+        assert!(d.models.online_training(ModelKind::LinearAction));
+        let (cfg, diags) =
+            EngineConfig::from_toml_layers(&["[models.gru_action]\nonline_training = false\n"]);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(!cfg.models.online_training(ModelKind::GruAction));
+        assert!(cfg.models.online_training(ModelKind::LinearAction));
+    }
+
+    #[test]
+    fn invalid_model_options_are_reported_and_defaults_kept() {
+        let user = r#"
+[models.gru_action]
+online_training = "yes"
+bogus = 1
+[models.mystery]
+online_training = false
+[models.linear_action]
+online_training = false
+"#;
+        let (cfg, diags) = EngineConfig::from_toml_layers(&[user]);
+        let keys: Vec<_> = diags.iter().map(|d| d.key.as_str()).collect();
+        for k in [
+            "models.gru_action.online_training",
+            "models.gru_action.bogus",
+            "models.mystery",
+        ] {
+            assert!(keys.contains(&k), "{k} not reported: {keys:?}");
+        }
+        assert!(cfg.models.online_training(ModelKind::GruAction));
+        assert!(
+            !cfg.models.online_training(ModelKind::LinearAction),
+            "valid sibling kept"
+        );
+        let (cfg, diags) = EngineConfig::from_toml_layers(&["models = 3"]);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(cfg, EngineConfig::default());
     }
 
     #[test]

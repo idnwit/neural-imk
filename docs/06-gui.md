@@ -53,6 +53,8 @@ Menu dựng trong `InputController.menu()`; mục thông tin không bấm đư�
 | `Mode: Tiếng Việt (VI)` / `English (EN)` | `nimk_mode` |
 | `Policy: <id>`, ví dụ `gru_action@v1` | `nimk_policy_id` |
 | `Model: Linear (nhanh) (gốc)`, `Model: GRU (chưa pre-train)` | Hai mục cùng cấp (không submenu: IMK không đảm bảo giao action của submenu); dấu `✓` ở model đang dùng (`nimk_model`); hậu tố theo `nimk_checkpoint_source`: `(gốc)` model đóng gói, `(đã học thêm)` checkpoint của người dùng, `(chưa pre-train)` khi không có. Chọn → `nimk_set_model`, áp `NimkOut` (commit từ đang gõ), cập nhật status item, hiện overlay tên model |
+| `Model: GRU ✓ — sửa 1,2% (500 từ gần nhất) · 2,0% tổng (3 450 từ)` | One line per model (replaces the checkpoint suffix; `(chưa pre-train)` is still appended when none exists). Shadow models with online training on are tagged `(chạy ngầm)`, frozen ones `(đóng băng)`. Counters from `nimk_model_stats`, rebuilt every time the menu opens; text in `StatsText.swift` |
+| `Học online: GRU ✓` | One toggle per model: `nimk_set_online_training`, persisted by the engine in `settings/models` |
 | `Reload config` | `Core.reloadConfig()`: đọc lại `<Application Support>/<bundle id>/config.toml` (không có file cũng được), gọi `nimk_set_config`, hiện overlay `Đã nạp config` hoặc số giá trị bị bỏ ([11](11-config.md)) |
 | `Khôi phục model gốc` | `nimk_reset_model`: xoá checkpoint người dùng của model đang dùng và nạp lại model gốc; áp `NimkOut`, hiện overlay |
 | `Open data folder` | Mở data dir (`<Application Support>/<bundle id>`, do `FileManager` trả về) trong Finder |

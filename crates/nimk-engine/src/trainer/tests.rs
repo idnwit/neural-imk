@@ -100,7 +100,12 @@ fn core() -> Core {
         storage: Arc::new(NoStorage),
         key: "model/fake/latest".into(),
     };
-    Core::new(Box::new(Counting::default()), params(), save)
+    Core::new(
+        ModelKind::LinearAction,
+        Box::new(Counting::default()),
+        params(),
+        save,
+    )
 }
 
 fn kinds(out: &[TrainerOut]) -> String {
@@ -108,6 +113,7 @@ fn kinds(out: &[TrainerOut]) -> String {
         .map(|o| match o {
             TrainerOut::Update { n_samples, .. } => format!("u{n_samples}"),
             TrainerOut::Snapshot(_) => "s".to_owned(),
+            TrainerOut::Stats(..) => "t".to_owned(),
             TrainerOut::Diagnostic(_) => "d".to_owned(),
         })
         .collect::<Vec<_>>()
@@ -119,16 +125,16 @@ fn schedule() {
     let mut c = core();
     let mut out = Vec::new();
     for _ in 0..4 {
-        c.on_examples(vec![sample()], false, &mut out);
+        c.on_examples(vec![sample()], false, None, &mut out);
     }
     assert_eq!(kinds(&out), "u1,u1,u1,u1");
     out.clear();
     // 5th sample: replay minibatch of 2.
-    c.on_examples(vec![sample()], false, &mut out);
+    c.on_examples(vec![sample()], false, None, &mut out);
     assert_eq!(kinds(&out), "u1,u2");
     out.clear();
     // Correction: window of 3 trained twice, then publish.
-    c.on_examples(vec![sample()], true, &mut out);
+    c.on_examples(vec![sample()], true, None, &mut out);
     assert_eq!(kinds(&out), "u1,u6,s");
 }
 
@@ -142,10 +148,10 @@ fn corrections_only_learner_skips_confirmations() {
         corrections_only: true,
         ..Counting::default()
     };
-    let mut c = Core::new(Box::new(learner), params(), save);
+    let mut c = Core::new(ModelKind::LinearAction, Box::new(learner), params(), save);
     let mut out = Vec::new();
     for _ in 0..6 {
-        c.on_examples(vec![sample()], false, &mut out);
+        c.on_examples(vec![sample()], false, None, &mut out);
     }
     assert_eq!(kinds(&out), "", "confirmations neither train nor replay");
     // Teacher-forced examples (edit weight > 0) still train.
@@ -153,16 +159,16 @@ fn corrections_only_learner_skips_confirmations() {
         edit_weight: 1.0,
         ..sample()
     };
-    c.on_examples(vec![taught], false, &mut out);
+    c.on_examples(vec![taught], false, None, &mut out);
     assert_eq!(kinds(&out), "u1");
     out.clear();
-    c.on_examples(vec![sample()], true, &mut out);
+    c.on_examples(vec![sample()], true, None, &mut out);
     assert_eq!(kinds(&out), "u1,u4,s", "corrections train and re-train");
 }
 
 #[test]
 fn inline_save_error_is_a_diagnostic() {
-    let mut t = Trainer::new(core(), false);
+    let mut t = Trainer::new(vec![core()], false);
     t.request_save();
     let mut out = Vec::new();
     t.drain(&mut out);
@@ -173,9 +179,9 @@ fn inline_save_error_is_a_diagnostic() {
 #[test]
 fn background_matches_inline() {
     let run = |bg: bool| {
-        let mut t = Trainer::new(core(), bg);
+        let mut t = Trainer::new(vec![core()], bg);
         for i in 0..30 {
-            t.submit(vec![sample()], i % 7 == 0);
+            t.submit(vec![sample()], i % 7 == 0, None);
         }
         let mut out = Vec::new();
         let _ = t.shutdown(&mut out);
@@ -188,9 +194,9 @@ fn background_matches_inline() {
 fn word_examples_are_one_update() {
     let mut c = core();
     let mut out = Vec::new();
-    c.on_examples(vec![sample(), sample(), sample()], false, &mut out);
+    c.on_examples(vec![sample(), sample(), sample()], false, None, &mut out);
     assert_eq!(kinds(&out), "u3");
     out.clear();
-    c.on_examples(Vec::new(), true, &mut out);
+    c.on_examples(Vec::new(), true, None, &mut out);
     assert!(out.is_empty(), "empty word is a no-op");
 }
