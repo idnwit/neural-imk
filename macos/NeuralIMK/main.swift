@@ -28,6 +28,13 @@ termSource.setEventHandler {
 }
 termSource.resume()
 
-withExtendedLifetime((server, termSource)) {
+// The companion app rewrote config.toml (docs/06-gui.md).
+let reloadObserver = DistributedNotificationCenter.default().addObserver(
+    forName: Notification.Name("com.giangndm.inputmethod.NeuralIMK.reloadConfig"),
+    object: nil, queue: .main) { _ in
+    _ = Core.shared.reloadConfig()
+}
+
+withExtendedLifetime((server, termSource, reloadObserver)) {
     app.run()
 }

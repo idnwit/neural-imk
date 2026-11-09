@@ -52,7 +52,7 @@ final class Overlay {
         label.attributedStringValue = NSAttributedString(string: text)
         label.stringValue = text
         label.font = .boldSystemFont(ofSize: 12)
-        let width = max(size.width, CGFloat(text.count) * 8 + 20)
+        let width = max(size.width, ceil(label.intrinsicContentSize.width) + 16)
         present(width: width, tint: .systemBlue, caret: caret)
     }
 
