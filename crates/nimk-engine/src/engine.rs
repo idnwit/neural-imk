@@ -642,6 +642,23 @@ impl Engine {
         self.summaries.get(name).map(String::as_str)
     }
 
+    /// Records that the host re-read the wall clock (`wall_unix_ms`, Unix
+    /// milliseconds; `utc_offset_min`, local offset from UTC), e.g. after
+    /// the Mac woke from sleep. Logs an [`Event::Clock`] at the last event
+    /// time so wall-clock consumers (the `usage` hook) re-anchor. The
+    /// engine itself never reads the clock.
+    pub fn note_wall_clock(&mut self, wall_unix_ms: u64, utc_offset_min: i32) {
+        let t = self.last_t;
+        self.hooks.log(
+            t,
+            Event::Clock {
+                wall_unix_ms,
+                utc_offset_min,
+            },
+        );
+        self.drain_hooks();
+    }
+
     /// Id of the model currently serving predictions.
     #[must_use]
     pub fn policy_id(&self) -> Arc<str> {

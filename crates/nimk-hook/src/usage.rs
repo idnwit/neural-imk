@@ -46,11 +46,13 @@ fn local_date(unix_ms: i64, offset_min: i32) -> String {
 /// Per-day usage counters; the summary is the current day's JSON.
 #[derive(Default)]
 pub struct UsageHook {
-    /// From `session_start`: (wall ms, offset min), waiting for a time base.
+    /// From `session_start` or `clock`: (wall ms, offset min), waiting for
+    /// a time base.
     pending: Option<(u64, i32)>,
     /// Clock anchor: (`t` of the first record after `session_start`, wall
     /// ms, offset min). `session_start` itself carries `t = 0`, not the
-    /// uptime clock of later records, so it cannot anchor.
+    /// uptime clock of later records, so it cannot anchor. A `clock` record
+    /// likewise re-anchors on the record after it.
     anchor: Option<(f64, u64, i32)>,
     app: String,
     /// Bundle id per committed word id (last [`WORD_APPS`]).
@@ -140,11 +142,19 @@ impl Hook for UsageHook {
     }
 
     fn on_record(&mut self, rec: &Record, cx: &mut HookCx<'_>) {
-        if !matches!(rec.event, Event::SessionStart { .. })
+        if !matches!(rec.event, Event::SessionStart { .. } | Event::Clock { .. })
             && self.anchor.is_none()
             && let Some((wall, offset)) = self.pending
         {
             self.anchor = Some((rec.t, wall, offset));
+            // A re-anchor can move to another date (sleep across midnight,
+            // new offset): save the old day and publish the new one.
+            if let Some(date) = self.date_at(rec.t)
+                && self.day.as_ref().is_some_and(|d| d.date != date)
+            {
+                self.switch_to(&date, cx);
+                self.publish(cx);
+            }
         }
         match &rec.event {
             Event::SessionStart {
@@ -152,6 +162,18 @@ impl Hook for UsageHook {
                 utc_offset_min,
                 ..
             } => {
+                self.pending = Some((*wall_unix_ms, *utc_offset_min));
+                self.anchor = None;
+            }
+            Event::Clock {
+                wall_unix_ms,
+                utc_offset_min,
+            } => {
+                // The uptime clock of `t` stops while the Mac sleeps and the
+                // offset may change (travel, DST). The record carries the
+                // last event time, which may lie long before the wall clock
+                // was read, so the next record (fresh input, close to the
+                // read) re-anchors, as after `session_start`.
                 self.pending = Some((*wall_unix_ms, *utc_offset_min));
                 self.anchor = None;
             }
@@ -168,8 +190,12 @@ impl Hook for UsageHook {
                 let Some(day) = self.day.as_mut() else {
                     return;
                 };
-                let entry = day.apps.entry(self.app.clone()).or_default();
-                for counts in [entry, &mut day.total] {
+                // Before any context the app is unknown (""): counted in
+                // the total only.
+                let entry = Some(&self.app)
+                    .filter(|a| !a.is_empty())
+                    .map(|a| day.apps.entry(a.clone()).or_default());
+                for counts in entry.into_iter().chain([&mut day.total]) {
                     match mode {
                         Lang::Vi => counts.vi += 1,
                         Lang::En => counts.en += 1,
@@ -196,7 +222,9 @@ impl Hook for UsageHook {
                 let Some(day) = self.day.as_mut() else {
                     return;
                 };
-                day.apps.entry(app).or_default().corrected += 1;
+                if !app.is_empty() {
+                    day.apps.entry(app).or_default().corrected += 1;
+                }
                 day.total.corrected += 1;
                 self.dirty = true;
                 self.publish(cx);
@@ -344,6 +372,99 @@ mod tests {
         ]);
         assert_eq!(day(&s, "2026-11-09")["total"]["vi"], 1);
         assert_eq!(day(&s, "2026-11-10")["total"]["en"], 1);
+    }
+
+    #[test]
+    fn clock_record_re_anchors_after_sleep() {
+        // 2026-11-09T10:00:00Z; the Mac sleeps a day: uptime advances only
+        // 10 s, but the wall clock read on wake is a day later.
+        let s = feed(vec![
+            (0.0, start(1_794_218_400_000, 0)),
+            (100.0, ctx("a")),
+            (101.0, commit(0, Lang::Vi)),
+            (
+                105.0,
+                Event::Clock {
+                    wall_unix_ms: 1_794_218_400_000 + 86_400_000,
+                    utc_offset_min: 0,
+                },
+            ),
+            (106.0, commit(1, Lang::En)),
+        ]);
+        assert_eq!(day(&s, "2026-11-09")["total"]["vi"], 1);
+        assert_eq!(day(&s, "2026-11-09")["total"]["en"], 0);
+        assert_eq!(day(&s, "2026-11-10")["total"]["en"], 1);
+    }
+
+    #[test]
+    fn clock_record_anchors_on_the_next_record_not_its_own_t() {
+        // 22:00Z; the Mac stays awake but idle for 1.5 h, then the IME is
+        // activated: the clock record carries the last event time (100) and
+        // the wall clock 23:30Z. The next key is at uptime 5501: still the
+        // 9th. Anchoring at the clock record's own t would give 01:00 on
+        // the 10th.
+        let s = feed(vec![
+            (0.0, start(1_794_261_600_000, 0)),
+            (100.0, ctx("a")),
+            (100.0, commit(0, Lang::Vi)),
+            (
+                100.0,
+                Event::Clock {
+                    wall_unix_ms: 1_794_267_000_000,
+                    utc_offset_min: 0,
+                },
+            ),
+            (5501.0, commit(1, Lang::En)),
+        ]);
+        let d = day(&s, "2026-11-09");
+        assert_eq!(d["total"]["vi"], 1);
+        assert_eq!(d["total"]["en"], 1);
+    }
+
+    #[test]
+    fn clock_record_takes_the_new_utc_offset() {
+        // 2026-11-09T20:00:00Z at offset 0, then travel to +07:00: the
+        // same instant is 2026-11-10 local.
+        let s = feed(vec![
+            (0.0, start(1_794_254_400_000, 0)),
+            (1.0, ctx("a")),
+            (2.0, commit(0, Lang::Vi)),
+            (
+                3.0,
+                Event::Clock {
+                    wall_unix_ms: 1_794_254_401_000,
+                    utc_offset_min: 420,
+                },
+            ),
+            (4.0, commit(1, Lang::En)),
+        ]);
+        assert_eq!(day(&s, "2026-11-09")["total"]["vi"], 1);
+        assert_eq!(day(&s, "2026-11-10")["total"]["en"], 1);
+    }
+
+    #[test]
+    fn commit_before_any_context_counts_in_total_only() {
+        let s = feed(vec![
+            (0.0, start(1_794_218_400_000, 0)),
+            (1.0, commit(0, Lang::Vi)),
+            (
+                2.0,
+                Event::Label {
+                    target: Target::Word(0),
+                    label: Lang::En,
+                    weight: 1.0,
+                    source: LabelSource::Correction,
+                },
+            ),
+            (3.0, ctx("a")),
+            (4.0, commit(1, Lang::En)),
+        ]);
+        let d = day(&s, "2026-11-09");
+        assert_eq!(d["total"]["vi"], 1);
+        assert_eq!(d["total"]["en"], 1);
+        assert_eq!(d["total"]["corrected"], 1);
+        assert!(d["apps"].get("").is_none(), "{d}");
+        assert_eq!(d["apps"]["a"]["en"], 1);
     }
 
     #[test]

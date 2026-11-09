@@ -27,6 +27,6 @@ Split the runtime into two kinds of component, both defined over data.
 - A new observer is one `Hook` impl and a registration; the engine and trainer do not change.
 - A faulty hook costs its own data, not typing. Disabled hooks stay disabled until the next start.
 - Hooks cannot see state that is not in a `Record`. Anything a hook needs must be logged first, which is why `model_score` exists.
-- The usage day follows the uptime clock anchored on the first record after `session_start`, so it can drift if the Mac sleeps during a long session.
+- The usage day follows the uptime clock anchored on the first record after `session_start`. The uptime clock stops during sleep, so the additive `clock { wall_unix_ms, utc_offset_min }` record (logged by `nimk_note_wall_clock` on wake and IME activation; replay ignores it) re-anchors it; the wall clock is still read only in `nimk-ffi`.
 - Users who relied on Ctrl+Space must opt in. Replay and the pipeline fixture run with `hotkeys = false` and are unaffected.
 - The C ABI grows to 20 exports (`nimk_hook_summary`).

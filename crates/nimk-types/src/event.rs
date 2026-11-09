@@ -156,6 +156,16 @@ pub enum Event {
         /// Model kind name, e.g. `linear_action`.
         kind: String,
     },
+    /// The host re-read the wall clock (e.g. after the Mac woke from
+    /// sleep, when the uptime clock of `t` stood still). Re-anchors
+    /// wall-clock consumers at this record's `t` (additive; replay ignores
+    /// it).
+    Clock {
+        /// Wall clock now, Unix milliseconds (supplied by the host).
+        wall_unix_ms: u64,
+        /// Local time offset from UTC now, minutes (host-supplied).
+        utc_offset_min: i32,
+    },
 }
 
 /// Subject of a decision or label. Ids are per session, assigned by the
@@ -260,5 +270,19 @@ mod tests {
         let json = serde_json::to_string(&reset).unwrap();
         assert_eq!(json, r#"{"type":"model_reset","kind":"linear_action"}"#);
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), reset);
+    }
+
+    #[test]
+    fn clock_round_trips() {
+        let c = Event::Clock {
+            wall_unix_ms: 5,
+            utc_offset_min: -300,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"clock","wall_unix_ms":5,"utc_offset_min":-300}"#
+        );
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), c);
     }
 }

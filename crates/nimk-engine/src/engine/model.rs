@@ -171,7 +171,11 @@ impl Engine {
 
         self.restart_trainer(kind);
         self.last_snapshot_t = Some(timestamp);
-        // Zero at once; the hook's summary (immediate when inline) agrees.
+        // Zero the cached counters now. Inline, the hook's summary (drained
+        // below) already agrees. In background mode the hook thread may not
+        // have seen the reset yet, so a summary it published before the
+        // reset can briefly restore the old counters; its next summary
+        // (after the `model_reset` record) brings them back to zero.
         if let Some(s) = self.stats.get_mut(kind.index()) {
             *s = ModelStats::default();
         }

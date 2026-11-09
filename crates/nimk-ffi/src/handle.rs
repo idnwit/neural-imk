@@ -50,6 +50,14 @@ impl NimkCore {
         }
     }
 
+    /// Reads the wall clock and local UTC offset now and hands them to the
+    /// engine (logged as a `clock` record). May panic inside the engine;
+    /// callers catch unwinds.
+    pub(crate) fn note_wall_clock(&mut self) {
+        self.engine
+            .note_wall_clock(wall_unix_ms(), local_utc_offset_min());
+    }
+
     /// Applies the user's TOML override over the embedded defaults; returns
     /// how many values were rejected (each is reported as a diagnostic).
     pub(crate) fn set_config(&mut self, user: Option<&str>) -> u32 {
@@ -188,7 +196,7 @@ fn local_utc_offset_min() -> i32 {
 }
 
 /// Wall clock in Unix milliseconds (0 if the clock is before 1970).
-fn wall_unix_ms() -> u64 {
+pub(crate) fn wall_unix_ms() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => d
             .as_secs()

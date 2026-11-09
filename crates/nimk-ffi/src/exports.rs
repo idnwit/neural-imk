@@ -506,6 +506,24 @@ pub unsafe extern "C" fn nimk_note_navigation(core: *mut NimkCore) {
     }
 }
 
+/// The host re-read the clock situation (e.g. the Mac woke from sleep, or
+/// the IME was activated): the core reads the wall clock and local UTC
+/// offset and logs them so day-based statistics stay on the right date.
+/// Null is a no-op.
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_note_wall_clock(core: *mut NimkCore) {
+    // SAFETY: null or live and exclusively used per contract.
+    let Some(core) = (unsafe { core.as_mut() }) else {
+        return;
+    };
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| core.note_wall_clock())) {
+        record_panic(core, "nimk_note_wall_clock", &*payload);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{CStr, CString};
@@ -882,6 +900,7 @@ mod tests {
             assert_eq!(nimk_set_config(ptr::null_mut(), c"x = 1".as_ptr()), 0);
             assert_eq!(nimk_idle_commit_secs(ptr::null()), 0.0);
             nimk_note_navigation(ptr::null_mut());
+            nimk_note_wall_clock(ptr::null_mut());
         }
         let dir = tempfile::tempdir().unwrap();
         let core = new_core(&dir);
@@ -902,5 +921,47 @@ mod tests {
             nimk_note_navigation(core);
             assert!(nimk_shutdown(core));
         }
+    }
+
+    #[test]
+    fn note_wall_clock_logs_a_clock_record() {
+        // SAFETY: null core is a no-op.
+        unsafe { nimk_note_wall_clock(ptr::null_mut()) };
+        let dir = tempfile::tempdir().unwrap();
+        let core = new_core(&dir);
+        let ctx = NimkCtx {
+            bundle_id: c"com.apple.TextEdit".as_ptr(),
+            field_id: 1,
+            caret_rel_x: 0.5,
+            caret_rel_y: 0.5,
+            timestamp: 7.0,
+        };
+        let mut out = NimkOut::pass_through();
+        let before = crate::handle::wall_unix_ms();
+        // SAFETY: live core and pointers.
+        unsafe {
+            nimk_context(core, &ctx, &mut out);
+            nimk_note_wall_clock(core);
+            assert!(nimk_shutdown(core));
+        }
+        let after = crate::handle::wall_unix_ms();
+        let storage = PlainFsStorage::open(dir.path()).unwrap();
+        let src = storage.event_source().unwrap();
+        let mut clocks = Vec::new();
+        for seg in src.segments().unwrap() {
+            for rec in src.read_segment(&seg).unwrap() {
+                let r: nimk_types::Record = serde_json::from_slice(&rec.unwrap()).unwrap();
+                if let nimk_types::Event::Clock { wall_unix_ms, .. } = r.event {
+                    clocks.push((r.t, wall_unix_ms));
+                }
+            }
+        }
+        assert_eq!(clocks.len(), 1, "{clocks:?}");
+        let (t, wall) = clocks[0];
+        assert!((t - 7.0).abs() < 1e-9, "logged at the last event time: {t}");
+        assert!(
+            (before..=after).contains(&wall),
+            "{before} <= {wall} <= {after}"
+        );
     }
 }

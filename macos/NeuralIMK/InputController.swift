@@ -80,6 +80,9 @@ class InputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         composing = false
+        // The wall clock may have jumped (sleep, time zone) since the last
+        // key; usage dates re-anchor on the next record.
+        Core.shared.noteWallClock()
         if let client = sender as? IMKTextInput {
             // A newer activation (or a deactivation) within the window
             // replaces this one.

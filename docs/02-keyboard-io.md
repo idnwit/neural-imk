@@ -192,7 +192,7 @@ Each IMK callback calls exactly one engine function through the C ABI. No callba
 | Callback (`InputController.swift`) | Calls | Purpose |
 | --- | --- | --- |
 | Process start (`Core`) | `nimk_new`, then `nimk_set_config` with the user's `config.toml` ([11](11-config.md)) | Never fails; bad snapshot or sink falls back and reports via diagnostics |
-| `activateServer(_:)` | `nimk_context` after a 120 ms debounce | New app or `field_id` gives a new focus id and prior. A new activation or `deactivateServer` cancels the wait; a key arriving first sends it at once; an empty caret is retried after 80 ms |
+| `activateServer(_:)` | `nimk_note_wall_clock`, then `nimk_context` after a 120 ms debounce | New app or `field_id` gives a new focus id and prior. A new activation or `deactivateServer` cancels the wait; a key arriving first sends it at once; an empty caret is retried after 80 ms |
 | `handle(_:client:)` | `nimk_context` (if a debounce is pending, or a letter starts a word with no marked text), then `nimk_key` | Handle one key; `event.characters` is read only for `keyDown` |
 | `deactivateServer(_:)` | `nimk_commit_pending` | No lost preedit or pending word on focus loss |
 | `commitComposition(_:)` | `nimk_commit_pending`, then `nimk_note_navigation` | Mouse click; leaves `Raw` |

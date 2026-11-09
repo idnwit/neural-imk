@@ -35,6 +35,14 @@ let reloadObserver = DistributedNotificationCenter.default().addObserver(
     _ = Core.shared.reloadConfig()
 }
 
-withExtendedLifetime((server, termSource, reloadObserver)) {
+// Event timestamps follow the uptime clock, which stops during sleep: let
+// the core re-read the wall clock on wake (usage dates, docs/05).
+let wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+    forName: NSWorkspace.didWakeNotification,
+    object: nil, queue: .main) { _ in
+    Core.shared.noteWallClock()
+}
+
+withExtendedLifetime((server, termSource, reloadObserver, wakeObserver)) {
     app.run()
 }
