@@ -535,6 +535,18 @@ impl Engine {
             },
         );
         out.commit = Some(text);
+        // Registered before the labels so an immediate correction finds it.
+        let category = match &self.focus {
+            Some(f) => self
+                .cfg
+                .category_name(&f.ctx.bundle_id)
+                .map_or(StatCategory::Other, StatCategory::from_name),
+            None => StatCategory::Other,
+        };
+        if self.word_meta.len() >= META_KEPT {
+            self.word_meta.pop_front();
+        }
+        self.word_meta.push_back(WordMeta { id: p.id, category });
         let correction = p.locked.then_some(p.lang);
         let mut finals = Vec::new();
         self.labeler.on_commit(
@@ -549,17 +561,6 @@ impl Engine {
         self.prev_langs.insert(0, p.lang);
         self.prev_langs.truncate(3);
         self.committed_since_focus = true;
-        let category = match &self.focus {
-            Some(f) => self
-                .cfg
-                .category_name(&f.ctx.bundle_id)
-                .map_or(StatCategory::Other, StatCategory::from_name),
-            None => StatCategory::Other,
-        };
-        if self.word_meta.len() >= META_KEPT {
-            self.word_meta.pop_front();
-        }
-        self.word_meta.push_back(WordMeta { id: p.id, category });
         self.drain_trainer(t);
     }
 
@@ -601,7 +602,8 @@ impl Engine {
                         .map(|m| WordInfo {
                             word_id: id,
                             label: f.label,
-                            corrected: f.corrected,
+                            committed: f.committed,
+                            amends: f.amends,
                             category: m.category,
                         })
                 }

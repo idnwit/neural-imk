@@ -155,7 +155,10 @@ impl EvalReport {
         let fresh = d.p_vi.map(Lang::from_p_vi);
         match target.edit {
             EditAction::Commit => {
-                let ok = u64::from(d.chosen == target.render);
+                let ok = u64::from(nimk_types::word_correct(
+                    d.chosen,
+                    nimk_types::ground_truth(d.chosen, Some(target.render)),
+                ));
                 self.words += 1;
                 self.render_correct += ok;
                 self.render_fresh_correct += u64::from(fresh == Some(target.render));

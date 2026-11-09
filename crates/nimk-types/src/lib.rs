@@ -10,6 +10,7 @@ mod ctx;
 mod event;
 mod key;
 mod lang;
+mod truth;
 
 pub use action::{
     Action, ActionMask, ActionScores, EditAction, Example, Observation, RECENT_WINDOW,
@@ -20,3 +21,4 @@ pub use event::{
 };
 pub use key::{KeyEvent, KeyKind, Modifiers, keycode};
 pub use lang::Lang;
+pub use truth::{ground_truth, word_correct};

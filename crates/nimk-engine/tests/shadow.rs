@@ -347,3 +347,65 @@ fn inline_runs_are_deterministic() {
     };
     assert_eq!(run(), run());
 }
+
+/// Words and corrected words, lifetime and in the window.
+fn counts(e: &Engine, kind: ModelKind) -> (u64, u64, u32, u32) {
+    let s = e.model_stats(kind);
+    (
+        s.words_total,
+        s.corrected_total,
+        s.words_recent,
+        s.corrected_recent,
+    )
+}
+
+fn started() -> (Engine, f64) {
+    let storage = MemStorage::new();
+    let (learners, _, _) = disagreeing_pair();
+    let cfg = EngineConfig {
+        hotkeys: true,
+        ..cfg(Threading::Inline)
+    };
+    let mut e = engine(cfg, &storage, learners);
+    e.on_context(&ctx("com.apple.TextEdit", 1, 1.0));
+    (e, 1.0)
+}
+
+#[test]
+fn uncorrected_word_is_correct_by_default() {
+    let (mut e, mut t) = started();
+    type_str(&mut e, "ab z", &mut t);
+    t += 20.0;
+    e.commit_pending(t);
+    // Truth = committed Vi: active right; the shadow's own commit-step
+    // decision (En) disagrees with it.
+    assert_eq!(counts(&e, LIN), (1, 0, 1, 0));
+    assert_eq!(counts(&e, GRU), (1, 1, 1, 1));
+}
+
+#[test]
+fn mid_word_switch_is_a_correction() {
+    let (mut e, mut t) = started();
+    type_str(&mut e, "ab", &mut t);
+    double_shift(&mut e, &mut t);
+    type_str(&mut e, " z", &mut t);
+    e.commit_pending(t + 1.0);
+    // Truth = En (the switch): the active model's own rendering was Vi.
+    assert_eq!(counts(&e, LIN), (1, 1, 1, 1));
+    assert_eq!(counts(&e, GRU), (1, 0, 1, 0), "the shadow said En");
+}
+
+#[test]
+fn words_without_a_language_decision_are_not_counted() {
+    let (mut e, mut t) = started();
+    // Raw/command text: no label, no count.
+    type_str(&mut e, "/ab ", &mut t);
+    // A focus prior (double-Shift before typing anything) is not a word.
+    e.on_context(&ctx("com.apple.TextEdit", 2, t + 1.0));
+    t += 1.0;
+    double_shift(&mut e, &mut t);
+    t += 20.0;
+    e.commit_pending(t);
+    assert_eq!(counts(&e, LIN), (0, 0, 0, 0));
+    assert_eq!(counts(&e, GRU), (0, 0, 0, 0));
+}
