@@ -56,6 +56,7 @@ fn run(kind: ModelKind) -> String {
         id: "fixture".into(),
         wall_unix_ms: 1_794_111_700_000,
         app_version: "fixture".into(),
+        utc_offset_min: 0,
     };
     let mut engine = Engine::new(cfg, Arc::new(storage.clone()) as Arc<dyn Storage>, info);
     for r in source_records() {

@@ -32,53 +32,7 @@ pub(crate) const WINDOW: usize = 500;
 /// corrections amend instead of double counting; older blobs start empty.
 const VERSION: u32 = 2;
 
-/// App category of a counted word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatCategory {
-    /// Terminal emulators.
-    Terminal,
-    /// Code editors / IDEs.
-    Ide,
-    /// Web browsers.
-    Browser,
-    /// Text editors and note apps.
-    Editor,
-    /// Any other app.
-    Other,
-}
-
-impl StatCategory {
-    /// Every category, in the order of [`ModelStats::corrected_by_category`].
-    pub const ALL: [Self; 5] = [
-        Self::Terminal,
-        Self::Ide,
-        Self::Browser,
-        Self::Editor,
-        Self::Other,
-    ];
-
-    /// Maps an `[[app_category]]` name; unknown names are `Other`.
-    #[must_use]
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "terminal" => Self::Terminal,
-            "ide" => Self::Ide,
-            "browser" => Self::Browser,
-            "editor" => Self::Editor,
-            _ => Self::Other,
-        }
-    }
-
-    const fn index(self) -> usize {
-        match self {
-            Self::Terminal => 0,
-            Self::Ide => 1,
-            Self::Browser => 2,
-            Self::Editor => 3,
-            Self::Other => 4,
-        }
-    }
-}
+pub use nimk_types::StatCategory;
 
 /// What the engine knows about one finalized word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

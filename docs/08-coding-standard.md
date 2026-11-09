@@ -35,8 +35,9 @@ Use `match` or `if let` instead of `unwrap_or`: arch-lint rule AL013 flags every
 `arch-lint.toml` (arch-lint 0.11, `preset = "recommended"`, `fail_on = "warning"`) locks layers and the key path by `use` path.
 
 ```text
- ffi, replay, synth  -->  engine  -->  telex | policy  -->  types
+ ffi, replay, synth  -->  engine  -->  telex | policy | hook  -->  types
                              \-->  storage   (true leaf, no nimk deps)
+                                      hook  -->  storage
 ```
 
 Dependencies point down only. `Cargo.toml` also enforces this, since a crate without the dependency cannot `use` it.
@@ -45,7 +46,7 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 
 | Scope | Paths |
 | --- | --- |
-| `types`, `storage`, `telex`, `policy`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
+| `types`, `storage`, `telex`, `policy`, `hook`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
 | `pure` | `nimk-types`, `nimk-telex`, `nimk-policy` |
 | `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-logger` | One engine module each (`eng-trainer` includes `trainer/**`) |
 | `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `logger.rs` |
@@ -58,11 +59,12 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | Rule | Scope | Forbids | Protects |
 | --- | --- | --- | --- |
 | `types-is-bottom` | `types` | all other nimk crates | `nimk-types` is the bottom layer |
-| `leaf-storage` | `storage` | all other nimk crates | Storage handles bytes only |
+| `leaf-storage` | `storage` | all other nimk crates (incl. hook) | Storage handles bytes only |
 | `leaf-telex` | `telex` | every nimk crate except `types` | Telex depends only on `types` |
-| `leaf-policy` | `policy` | storage, telex, engine, ffi, synth, replay, `std::fs`, `std::thread` | Policy only maps `Observation` to action scores |
+| `leaf-policy` | `policy` | storage, telex, hook, engine, ffi, synth, replay, `std::fs`, `std::thread` | Policy only maps `Observation` to action scores |
+| `leaf-hook` | `hook` | engine, ffi, policy, telex, synth, replay, `std::fs/net/thread/time/env` | Hooks observe Records; I/O only through given handles; the host owns threads |
 | `engine-not-up` | `engine` | ffi, synth, replay, `std::fs` | Engine writes files only via `Storage` |
-| `ffi-thin` | `ffi` | policy, telex, synth, replay, `std::fs` | FFI only adapts the engine to C |
+| `ffi-thin` | `ffi` | policy, telex, hook, synth, replay, `std::fs` | FFI only adapts the engine to C |
 | `replay-not-ffi`, `synth-not-ffi` | `replay`, `synth` | `nimk_ffi` | They call the engine directly |
 | `pure-no-side-effects` | `pure` | `std::fs/io/net/thread/time/env`, `std::sync` (except `Arc`, `atomic`), `parking_lot` | No I/O, locks or clock in pure crates |
 | `engine-event-clock` | `engine` | `std::time`, `std::env` | Event timestamps are the only clock |

@@ -3940,6 +3940,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nimk-hook"
+version = "0.1.0"
+dependencies = [
+ "nimk-storage",
+ "nimk-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nimk-policy"
 version = "0.1.0"
 dependencies = [
@@ -3996,6 +4006,7 @@ name = "nimk-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

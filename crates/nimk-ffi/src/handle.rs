@@ -37,6 +37,7 @@ impl NimkCore {
             id: session_id(),
             wall_unix_ms: wall_unix_ms(),
             app_version,
+            utc_offset_min: 0,
         };
         Self {
             engine: Engine::new(EngineConfig::default(), storage, session),

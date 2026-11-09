@@ -77,6 +77,8 @@ pub struct SessionInfo {
     pub wall_unix_ms: u64,
     /// IME build version.
     pub app_version: String,
+    /// Local time offset from UTC at start, minutes.
+    pub utc_offset_min: i32,
 }
 
 /// Blob key of the latest model snapshot for `kind`.
@@ -442,6 +444,7 @@ impl Engine {
             app_version: session.app_version,
             config_json,
             policy_id: engine.model_id.to_string(),
+            utc_offset_min: session.utc_offset_min,
         };
         engine.logger.log(0.0, start);
         engine

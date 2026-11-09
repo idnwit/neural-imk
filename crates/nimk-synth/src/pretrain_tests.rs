@@ -65,6 +65,7 @@ fn assert_snapshot_loads(kind: ModelKind, storage: MemStorage) {
         id: "after-pretrain".into(),
         wall_unix_ms: 0,
         app_version: "test".into(),
+        utc_offset_min: 0,
     };
     let mut engine = Engine::new(cfg, Arc::new(storage), session);
     assert_eq!(engine.take_diagnostics(), Vec::<String>::new());

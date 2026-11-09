@@ -146,6 +146,7 @@ fn write_script(script: &Script, storage: &dyn Storage, config_json: &str) -> io
             app_version: APP_VERSION.to_owned(),
             config_json: config_json.to_owned(),
             policy_id: SYNTHETIC_POLICY_ID.to_owned(),
+            utc_offset_min: 0,
         },
     )?;
     let ctx = synthetic_context(&script.bundle_id, 0, t0);
