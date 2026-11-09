@@ -6,6 +6,7 @@
 # (runs `make models` if missing). App: SwiftUI, swiftc.
 # CFBundleVersion of both bundles = `git rev-list --count HEAD`.
 # Env: ARCHS="arm64 x86_64" for a universal binary (default: host arch only).
+#      NIMK_SIGN_IDENTITY: Developer ID Application identity (default: ad hoc).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -135,8 +136,18 @@ fi
 
 cp -R "$IME_APP" "$APP/Contents/Library/InputMethods/"
 
-echo "==> codesign (ad hoc, inside-out)"
-codesign -s - --force "$APP/Contents/Library/InputMethods/NeuralIMK.app"
-codesign -s - --force "$APP"
+SIGN_ID="${NIMK_SIGN_IDENTITY:--}"
+sign() {
+  if [[ "$SIGN_ID" == "-" ]]; then
+    codesign -s - --force "$1"
+  else
+    codesign --force --options runtime --timestamp -s "$SIGN_ID" "$1"
+  fi
+}
+
+echo "==> codesign (inside-out)"
+sign "$APP/Contents/Library/InputMethods/NeuralIMK.app"
+sign "$APP"
+codesign --verify --strict --verbose=2 "$APP"
 
 echo "built $APP (build $BUILD_NUMBER)"

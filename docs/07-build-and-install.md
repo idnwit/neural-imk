@@ -19,6 +19,7 @@ There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the
 | `header` | `cbindgen ... --output target/nimk_ffi.h` | C header for Swift |
 | `models` | Pretrain both bundled models | See below |
 | `app` | `scripts/build-app.sh` | Builds `build/NeuralIMK.app` (companion app with the IME nested) |
+| `dmg` | `scripts/package-dmg.sh` | Universal (arm64 + x86_64) `build/NeuralIMK-<version>.dmg`; see Release |
 | `install` | `app`, then `scripts/install.sh` | Copies the nested IME into `~/Library/Input Methods/`; `INSTALL_APP=1` also copies the app to `/Applications` |
 
 ## Build pipeline
@@ -34,9 +35,12 @@ There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the
 | target/nimk_ffi.h | -------------> | *.swift (swiftc) |->|   MacOS/NeuralIMK         |
 +-------------------+  objc-header   +------------------+  |   Info.plist, Resources/  |
                                                            +---------------------------+
-                                                                  | codesign -s -
+                                                                  | nested at Contents/Library/InputMethods/
                                                                   v
-                                                     ~/Library/Input Methods/
+                                                     +---------------------------+  codesign   +-------------+
+                                                     | build/NeuralIMK.app       | ----------> | .dmg        |
+                                                     | (companion app wraps IME) |  (inside-out)| make dmg   |
+                                                     +---------------------------+             +-------------+
 ```
 
 The generated header is the only contract between Rust and Swift. If you change `nimk-ffi`, rebuild the header or the Swift build fails.
@@ -49,9 +53,9 @@ The generated header is the only contract between Rust and Swift. If you change 
 4. Copy the models, a reference `default-config.toml`, and `Info.plist` into `build/ime/NeuralIMK.app`, and render the menu icon.
 5. App: `swiftc -O -parse-as-library` over `macos/App/*.swift` and `macos/Shared/*.swift` with `SwiftUI`, `Charts`, `Carbon` and `AppKit`.
 6. Assemble `build/NeuralIMK.app`: the app binary, `macos/App/Info.plist`, `Resources/AppIcon.icns` (rendered by `scripts/make-app-icon.swift`, converted with `iconutil`), and a copy of the IME at `Contents/Library/InputMethods/NeuralIMK.app`.
-7. Sign ad hoc with `codesign -s -`, inside-out: the nested IME first, then the app (no `--deep`).
+7. Sign inside-out: the nested IME first, then the app (no `--deep`), then `codesign --verify --strict`. Ad hoc (`codesign -s -`) by default; with `NIMK_SIGN_IDENTITY` set, signs with that Developer ID identity, hardened runtime and timestamp.
 
-`CFBundleVersion` of both bundles is `git rev-list --count HEAD`, a build number that only grows. The installer compares it to decide whether to update; `CFBundleShortVersionString` stays semantic (`0.1.0`).
+`CFBundleVersion` of both bundles is `git rev-list --count HEAD`, a build number that only grows. Release builds need a full (non-shallow) clone, or the count is wrong. The installer compares it to decide whether to update; `CFBundleShortVersionString` stays semantic (`0.1.0`).
 
 ```text
 build/NeuralIMK.app                              com.giangndm.NeuralIMK
@@ -127,6 +131,11 @@ If a key below is missing or wrong, macOS does not list the IME in Input Sources
 
 ## Install
 
+| Path | For | How |
+| --- | --- | --- |
+| `make install` | Developers | Builds and copies the IME to `~/Library/Input Methods/` |
+| DMG | Users | Drag `NeuralIMK.app` to Applications, open it |
+
 Companion app (end users): open `NeuralIMK.app`. On every launch it compares the nested IME's `CFBundleVersion` with the one in `~/Library/Input Methods`. If the IME is missing or older, the app:
 
 1. copies the nested IME to a temporary bundle in `~/Library/Input Methods` (same volume, so the swap is a rename);
@@ -142,6 +151,39 @@ Developer flow (`make install`):
 2. First time only: System Settings, Keyboard, Input Sources, add NeuralIMK.
 3. Keep the ABC input source enabled as a fallback.
 4. After an update, select NeuralIMK again in the input menu.
+
+## Release
+
+`make dmg` runs `scripts/package-dmg.sh`: a universal build (`ARCHS="arm64 x86_64"`; needs `rustup target add x86_64-apple-darwin`), staged with an `Applications` symlink, packed into `build/NeuralIMK-<CFBundleShortVersionString>.dmg`. With `create-dmg` installed (`brew install create-dmg`) the window gets a background and icon layout (`scripts/make-dmg-background.swift`); otherwise the script falls back to a plain `hdiutil` DMG. Use a full (non-shallow) clone so the build number is right.
+
+Requirements for a distributable build:
+
+- Apple Developer Program membership and a Developer ID Application certificate in the keychain.
+- A notarytool profile: `xcrun notarytool store-credentials <profile>`.
+
+```sh
+# Ad hoc (local testing): no env needed
+make dmg
+
+# Signed and notarized
+NIMK_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
+NIMK_NOTARY_PROFILE=<profile> make dmg
+```
+
+`NIMK_SIGN_IDENTITY` signs the apps (hardened runtime, timestamp) and the DMG. `NIMK_NOTARY_PROFILE` submits the DMG to Apple and staples the ticket; without it, notarization is skipped.
+
+An ad hoc build is not notarized. Gatekeeper blocks it on other Macs until the user opens System Settings, Privacy & Security, and clicks Open Anyway.
+
+### Manual release checklist
+
+Use a fresh macOS user account.
+
+1. Open the DMG and drag `NeuralIMK.app` to Applications.
+2. Open the app and go through onboarding steps 1 to 4.
+3. Type in TextEdit and confirm Telex works and the mode switches.
+4. Re-drag a newer build over the old one and open it once: the IME updates (Overview shows the new version).
+5. Check the Ctrl+Space warning appears only when the macOS shortcut for the previous input source is on.
+6. Uninstall from the app's settings and confirm the IME is gone from `~/Library/Input Methods` and Input Sources.
 
 ## Debug and recovery
 

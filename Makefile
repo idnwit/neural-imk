@@ -1,4 +1,4 @@
-.PHONY: swift-test check fmt lint test arch header models app install
+.PHONY: swift-test check fmt lint test arch header models app install dmg
 
 check: fmt lint test arch
 
@@ -57,3 +57,6 @@ app:
 
 install: app
 	./scripts/install.sh
+
+dmg:
+	./scripts/package-dmg.sh
