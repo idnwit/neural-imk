@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use nimk_types::{KeyKind, Lang, Modifiers, keycode};
+use nimk_types::{EditAction, KeyKind, Lang, Modifiers, keycode};
 
 use super::*;
 
@@ -108,7 +108,7 @@ fn ambiguous_share_matches_profile() {
         words_per_session: 500,
         mix: MixProfile {
             p_vi_sentence: 0.3,
-            ..MixProfile::default()
+            ..MixProfile::legacy()
         },
         ..SynthConfig::default()
     };
@@ -132,6 +132,7 @@ fn ambiguous_share_matches_profile() {
 fn language_mix_roughly_matches_profile() {
     let cfg = SynthConfig {
         sessions: 20,
+        mix: MixProfile::legacy(),
         ..SynthConfig::default()
     };
     let words: Vec<_> = generate(&cfg, &Corpus::builtin())
@@ -149,6 +150,7 @@ fn empty_corpus_yields_empty_sessions() {
         vi: Vec::new(),
         en: Vec::new(),
         en_ambiguous: Vec::new(),
+        ..Corpus::empty()
     };
     let scripts = generate(&small_cfg(5), &corpus);
     assert_eq!(scripts.len(), 4);
@@ -161,6 +163,7 @@ fn empty_corpus_yields_empty_sessions() {
         vi: vec!["một".to_owned()],
         en: Vec::new(),
         en_ambiguous: Vec::new(),
+        ..Corpus::empty()
     };
     let scripts = generate(&small_cfg(5), &vi_only);
     assert!(
@@ -178,7 +181,7 @@ fn variant_probability_controls_the_typing_style() {
         let cfg = SynthConfig {
             mix: MixProfile {
                 p_variant: p,
-                ..MixProfile::default()
+                ..MixProfile::legacy()
             },
             ..small_cfg(3)
         };
@@ -210,4 +213,191 @@ fn script_of_types_the_given_words() {
     assert_eq!(s.keys.len(), s.targets.len());
     assert_eq!(s.keys.len(), "theme app ".len());
     assert_eq!(s.words.len(), 2);
+}
+
+/// Chat-only realistic profile without phrases (pure run model).
+fn runs_only() -> MixProfile {
+    MixProfile {
+        p_phrase: 0.0,
+        p_terminal: 0.0,
+        p_ide: 0.0,
+        ..MixProfile::default()
+    }
+}
+
+/// Mean run length per language over every session's word sequence.
+fn mean_runs(scripts: &[Script]) -> (f64, f64) {
+    let (mut sum, mut cnt) = ([0usize; 2], [0usize; 2]);
+    for s in scripts {
+        let mut i = 0;
+        while i < s.words.len() {
+            let lang = s.words[i].lang;
+            let mut j = i;
+            while j < s.words.len() && s.words[j].lang == lang {
+                j += 1;
+            }
+            let k = usize::from(lang == Lang::En);
+            sum[k] += j - i;
+            cnt[k] += 1;
+            i = j;
+        }
+    }
+    (sum[0] as f64 / cnt[0] as f64, sum[1] as f64 / cnt[1] as f64)
+}
+
+#[test]
+fn run_lengths_match_the_profile() {
+    let mix = MixProfile {
+        mean_vi_run: 5.0,
+        mean_en_run: 2.0,
+        ..runs_only()
+    };
+    let cfg = SynthConfig {
+        sessions: 40,
+        mix,
+        ..SynthConfig::default()
+    };
+    let (vi, en) = mean_runs(&generate(&cfg, &Corpus::builtin()));
+    assert!((vi - 5.0).abs() < 0.6, "vi run {vi}");
+    assert!((en - 2.0).abs() < 0.3, "en run {en}");
+}
+
+#[test]
+fn phrases_are_inserted_in_order() {
+    let corpus = Corpus::builtin();
+    let cfg = |p_phrase| SynthConfig {
+        sessions: 10,
+        mix: MixProfile {
+            p_phrase,
+            ..runs_only()
+        },
+        ..SynthConfig::default()
+    };
+    let count = |scripts: &[Script]| {
+        let mut n = 0;
+        for s in scripts {
+            for pair in s.words.windows(2) {
+                let a = pair[0].text.to_lowercase();
+                let b = pair[1].text.to_lowercase();
+                if (a == "pull" && b == "request") || (a == "dark" && b == "theme") {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let with = count(&generate(&cfg(0.5), &corpus));
+    let without = count(&generate(&cfg(0.0), &corpus));
+    assert!(with >= 3, "phrases inserted: {with}");
+    assert!(with > without * 3, "{with} vs {without}");
+    // Phrase tokens keep their language labels.
+    for w in generate(&cfg(0.5), &corpus).iter().flat_map(|s| &s.words) {
+        if w.text.eq_ignore_ascii_case("deploy") {
+            assert_eq!(w.lang, Lang::En);
+        }
+    }
+}
+
+#[test]
+fn frequent_words_are_zipf_sampled() {
+    let corpus = Corpus::builtin();
+    let cfg = SynthConfig {
+        sessions: 20,
+        mix: runs_only(),
+        ..SynthConfig::default()
+    };
+    let (mut en, mut to, mut rare) = (0usize, 0usize, 0usize);
+    let tail: HashSet<&str> = corpus.en_freq.iter().skip(40).map(String::as_str).collect();
+    for w in generate(&cfg, &corpus).iter().flat_map(|s| &s.words) {
+        if w.lang == Lang::En {
+            en += 1;
+            let t = w.text.to_lowercase();
+            to += usize::from(t == "to");
+            rare += usize::from(tail.contains(t.as_str()));
+        }
+    }
+    // Rank 2 of ~65 gets about 0.5 * (1/2) / H(65) = 5% of English words.
+    let share = to as f64 / en as f64;
+    assert!(share > 0.03, "`to` share {share}");
+    assert!(rare < to * 3, "tail {rare} vs to {to}");
+}
+
+#[test]
+fn flavours_set_bundle_and_keep_word_contract() {
+    let corpus = Corpus::builtin();
+    let cfg = SynthConfig {
+        sessions: 60,
+        words_per_session: 200,
+        ..SynthConfig::default()
+    };
+    let scripts = generate(&cfg, &corpus);
+    let ids: HashSet<&str> = scripts.iter().map(|s| s.bundle_id.as_str()).collect();
+    for id in ["synthetic.chat", "synthetic.terminal", "synthetic.ide"] {
+        assert!(ids.contains(id), "{id} missing from {ids:?}");
+    }
+    for s in &scripts {
+        assert_eq!(s.words.len(), cfg.words_per_session, "{}", s.bundle_id);
+        assert_eq!(s.keys.len(), s.targets.len());
+        assert_eq!(s.keys.last().map(|k| k.keycode), Some(keycode::RETURN));
+        let typed: String = s.keys.iter().flat_map(|k| k.chars.chars()).collect();
+        match s.bundle_id.as_str() {
+            "synthetic.terminal" => assert!(typed.contains('-') || typed.contains('/')),
+            "synthetic.ide" => {
+                assert!(typed.contains('_') || typed.contains('(') || typed.contains("//"))
+            }
+            _ => {}
+        }
+        if s.bundle_id != "synthetic.chat" {
+            assert!(!typed.is_empty());
+        }
+    }
+    // No flavours means the single legacy bundle id.
+    let legacy = generate(
+        &SynthConfig {
+            mix: MixProfile::legacy(),
+            ..small_cfg(1)
+        },
+        &corpus,
+    );
+    assert!(
+        legacy
+            .iter()
+            .all(|s| s.bundle_id == crate::SYNTHETIC_BUNDLE_ID)
+    );
+}
+
+#[test]
+fn legacy_profile_is_deterministic_and_differs_from_default() {
+    let corpus = Corpus::builtin();
+    let cfg = |mix| SynthConfig {
+        mix,
+        ..small_cfg(4)
+    };
+    let a = generate(&cfg(MixProfile::legacy()), &corpus);
+    assert_eq!(a, generate(&cfg(MixProfile::legacy()), &corpus));
+    assert_ne!(a, generate(&cfg(MixProfile::default()), &corpus));
+}
+
+#[test]
+fn flavoured_targets_agree_with_the_engine_word_walk() {
+    let cfg = SynthConfig {
+        sessions: 30,
+        words_per_session: 150,
+        ..SynthConfig::default()
+    };
+    for s in generate(&cfg, &Corpus::builtin()) {
+        let walked: Vec<_> = crate::log::walk(&s.keys).collect();
+        let ends = walked.iter().filter(|k| k.ends_word.is_some()).count();
+        assert_eq!(ends, s.words.len(), "{}", s.bundle_id);
+        for (k, t) in walked.iter().zip(&s.targets) {
+            let expect = if k.ends_word.is_some() {
+                EditAction::Commit
+            } else if k.word_id.is_some() {
+                EditAction::Append
+            } else {
+                EditAction::Pass
+            };
+            assert_eq!(t.edit, expect, "{} {:?}", s.bundle_id, k.key.chars);
+        }
+    }
 }

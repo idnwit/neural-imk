@@ -191,7 +191,7 @@ fn teach_script(engine: &mut Engine, field_id: u64, script: &Script) -> io::Resu
         )));
     }
     let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
-    engine.on_context(&synthetic_context(field_id, t0));
+    engine.on_context(&synthetic_context(&script.bundle_id, field_id, t0));
     for (key, target) in script.keys.iter().zip(&script.targets) {
         engine.teach(key, *target, 1.0, 1.0);
     }
@@ -296,7 +296,11 @@ fn evaluate(
     for (field_id, script) in (0u64..).zip(scripts) {
         let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
         let mut committed: Vec<String> = Vec::new();
-        committed.extend(engine.on_context(&synthetic_context(field_id, t0)).commit);
+        committed.extend(
+            engine
+                .on_context(&synthetic_context(&script.bundle_id, field_id, t0))
+                .commit,
+        );
         for key in &script.keys {
             committed.extend(engine.on_key(key).commit);
         }

@@ -305,12 +305,27 @@ pub fn pretrain(
 | Bước | Nội dung |
 | --- | --- |
 | Corpus | `Corpus::builtin()`: 3090 từ VI, 1672 từ EN, 245 từ EN mập mờ (`has`, `for`, `user`); ba danh sách rời nhau |
-| Trộn | `MixProfile` mặc định: `p_vi_sentence` 0.7, `p_en_in_vi` 0.15, `p_vi_in_en` 0.05, `p_ambiguous` 0.4, `p_typo` 0, `p_shortcut` 0, `p_variant` 0.5 |
+| Trộn | `MixProfile::default()` = profile thực tế (xem "Dữ liệu synthetic thực tế" bên dưới); `MixProfile::legacy()` giữ hành vi cũ để tái lập: `p_vi_sentence` 0.7, `p_en_in_vi` 0.15, `p_vi_in_en` 0.05, `p_ambiguous` 0.4, không cụm, không Zipf, một app |
 | Phím và đích | Mỗi `Script` có `keys` và `targets` cùng chỉ số: chữ → `Append`, phím kết từ → `Commit`, ranh giới khi buffer rỗng và ⌘+phím → `Pass`, Backspace sau gõ nhầm → `Pop`; `render` là ngôn ngữ của từ (hoặc từ trước với `Pass`) |
 | Train | Một engine inline, `hotkeys = false`; mỗi phím qua `Engine::teach` với `edit_weight = render_weight = 1.0`; mỗi script bắt đầu bằng đổi focus sang field mới |
 | Tham số | `PretrainOptions { epochs: 2, eval_frac: 0.1, batch: 128 }` mặc định; trainer replay tắt, snapshot chỉ lưu một lần lúc kết thúc |
 | Đầu ra | Chỉ blob `model/<kind>/latest` được giữ, event bị bỏ; `PretrainReport { epochs, train_scripts, train_keys, eval }` |
 | Đánh giá | Engine mới nạp snapshot đã lưu, chạy `on_key` trên script giữ lại (mô hình tự quyết, không học), đọc `Decision` đã log. Phím không gọi model (ranh giới nối vào từ pending, Return, phím tắt; ADR 0011) không có `Decision`, nên quyết định được ghép với phím qua bản ghi `key`; text commit mang cả ranh giới (`tiếng `) nên được cắt trước khi so |
+
+### Dữ liệu synthetic thực tế
+
+Generator cũ đổi từng từ độc lập và rút từ đều từ danh sách, nên thiếu hai thứ có trong văn bản thật (xem [right-context-experiment](research/right-context-experiment.md)): code-switch theo cụm và từ chức năng hay gặp. Profile mặc định thêm:
+
+| Thành phần | Cách làm |
+| --- | --- |
+| Run | Xích hai trạng thái VI/EN trên từng từ, xuyên qua ranh giới câu; độ dài run phân phối hình học với trung bình `mean_vi_run` 5.0 và `mean_en_run` 1.5. `p_vi_sentence` chỉ chọn trạng thái đầu session |
+| Cụm cố định | `data/phrases.txt` (~110 cụm, token `e:`/`v:`): EN (`pull request`, `in the`, `to do`), pha (`deploy lên`, `merge vào`, `thêm feature`) và VI (`không được`, `cảm ơn`). Với xác suất `p_phrase` 0.15 mỗi đơn vị bắt đầu một cụm có token đầu cùng ngôn ngữ run hiện tại; cụm bị cắt theo số từ còn lại của câu |
+| Tần suất | `data/en_freq.txt`, `data/vi_freq.txt` xếp theo hạng; với xác suất `p_freq` 0.5 từ được rút theo Zipf (trọng số 1/hạng) thay vì đều. Mọi từ trong danh sách tần suất phải nằm trong `en`/`en_ambiguous`/`vi`; hai danh sách kia vẫn rời nhau và giữ kiểm tra thành viên chặt |
+| Flavour | Mỗi session thuộc một app giả: chat (`synthetic.chat`, 60%), terminal (`synthetic.terminal`, 30%), IDE (`synthetic.ide`, 10%). Terminal xen dòng lệnh (`git commit -m ./src/main`, từ `data/commands.txt`) giữa các câu chat; IDE xen comment (`// ` rồi câu VI/EN) và biểu thức định danh (`a_b(c);`, `self.a.b(c, d)`). Ký hiệu gõ bằng phím riêng: phím kết từ có buffer thì `Commit`, buffer rỗng thì `Pass`. `Script::bundle_id` đi vào `Context` nên model dùng được feature app |
+
+Hiệu chỉnh theo log thật ([real-log-stats](research/real-log-stats.md), 1319 từ, còn nhỏ và sớm): thật 70.2% VI, run VI 4.4 / EN 1.9 từ, 68.8% từ liền kề cùng ngôn ngữ, từ EN va chạm với Telex hợp lệ chiếm 20% từ EN (6.0% mọi từ), raw trùng rendering 31.5%. Profile mới (100 session x 500 từ, seed 42): 68.9% VI, run 4.5 / 2.0, liền kề cùng ngôn ngữ 69.5%, va chạm 19.2% từ EN (6.0% mọi từ), raw trùng rendering 27.2%. Profile cũ: run EN 3.3, va chạm 15.9% mọi từ, liền kề 75.9%. Các số này sẽ đổi khi log thật nhiều lên; chạy lại `crates/nimk-synth/examples/log_collisions.rs` và cập nhật `MixProfile::realistic`.
+
+Model đã đóng gói chưa được huấn luyện lại trên profile này; số ở "Kết quả đo" bên dưới vẫn là của profile cũ.
 
 `SynthConfig` mặc định: `seed` 42, 100 session x 500 từ, `key_interval_secs` 0.12.
 `EvalReport` gồm độ chính xác edit, render tại commit (kể cả quyết định mới trước hysteresis), riêng từ mập mờ và từ EN mập mờ, histogram `p_vi` tại commit, độ chính xác theo vị trí phím, và tỉ lệ text khớp.

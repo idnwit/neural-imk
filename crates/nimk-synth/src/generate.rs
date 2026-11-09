@@ -2,8 +2,8 @@
 
 use nimk_types::{Action, EditAction, KeyEvent, KeyKind, Lang, Modifiers, keycode};
 
-use crate::Corpus;
 use crate::keymap::{Rng, key_for};
+use crate::{Corpus, SYNTHETIC_BUNDLE_ID};
 
 /// Sentence length range (words), inclusive.
 const SENTENCE_WORDS: (usize, usize) = (4, 12);
@@ -14,7 +14,22 @@ const P_PARAGRAPH_END: f32 = 0.15;
 /// Session clock start, seconds since boot.
 const START_SECS: f64 = 1000.0;
 
+/// Bundle id of chat-flavoured sessions.
+pub const BUNDLE_CHAT: &str = "synthetic.chat";
+/// Bundle id of terminal-flavoured sessions.
+pub const BUNDLE_TERMINAL: &str = "synthetic.terminal";
+/// Bundle id of IDE-flavoured sessions.
+pub const BUNDLE_IDE: &str = "synthetic.ide";
+/// Probability a slot in a terminal session is a shell command line.
+const P_TERMINAL_LINE: f32 = 0.35;
+/// Probability a slot in an IDE session is a code or comment line.
+const P_IDE_LINE: f32 = 0.55;
+
 /// How languages mix within a session.
+///
+/// [`MixProfile::default`] is the realistic profile (language runs, fixed
+/// phrases, Zipf-like frequent words, app flavours); [`MixProfile::legacy`]
+/// reproduces the original independent per-word swaps for reproducibility.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MixProfile {
     /// Probability a sentence is mainly Vietnamese.
@@ -37,10 +52,36 @@ pub struct MixProfile {
     /// canonical one. The RNG is only consulted for words that have a
     /// variant. 0 disables.
     pub p_variant: f32,
+    /// Mean length (words) of a Vietnamese run. `> 0` switches the
+    /// generator to the run model: a two-state chain over words that carries
+    /// across sentences (geometric run lengths, `p_vi_sentence` picks the
+    /// first state, `p_en_in_vi` / `p_vi_in_en` are ignored). 0 keeps the
+    /// legacy independent swaps.
+    pub mean_vi_run: f32,
+    /// Mean length (words) of an English run (run model only).
+    pub mean_en_run: f32,
+    /// Run model: probability a unit starts a fixed phrase (when one fits
+    /// the current run language) instead of a single word.
+    pub p_phrase: f32,
+    /// Probability a word is drawn Zipf-like from the frequent-word list
+    /// (`Corpus::en_freq` / `vi_freq`) instead of uniformly. 0 disables.
+    pub p_freq: f32,
+    /// Probability a session is terminal-flavoured (commands, flags, paths
+    /// between chat sentences, bundle [`BUNDLE_TERMINAL`]).
+    pub p_terminal: f32,
+    /// Probability a session is IDE-flavoured (identifiers and comments,
+    /// bundle [`BUNDLE_IDE`]); the rest are chat ([`BUNDLE_CHAT`]).
+    pub p_ide: f32,
 }
 
-impl Default for MixProfile {
-    fn default() -> Self {
+impl MixProfile {
+    /// Realistic profile, calibrated to the first real-log measurement
+    /// (about 1.3k words: 70% Vietnamese, runs 4.4 / 1.9 words, 69% adjacent
+    /// words in the same language; see docs/research/real-log-stats.md). The
+    /// chain means (5.0 / 1.5) are set so the realized stats, which phrases
+    /// and flavours stretch, land on those numbers.
+    #[must_use]
+    pub fn realistic() -> Self {
         Self {
             p_vi_sentence: 0.7,
             p_en_in_vi: 0.15,
@@ -49,8 +90,44 @@ impl Default for MixProfile {
             p_typo: 0.0,
             p_shortcut: 0.0,
             p_variant: 0.5,
+            mean_vi_run: 5.0,
+            mean_en_run: 1.5,
+            p_phrase: 0.15,
+            p_freq: 0.5,
+            p_terminal: 0.3,
+            p_ide: 0.1,
         }
     }
+
+    /// The pre-realism profile: per-sentence main language with independent
+    /// word swaps, uniform sampling, one app. Same seed gives the same
+    /// scripts as before runs, phrases and flavours existed.
+    #[must_use]
+    pub fn legacy() -> Self {
+        Self {
+            mean_vi_run: 0.0,
+            mean_en_run: 0.0,
+            p_phrase: 0.0,
+            p_freq: 0.0,
+            p_terminal: 0.0,
+            p_ide: 0.0,
+            ..Self::realistic()
+        }
+    }
+}
+
+impl Default for MixProfile {
+    fn default() -> Self {
+        Self::realistic()
+    }
+}
+
+/// App flavour of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flavor {
+    Chat,
+    Terminal,
+    Ide,
 }
 
 /// Generator settings. Same config + seed = same output.
@@ -99,6 +176,9 @@ pub struct ScriptWord {
 pub struct Script {
     /// Session id (`synth-<seed>-<n>`).
     pub session: String,
+    /// Synthetic bundle id of the app flavour ([`SYNTHETIC_BUNDLE_ID`] when
+    /// the profile has no flavours).
+    pub bundle_id: String,
     /// Every key in order, including word boundaries (space, punctuation).
     /// Contains no hotkeys.
     pub keys: Vec<KeyEvent>,
@@ -146,6 +226,9 @@ pub fn script_of(words: &[(Lang, &str, &str)]) -> Script {
         words: Vec::new(),
         targets: Vec::new(),
         last_lang: Lang::Vi,
+        buf_open: false,
+        state: Lang::Vi,
+        limit: usize::MAX,
     };
     for &(lang, text, raw) in words {
         w.type_word(raw, lang, 0.0);
@@ -159,6 +242,7 @@ pub fn script_of(words: &[(Lang, &str, &str)]) -> Script {
     }
     Script {
         session: "synth-script".to_owned(),
+        bundle_id: SYNTHETIC_BUNDLE_ID.to_owned(),
         keys: w.keys,
         words: w.words,
         targets: w.targets,
@@ -178,7 +262,30 @@ fn session(cfg: &SynthConfig, corpus: &Corpus, n: usize) -> Script {
         words: Vec::with_capacity(cfg.words_per_session),
         targets: Vec::new(),
         last_lang: Lang::Vi,
+        buf_open: false,
+        state: Lang::Vi,
+        limit: cfg.words_per_session,
     };
+    let mix = &cfg.mix;
+    let flavor = if mix.p_terminal + mix.p_ide > 0.0 {
+        let r = w.rng.unit() as f32;
+        if r < mix.p_terminal {
+            Flavor::Terminal
+        } else if r < mix.p_terminal + mix.p_ide {
+            Flavor::Ide
+        } else {
+            Flavor::Chat
+        }
+    } else {
+        Flavor::Chat
+    };
+    if mix.mean_vi_run > 0.0 {
+        w.state = if w.rng.chance(mix.p_vi_sentence) {
+            Lang::Vi
+        } else {
+            Lang::En
+        };
+    }
     let has_words =
         !(corpus.vi.is_empty() && corpus.en.is_empty() && corpus.en_ambiguous.is_empty());
     while has_words && w.words.len() < cfg.words_per_session {
@@ -186,10 +293,26 @@ fn session(cfg: &SynthConfig, corpus: &Corpus, n: usize) -> Script {
         let span = SENTENCE_WORDS.1 - SENTENCE_WORDS.0 + 1;
         let len = (SENTENCE_WORDS.0 + w.rng.below(span)).min(remaining);
         let last_sentence = len == remaining;
-        w.sentence(&cfg.mix, corpus, len, last_sentence);
+        let line = match flavor {
+            Flavor::Chat => false,
+            Flavor::Terminal => w.rng.chance(P_TERMINAL_LINE),
+            Flavor::Ide => w.rng.chance(P_IDE_LINE),
+        };
+        if line {
+            w.line(flavor, mix, corpus);
+        } else {
+            w.sentence(mix, corpus, len, last_sentence);
+        }
     }
+    let bundle_id = match flavor {
+        _ if mix.p_terminal + mix.p_ide == 0.0 => SYNTHETIC_BUNDLE_ID,
+        Flavor::Chat => BUNDLE_CHAT,
+        Flavor::Terminal => BUNDLE_TERMINAL,
+        Flavor::Ide => BUNDLE_IDE,
+    };
     Script {
         session: format!("synth-{}-{n}", cfg.seed),
+        bundle_id: bundle_id.to_owned(),
         keys: w.keys,
         words: w.words,
         targets: w.targets,
@@ -206,10 +329,19 @@ struct Writer {
     targets: Vec<Action>,
     /// Language of the most recent word (sticky render for `Pass`).
     last_lang: Lang,
+    /// Whether the engine's word buffer is non-empty after the last key.
+    buf_open: bool,
+    /// Current run language (run model).
+    state: Lang,
+    /// Words per session; line flavours stop emitting words at this count.
+    limit: usize,
 }
 
 impl Writer {
     fn sentence(&mut self, mix: &MixProfile, corpus: &Corpus, len: usize, last: bool) {
+        if mix.mean_vi_run > 0.0 {
+            return self.sentence_runs(mix, corpus, len, last);
+        }
         let main = if self.rng.chance(mix.p_vi_sentence) {
             Lang::Vi
         } else {
@@ -228,31 +360,93 @@ impl Writer {
             let Some((lang, word)) = self.pick(lang, mix, corpus) else {
                 return;
             };
-            let text = if i == 0 { capitalize(&word) } else { word };
-            let raw = match lang {
-                Lang::Vi => self.encode_vi(&text, mix.p_variant),
-                Lang::En => text.clone(),
+            self.put(mix, lang, word, (i, len), last, true);
+        }
+    }
+
+    /// Run model: words and phrases follow a two-state chain whose state
+    /// persists across sentences.
+    fn sentence_runs(&mut self, mix: &MixProfile, corpus: &Corpus, len: usize, last: bool) {
+        let mut i = 0;
+        while i < len {
+            let mean = match self.state {
+                Lang::Vi => mix.mean_vi_run,
+                Lang::En => mix.mean_en_run,
             };
-            self.type_word(&raw, lang, mix.p_typo);
-            self.words.push(ScriptWord {
-                word_id: self.words.len() as u64,
-                lang,
-                text,
-                raw,
-            });
-            if i + 1 < len {
-                if self.rng.chance(P_COMMA) {
-                    self.key(',', 0, EditAction::Commit);
-                    self.key(' ', 0, EditAction::Pass);
-                } else {
-                    self.key(' ', 0, EditAction::Commit);
-                }
-                if mix.p_shortcut > 0.0 && self.rng.chance(mix.p_shortcut) {
-                    self.shortcut();
+            if self.rng.chance(1.0 / mean.max(1.0)) {
+                self.state = self.state.flip();
+            }
+            let phrase = if mix.p_phrase > 0.0 && self.rng.chance(mix.p_phrase) {
+                self.pick_phrase(corpus)
+            } else {
+                None
+            };
+            if let Some(tokens) = phrase {
+                for (lang, word) in tokens.into_iter().take(len - i) {
+                    self.state = lang;
+                    self.put(mix, lang, word, (i, len), last, false);
+                    i += 1;
                 }
             } else {
-                self.end_sentence(last);
+                let Some((lang, word)) = self.pick(self.state, mix, corpus) else {
+                    return;
+                };
+                self.state = lang;
+                self.put(mix, lang, word, (i, len), last, true);
+                i += 1;
             }
+        }
+    }
+
+    /// A random phrase starting in the current run language.
+    fn pick_phrase(&mut self, corpus: &Corpus) -> Option<Vec<(Lang, String)>> {
+        let fits: Vec<&Vec<(Lang, String)>> = corpus
+            .phrases
+            .iter()
+            .filter(|p| p.first().is_some_and(|t| t.0 == self.state))
+            .collect();
+        if fits.is_empty() {
+            return None;
+        }
+        fits.get(self.rng.below(fits.len())).map(|p| (*p).clone())
+    }
+
+    /// Types word `idx.0` of a sentence of `idx.1` words, then its separator
+    /// (or the sentence end after the last one).
+    fn put(
+        &mut self,
+        mix: &MixProfile,
+        lang: Lang,
+        word: String,
+        idx: (usize, usize),
+        last: bool,
+        comma_ok: bool,
+    ) {
+        let (i, len) = idx;
+        let text = if i == 0 { capitalize(&word) } else { word };
+        let raw = match lang {
+            Lang::Vi => self.encode_vi(&text, mix.p_variant),
+            Lang::En => text.clone(),
+        };
+        self.type_word(&raw, lang, mix.p_typo);
+        self.words.push(ScriptWord {
+            word_id: self.words.len() as u64,
+            lang,
+            text,
+            raw,
+        });
+        if i + 1 < len {
+            if comma_ok && self.rng.chance(P_COMMA) {
+                self.key(',', 0, EditAction::Commit);
+                self.key(' ', 0, EditAction::Pass);
+            } else {
+                self.key(' ', 0, EditAction::Commit);
+            }
+            if mix.p_shortcut > 0.0 && self.rng.chance(mix.p_shortcut) {
+                self.shortcut();
+            }
+        } else {
+            self.end_sentence(last);
         }
     }
 
@@ -292,6 +486,16 @@ impl Writer {
     }
 
     fn pick_in(&mut self, lang: Lang, mix: &MixProfile, corpus: &Corpus) -> Option<(Lang, String)> {
+        if mix.p_freq > 0.0 {
+            let freq = match lang {
+                Lang::Vi => &corpus.vi_freq,
+                Lang::En => &corpus.en_freq,
+            };
+            if !freq.is_empty() && self.rng.chance(mix.p_freq) {
+                let i = self.zipf(freq.len());
+                return freq.get(i).map(|w| (lang, w.clone()));
+            }
+        }
         let list = match lang {
             Lang::Vi => &corpus.vi,
             Lang::En if corpus.en.is_empty() => &corpus.en_ambiguous,
@@ -304,6 +508,19 @@ impl Writer {
         }
         let i = self.rng.below(list.len());
         list.get(i).map(|w| (lang, w.clone()))
+    }
+
+    /// Index in `0..n` with probability proportional to `1 / (rank + 1)`.
+    fn zipf(&mut self, n: usize) -> usize {
+        let total: f64 = (1..=n).map(|r| 1.0 / r as f64).sum();
+        let mut u = self.rng.unit() * total;
+        for r in 0..n {
+            u -= 1.0 / (r + 1) as f64;
+            if u < 0.0 {
+                return r;
+            }
+        }
+        n.saturating_sub(1)
     }
 
     /// Types a word's letters as `Append`, with optional typo + Backspace.
@@ -358,6 +575,11 @@ impl Writer {
     }
 
     fn push(&mut self, keycode: u16, chars: String, mods: Modifiers, edit: EditAction) {
+        match edit {
+            EditAction::Append => self.buf_open = true,
+            EditAction::Pop => {}
+            _ => self.buf_open = false,
+        }
         self.keys.push(KeyEvent {
             kind: KeyKind::KeyDown,
             keycode,
@@ -380,6 +602,8 @@ fn capitalize(word: &str) -> String {
         None => String::new(),
     }
 }
+
+mod flavor;
 
 #[cfg(test)]
 #[path = "generate_tests.rs"]

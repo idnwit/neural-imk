@@ -26,7 +26,7 @@ fn theme_follows_its_context() {
         words_per_session: 300,
         mix: MixProfile {
             p_variant: 0.5,
-            ..MixProfile::default()
+            ..MixProfile::legacy()
         },
         ..SynthConfig::default()
     };
