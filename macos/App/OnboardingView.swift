@@ -31,7 +31,9 @@ struct OnboardingView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
             HStack {
-                if step > 0 { Button(Strings.back) { step -= 1 }.keyboardShortcut(.cancelAction) }
+                // Esc stays with the user (an IME commit key; the practice step
+                // has a text field): Back has no keyboard shortcut.
+                if step > 0 { Button(Strings.back) { step -= 1 } }
                 Spacer()
                 if step < titles.count - 1 {
                     Button(Strings.next) { step += 1 }.keyboardShortcut(.defaultAction)
@@ -64,11 +66,11 @@ struct OnboardingView: View {
                 Label("\(Strings.installed) · \(Strings.version) \(v)", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             case .notInstalled:
-                HStack { Text(Strings.notInstalled); Button(Strings.retry) { model.install() } }
+                HStack { Text(Strings.notInstalled); Button(Strings.retry) { model.reinstall() } }
             case .failed(let msg):
                 Text(Strings.installFailed).foregroundStyle(.red)
                 Text(msg).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Button(Strings.retry) { model.install() }
+                Button(Strings.retry) { model.reinstall() }
             }
             Text(Strings.statsStayLocal).foregroundStyle(.secondary)
         }

@@ -95,10 +95,14 @@ struct SettingsView: View {
     /// unreadable config is never overwritten.
     private func readConfig() throws -> String {
         guard FileManager.default.fileExists(atPath: model.configURL.path) else { return "" }
-        return try String(contentsOf: model.configURL)
+        return try String(contentsOf: model.configURL, encoding: .utf8)
     }
 
+    /// The running IME keeps today's counts in memory and would write them
+    /// back: stop it first (it flushes on SIGTERM; macOS starts it again on
+    /// the next key), then delete.
     private func deleteUsage() {
+        Installer.terminateIME(bundleId: model.imeBundleId)
         let fm = FileManager.default
         let dir = model.blobURL("hooks/usage")
         if fm.fileExists(atPath: dir.path) {
@@ -151,6 +155,7 @@ struct UninstallSheet: View {
     private func run() {
         do {
             try Installer.uninstall(model, deleteData: deleteData)
+            model.uninstalledByUser = true
             model.refresh()
             done = true
         } catch {

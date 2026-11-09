@@ -26,6 +26,11 @@ enum Installer {
             try? fm.removeItem(at: tmp)
             throw InstallError.copyFailed(error.localizedDescription)
         }
+        // A downloaded app passes its quarantine to the copy; the input
+        // method must not carry it (docs/07 checklist step 1).
+        for failure in Quarantine.strip(tmp) {
+            m.log("cannot remove quarantine: \(failure)")
+        }
         terminateIME(bundleId: m.imeBundleId)
         do {
             if fm.fileExists(atPath: m.installedIME.path) {

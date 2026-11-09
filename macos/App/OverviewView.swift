@@ -52,9 +52,9 @@ struct OverviewView: View {
             LabeledContent(Strings.installed, value: "\(Strings.version) \(v)")
         case .notInstalled:
             HStack {
-                Text(Strings.notInstalled)
+                Text(model.uninstalledByUser ? Strings.uninstalledByUser : Strings.notInstalled)
                 Spacer()
-                Button(Strings.retry) { model.install() }
+                Button(model.uninstalledByUser ? Strings.reinstall : Strings.retry) { model.reinstall() }
             }
         case .failed(let msg):
             HStack {
@@ -63,7 +63,7 @@ struct OverviewView: View {
                     Text(msg).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Spacer()
-                Button(Strings.retry) { model.install() }
+                Button(Strings.retry) { model.reinstall() }
             }
         }
     }

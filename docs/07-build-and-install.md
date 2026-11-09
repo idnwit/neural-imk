@@ -138,12 +138,16 @@ If a key below is missing or wrong, macOS does not list the IME in Input Sources
 
 Companion app (end users): open `NeuralIMK.app`. On every launch it compares the nested IME's `CFBundleVersion` with the one in `~/Library/Input Methods`. If the IME is missing or older, the app:
 
-1. copies the nested IME to a temporary bundle in `~/Library/Input Methods` (same volume, so the swap is a rename);
+1. copies the nested IME to a temporary bundle in `~/Library/Input Methods` (same volume, so the swap is a rename) and removes `com.apple.quarantine` from every file in it (failures go to the app's log);
 2. asks the running IME to quit, then sends SIGTERM (the IME flushes its engine) and waits up to 2 s;
 3. replaces the installed bundle;
 4. registers and enables the input source (`TISRegisterInputSource`, `TISEnableInputSource`).
 
 Errors appear on the Overview screen with a "Thử lại" (Try again) button and go to the app's log.
+
+Uninstalling from Settings stores `uninstalledByUser` in the app's defaults. Later launches then skip the automatic install; Overview shows a "Cài lại NeuralIMK" (Reinstall) button that clears the flag and installs.
+
+"Xoá dữ liệu thống kê" (Delete usage data) first stops the running IME (it flushes on SIGTERM; macOS starts it again on the next key), then deletes `blobs/hooks/usage`, so the IME's in-memory day cannot write the counts back.
 
 Developer flow (`make install`):
 
@@ -178,12 +182,12 @@ An ad hoc build is not notarized. Gatekeeper blocks it on other Macs until the u
 
 Use a fresh macOS user account.
 
-1. Open the DMG and drag `NeuralIMK.app` to Applications.
+1. Open the DMG and drag `NeuralIMK.app` to Applications. After the app installs the IME, `xattr -r ~/Library/Input\ Methods/NeuralIMK.app` must list no `com.apple.quarantine`. Check both an ad hoc and a notarized build.
 2. Open the app and go through onboarding steps 1 to 4.
 3. Type in TextEdit and confirm Telex works and the mode switches.
 4. Re-drag a newer build over the old one and open it once: the IME updates (Overview shows the new version).
 5. Check the Ctrl+Space warning appears only when the macOS shortcut for the previous input source is on.
-6. Uninstall from the app's settings and confirm the IME is gone from `~/Library/Input Methods` and Input Sources.
+6. Uninstall from the app's settings and confirm the IME is gone from `~/Library/Input Methods` and Input Sources. Reopen the app: it must not reinstall until "Cài lại NeuralIMK" is clicked.
 
 ## Debug and recovery
 

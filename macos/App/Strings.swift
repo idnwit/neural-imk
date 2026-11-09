@@ -14,6 +14,8 @@ enum Strings {
     static let notInstalled = "Chưa cài đặt"
     static let installFailed = "Cài đặt thất bại"
     static let retry = "Thử lại"
+    static let reinstall = "Cài lại NeuralIMK"
+    static let uninstalledByUser = "Bạn đã gỡ NeuralIMK."
     static let version = "Phiên bản"
 
     // Input source
@@ -80,7 +82,7 @@ extension Strings {
     static let data = "Dữ liệu"
     static let deleteUsage = "Xoá dữ liệu thống kê"
     static let deleteUsageConfirm = "Xoá toàn bộ dữ liệu thống kê?"
-    static let deleteUsageMessage = "Chỉ xoá thống kê sử dụng; dữ liệu học của model được giữ nguyên."
+    static let deleteUsageMessage = "Chỉ xoá thống kê sử dụng; dữ liệu học của model được giữ nguyên. Bộ gõ sẽ được khởi động lại."
     static let delete = "Xoá"
     static let cancel = "Huỷ"
     static let uninstall = "Gỡ cài đặt NeuralIMK…"

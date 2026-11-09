@@ -32,6 +32,11 @@ final class AppModel: ObservableObject {
     @Published var dataRevision = 0
     @Published var activeModel = AppModel.defaultModel
     @Published var activeAccuracy: ModelAccuracy?
+    /// Set when the user uninstalls from Settings: launching the app again
+    /// must not silently reinstall; Overview offers to reinstall instead.
+    @Published var uninstalledByUser: Bool {
+        didSet { defaults.set(uninstalledByUser, forKey: "uninstalledByUser") }
+    }
 
     private let defaults = UserDefaults.standard
     private var launched = false
@@ -55,6 +60,7 @@ final class AppModel: ObservableObject {
         appLogURL = library.appendingPathComponent("Logs/\(Bundle.main.bundleIdentifier ?? "com.giangndm.NeuralIMK").log")
         developerMode = defaults.bool(forKey: "developerMode")
         showPerAppUsage = defaults.object(forKey: "showPerAppUsage") as? Bool ?? true
+        uninstalledByUser = defaults.bool(forKey: "uninstalledByUser")
         refresh()
     }
 
@@ -63,7 +69,7 @@ final class AppModel: ObservableObject {
     func launch() {
         guard !launched else { return }
         launched = true
-        install()
+        if !uninstalledByUser { install() }
         if !defaults.bool(forKey: "onboardingDone") { showOnboarding = true }
     }
 
@@ -79,6 +85,12 @@ final class AppModel: ObservableObject {
             refresh()
             installState = .failed(msg)
         }
+    }
+
+    /// An explicit install from the UI: clears `uninstalledByUser`.
+    func reinstall() {
+        uninstalledByUser = false
+        install()
     }
 
     func refresh() {
@@ -130,11 +142,15 @@ final class AppModel: ObservableObject {
 
     /// Watches `blobs/hooks` and its subdirectories (the IME writes blobs by
     /// tmp + rename inside them) and `blobs/settings`. A directory that does
-    /// not exist yet is represented by its nearest existing ancestor, so the
-    /// event for its creation re-arms the watchers (fresh install).
+    /// not exist yet is represented by its nearest existing ancestor, up to
+    /// the parent of `dataDir` (Application Support) for a brand-new user,
+    /// so the event for its creation re-arms the watchers. Watchers of
+    /// directories no longer wanted (an ancestor once the real directory
+    /// exists) are cancelled.
     private func armWatchers() {
         let fm = FileManager.default
         let hooks = blobURL("hooks")
+        let top = dataDir.deletingLastPathComponent()
         var wanted = [hooks, blobURL("settings")]
         if let subs = try? fm.contentsOfDirectory(at: hooks, includingPropertiesForKeys: [.isDirectoryKey]) {
             wanted += subs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
@@ -142,11 +158,16 @@ final class AppModel: ObservableObject {
         var dirs: [URL] = []
         for w in wanted {
             var d = w
-            while d.path != dataDir.path, d.path.count > dataDir.path.count, !fm.fileExists(atPath: d.path) {
+            while d.path != top.path, d.path.count > top.path.count, !fm.fileExists(atPath: d.path) {
                 d = d.deletingLastPathComponent()
             }
             if !fm.fileExists(atPath: d.path) { continue }
             if !dirs.contains(d) { dirs.append(d) }
+        }
+        let keep = Set(dirs.map(\.path))
+        for (path, src) in watchers where !keep.contains(path) {
+            src.cancel()
+            watchers[path] = nil
         }
         for dir in dirs where watchers[dir.path] == nil {
             let fd = open(dir.path, O_EVTONLY)

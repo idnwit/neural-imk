@@ -82,4 +82,25 @@ check(SettingsLogic.pick([], 1), "")
 check(SettingsLogic.usesCtrlSpace(.both), true)
 check(SettingsLogic.usesCtrlSpace(.doubleShift), false)
 
+// Quarantine: stripped recursively from a copied bundle, missing is fine.
+let qRoot = FileManager.default.temporaryDirectory.appendingPathComponent("quarantine-\(getpid()).app")
+try? FileManager.default.removeItem(at: qRoot)
+let qInner = qRoot.appendingPathComponent("Contents/MacOS")
+try? FileManager.default.createDirectory(at: qInner, withIntermediateDirectories: true)
+let qFile = qInner.appendingPathComponent("bin")
+try? Data("x".utf8).write(to: qFile)
+let qPlain = qRoot.appendingPathComponent("Contents/Info.plist")
+try? Data("y".utf8).write(to: qPlain)
+let qValue = "0081;00000000;Safari;"
+for p in [qRoot.path, qFile.path] {
+    check(setxattr(p, Quarantine.name, qValue, qValue.utf8.count, 0, 0), 0)
+}
+check(Quarantine.has(qFile.path), true)
+check(Quarantine.has(qPlain.path), false)
+check(Quarantine.strip(qRoot), [])
+check(Quarantine.has(qRoot.path), false)
+check(Quarantine.has(qFile.path), false)
+check(Quarantine.strip(qRoot), [])
+try? FileManager.default.removeItem(at: qRoot)
+
 print("app ok")
