@@ -96,9 +96,17 @@ fn boundary_after_tone_key_keeps_tone_placement() {
             let mut t = 0.0;
             let outs = type_str(&mut e, &format!("{typed}{boundary}"), &mut t);
             let shown = outs.last().and_then(|o| o.marked.clone());
-            assert_eq!(shown, Some(format!("{word}{boundary}")), "{typed}{boundary}");
+            assert_eq!(
+                shown,
+                Some(format!("{word}{boundary}")),
+                "{typed}{boundary}"
+            );
             let o = type_str(&mut e, " ", &mut t).remove(0);
-            assert_eq!(o.commit, Some(format!("{word}{boundary}")), "{typed}{boundary}");
+            assert_eq!(
+                o.commit,
+                Some(format!("{word}{boundary}")),
+                "{typed}{boundary}"
+            );
         }
     }
 }
