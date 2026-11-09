@@ -193,7 +193,7 @@ UI strings are Vietnamese (the app's users), kept in one `Strings.swift`.
    2. Select NeuralIMK: live green check polling TIS once per second; tips on the Globe/Fn key and on "Use Caps Lock to switch to and from ABC".
    3. Practice: type a prompt (randomly chosen from a small list), deliberately get one word wrong, double-Shift to fix it; a tick appears when the IME posts the distributed notification `com.giangndm.inputmethod.NeuralIMK.corrected` (posted on every hotkey flip; see 2.5). Practice corrections train the model normally.
    4. Done, with the cheat sheet.
-5. Correction overlay (IME, `Overlay::Manual` from a hotkey flip): shows the word's new rendering (e.g. `→ việt`, taken from the `NimkOut` text) plus "Double-Shift lần nữa để hoàn tác" for the first 5 corrections or until 3 corrections were made, whichever comes first (counter in the IME's `UserDefaults`). After that the plain VI/EN overlay as today. No sounds.
+5. Correction overlay (IME, `Overlay::Manual` from a hotkey flip): shows the word's new rendering (e.g. `→ việt`, taken from the `NimkOut` text) plus "Double-Shift lần nữa để hoàn tác" for the first 3 corrections (counter in the IME's `UserDefaults`). After that the plain VI/EN overlay as today. No sounds.
 
 ### 2.5 Config writes and reload
 
