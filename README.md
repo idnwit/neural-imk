@@ -19,6 +19,23 @@ Then open System Settings > Keyboard > Input Sources > Edit, click "+", add Neur
 - The menu bar item shows the mode. Its menu lets you pick the model, toggle online learning per model ("Học online" = learn online), restore the original model ("Khôi phục model gốc"), reload the config, and open the data folder.
 - Keys after `/`, `@` or `!` at the start of a word go straight to the app (raw command mode).
 
+## Integration
+
+### Terminals: don't bind Shift+Enter (Claude Code, Codex)
+
+Terminal key bindings run before the input method. If you bind Shift+Enter, NeuralIMK never sees the key, and the word you are typing stays uncommitted.
+
+Use the kitty keyboard protocol instead. The terminal then sends Shift+Enter (`\x1b[13;2u`) to Claude Code and Codex itself, after NeuralIMK has committed the word.
+
+WezTerm (`~/.wezterm.lua`):
+
+```lua
+config.enable_kitty_keyboard = true
+-- No config.keys entry for Shift+Enter: a SendString binding bypasses the IME.
+```
+
+Verified in WezTerm on 2026-11-09. In other terminals, remove any custom Shift+Enter mapping and turn on their kitty or CSI-u keyboard mode. See [docs/09-app-compat.md](docs/09-app-compat.md).
+
 ## Models
 
 | | [Linear](docs/models/linear.md) | [GRU](docs/models/gru.md) |
