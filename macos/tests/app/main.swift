@@ -37,4 +37,14 @@ check(CorrectionHint.shouldShow(count: 0), true)
 check(CorrectionHint.shouldShow(count: 3), false)
 check(CorrectionHint.next(count: 2), 3)
 
+
+// Model accuracy from the StatsTracker blob.
+let stats = #"{"version":2,"words_total":10,"corrected_total":4,"served_words_total":10,"corrected_by_category":[0,0,0,0,0],"keys_total":0,"keys_match_total":0,"flips_total":0,"recent":[[true,3,1,0],[false,2,2,0],[false,4,4,1],[false,1,1,0]]}"#
+check(ModelAccuracy.parse(Data(stats.utf8)),
+      ModelAccuracy(wordsRecent: 4, correctedRecent: 1, wordsTotal: 10, correctedTotal: 4))
+check(ModelAccuracy.parse(Data(stats.utf8))?.recent, 0.75)
+check(ModelAccuracy.parse(Data(#"{"version":1,"words_total":0,"corrected_total":0,"recent":[]}"#.utf8)), nil)
+check(ModelAccuracy.parse(Data("{}".utf8)), nil)
+check(ModelAccuracy(wordsRecent: 0, correctedRecent: 0, wordsTotal: 0, correctedTotal: 0).recent, nil)
+
 print("app ok")

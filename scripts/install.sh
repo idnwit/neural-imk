@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Installs build/NeuralIMK.app into the per-user "Input Methods" folder, the
-# location Apple defines for third-party input methods (run build-app.sh first).
+# Dev install: copies the IME nested in build/NeuralIMK.app into the per-user
+# "Input Methods" folder, the location Apple defines for third-party input
+# methods (run build-app.sh first). With INSTALL_APP=1 it also copies the
+# companion app to /Applications (end users get both from the DMG instead).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/build/NeuralIMK.app"
+OUTER="$ROOT/build/NeuralIMK.app"
+APP="$OUTER/Contents/Library/InputMethods/NeuralIMK.app"
 DEST="$HOME/Library/Input Methods"
 
 if [[ ! -x "$APP/Contents/MacOS/NeuralIMK" ]]; then
@@ -17,6 +20,13 @@ mkdir -p "$DEST"
 killall NeuralIMK 2>/dev/null || true
 rm -rf "$DEST/NeuralIMK.app"
 cp -R "$APP" "$DEST/"
+
+if [[ "${INSTALL_APP:-0}" == "1" ]]; then
+  osascript -e 'quit app id "com.giangndm.NeuralIMK"' 2>/dev/null || true
+  rm -rf "/Applications/NeuralIMK.app"
+  cp -R "$OUTER" "/Applications/"
+  echo "Installed companion app to: /Applications/NeuralIMK.app"
+fi
 
 cat <<EOF
 Installed to: $DEST/NeuralIMK.app

@@ -1,8 +1,9 @@
 # Build and install
 
-> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Makefile`, `scripts/`, `Cargo.toml`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Makefile`, `scripts/`, `macos/App`, `Cargo.toml`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
 
-There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the C header, and `swiftc` links `NeuralIMK.app`.
+There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the C header, and `swiftc` links the input method and the companion app.
+`build/NeuralIMK.app` is the companion app (`com.giangndm.NeuralIMK`, SwiftUI) with the input method nested inside it.
 `make check` must pass before every commit.
 
 ## Makefile targets
@@ -14,11 +15,11 @@ There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the
 | `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | See [08](08-coding-standard.md) |
 | `test` | `cargo test --workspace` | |
 | `arch` | `cargo arch-lint check`, then `--rules no-panic-in-lib` | Contract in `arch-lint.toml` |
-| `swift-test` | `swiftc` + run the tests in `macos/tests/` | `Debouncer`, `IdleCommit`, `StatsText`; not part of `check` |
+| `swift-test` | `swiftc` + run the tests in `macos/tests/` | `Debouncer`, `IdleCommit`, `StatsText`, and the app's pure logic in `macos/Shared/`; not part of `check` |
 | `header` | `cbindgen ... --output target/nimk_ffi.h` | C header for Swift |
 | `models` | Pretrain both bundled models | See below |
-| `app` | `scripts/build-app.sh` | Builds `build/NeuralIMK.app` |
-| `install` | `app`, then `scripts/install.sh` | Copies into `~/Library/Input Methods/` |
+| `app` | `scripts/build-app.sh` | Builds `build/NeuralIMK.app` (companion app with the IME nested) |
+| `install` | `app`, then `scripts/install.sh` | Copies the nested IME into `~/Library/Input Methods/`; `INSTALL_APP=1` also copies the app to `/Applications` |
 
 ## Build pipeline
 
@@ -44,9 +45,20 @@ The generated header is the only contract between Rust and Swift. If you change 
 
 1. Generate the header.
 2. Run `make models` if the bundled models are missing.
-3. `cargo build --release -p nimk-ffi`, then `swiftc -O` with `Cocoa`, `InputMethodKit` and `CoreGraphics`.
-4. Copy the models, a reference `default-config.toml`, and `Info.plist` into the bundle, and render the icon.
-5. Sign ad hoc with `codesign -s -`.
+3. IME: `cargo build --release -p nimk-ffi`, then `swiftc -O` with `Cocoa`, `InputMethodKit` and `CoreGraphics` (plus `macos/Shared/CorrectionHint.swift`).
+4. Copy the models, a reference `default-config.toml`, and `Info.plist` into `build/ime/NeuralIMK.app`, and render the menu icon.
+5. App: `swiftc -O -parse-as-library` over `macos/App/*.swift` and `macos/Shared/*.swift` with `SwiftUI`, `Charts`, `Carbon` and `AppKit`.
+6. Assemble `build/NeuralIMK.app`: the app binary, `macos/App/Info.plist`, `Resources/AppIcon.icns` (rendered by `scripts/make-app-icon.swift`, converted with `iconutil`), and a copy of the IME at `Contents/Library/InputMethods/NeuralIMK.app`.
+7. Sign ad hoc with `codesign -s -`, inside-out: the nested IME first, then the app (no `--deep`).
+
+`CFBundleVersion` of both bundles is `git rev-list --count HEAD`, a build number that only grows. The installer compares it to decide whether to update; `CFBundleShortVersionString` stays semantic (`0.1.0`).
+
+```text
+build/NeuralIMK.app                              com.giangndm.NeuralIMK
+  Contents/MacOS/NeuralIMK                       companion app (SwiftUI)
+  Contents/Resources/AppIcon.icns
+  Contents/Library/InputMethods/NeuralIMK.app    the IME, com.giangndm.inputmethod.NeuralIMK
+```
 
 Set `ARCHS="arm64 x86_64"` for a universal binary (joined with `lipo`). The default is the host architecture. Minimum macOS is 13.0.
 
@@ -97,7 +109,8 @@ The macOS SDK supplies every location; none is hard-coded in Swift.
 | Data (checkpoints, event log) | `<Application Support>/<bundle id>` |
 | Diagnostics log | `<Library>/Logs/<bundle id>.log` |
 | Bundled models | `Bundle.main.resourceURL/models` |
-| Installed app | `~/Library/Input Methods/NeuralIMK.app` (set by Apple, used by `install.sh`) |
+| Installed IME | `~/Library/Input Methods/NeuralIMK.app` (set by Apple; written by the companion app and `install.sh`) |
+| Companion app log | `<Library>/Logs/com.giangndm.NeuralIMK.log` (install errors) |
 
 ## `Info.plist`
 
@@ -114,7 +127,18 @@ If a key below is missing or wrong, macOS does not list the IME in Input Sources
 
 ## Install
 
-1. `make install` builds, bundles the models (pretraining them if needed), stops the old process, and copies the app.
+Companion app (end users): open `NeuralIMK.app`. On every launch it compares the nested IME's `CFBundleVersion` with the one in `~/Library/Input Methods`. If the IME is missing or older, the app:
+
+1. copies the nested IME to a temporary bundle in `~/Library/Input Methods` (same volume, so the swap is a rename);
+2. asks the running IME to quit, then sends SIGTERM (the IME flushes its engine) and waits up to 2 s;
+3. replaces the installed bundle;
+4. registers and enables the input source (`TISRegisterInputSource`, `TISEnableInputSource`).
+
+Errors appear on the Overview screen with a "Thử lại" (Try again) button and go to the app's log.
+
+Developer flow (`make install`):
+
+1. `make install` builds, bundles the models (pretraining them if needed), stops the old process, and copies the nested IME. `INSTALL_APP=1 make install` also copies the app to `/Applications`.
 2. First time only: System Settings, Keyboard, Input Sources, add NeuralIMK.
 3. Keep the ABC input source enabled as a fallback.
 4. After an update, select NeuralIMK again in the input menu.
@@ -129,6 +153,6 @@ If a key below is missing or wrong, macOS does not list the IME in Input Sources
 | IME missing from Input Sources | Check `Info.plist`; log out and back in |
 | New build has no effect | `killall NeuralIMK`, then select the input source again |
 | Model learned badly | Menu `Khôi phục model gốc`; a corrupt checkpoint makes the engine build a fresh model and log it |
-| Uninstall | Delete `~/Library/Input Methods/NeuralIMK.app` and remove it from Input Sources |
+| Uninstall | Delete `~/Library/Input Methods/NeuralIMK.app` (and `/Applications/NeuralIMK.app`) and remove it from Input Sources |
 
 An error on the key path never loses a key. The engine returns `consumed = false` and the key goes to the app.
