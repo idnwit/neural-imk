@@ -46,7 +46,11 @@ fn local_date(unix_ms: i64, offset_min: i32) -> String {
 /// Per-day usage counters; the summary is the current day's JSON.
 #[derive(Default)]
 pub struct UsageHook {
-    /// Session clock anchor: (`t` at session start, wall ms, offset min).
+    /// From `session_start`: (wall ms, offset min), waiting for a time base.
+    pending: Option<(u64, i32)>,
+    /// Clock anchor: (`t` of the first record after `session_start`, wall
+    /// ms, offset min). `session_start` itself carries `t = 0`, not the
+    /// uptime clock of later records, so it cannot anchor.
     anchor: Option<(f64, u64, i32)>,
     app: String,
     /// Bundle id per committed word id (last [`WORD_APPS`]).
@@ -136,12 +140,21 @@ impl Hook for UsageHook {
     }
 
     fn on_record(&mut self, rec: &Record, cx: &mut HookCx<'_>) {
+        if !matches!(rec.event, Event::SessionStart { .. })
+            && self.anchor.is_none()
+            && let Some((wall, offset)) = self.pending
+        {
+            self.anchor = Some((rec.t, wall, offset));
+        }
         match &rec.event {
             Event::SessionStart {
                 wall_unix_ms,
                 utc_offset_min,
                 ..
-            } => self.anchor = Some((rec.t, *wall_unix_ms, *utc_offset_min)),
+            } => {
+                self.pending = Some((*wall_unix_ms, *utc_offset_min));
+                self.anchor = None;
+            }
             Event::Context { bundle_id, .. } => self.app.clone_from(bundle_id),
             Event::WordCommit { word_id, mode, .. } => {
                 let Some(date) = self.date_at(rec.t) else {
@@ -314,6 +327,20 @@ mod tests {
             (0.0, ctx("a")),
             (0.5, commit(0, Lang::Vi)),
             (2.0, commit(1, Lang::En)),
+        ]);
+        assert_eq!(day(&s, "2026-11-09")["total"]["vi"], 1);
+        assert_eq!(day(&s, "2026-11-10")["total"]["en"], 1);
+    }
+
+    #[test]
+    fn anchors_on_first_record_after_session_start_not_its_t() {
+        // session_start is logged at t = 0; later records carry uptime.
+        // 2026-11-09T10:00:00Z; +14h reaches local midnight at offset 0.
+        let s = feed(vec![
+            (0.0, start(1_794_218_400_000, 0)),
+            (500_000.0, ctx("a")),
+            (500_001.0, commit(0, Lang::Vi)),
+            (500_000.0 + 14.0 * 3600.0 + 1.0, commit(1, Lang::En)),
         ]);
         assert_eq!(day(&s, "2026-11-09")["total"]["vi"], 1);
         assert_eq!(day(&s, "2026-11-10")["total"]["en"], 1);

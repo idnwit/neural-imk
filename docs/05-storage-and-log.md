@@ -84,7 +84,7 @@ The diagnostic log is `<Library>/Logs/<bundle id>.log`, also sent to `os.Logger(
 Online learning writes `model/<kind>/latest` in the user layer; deleting it (`Engine::reset_model`) restores the bundled model.
 Per-model stats live in `hooks/model_stats/<kind>` (`StatsTracker` JSON, version 2). When that key is absent and the legacy `stats/<kind>` exists, the hook reads it once at start and writes it to the new key; `reset_model` deletes the legacy blob.
 
-The `usage` hook keeps one blob per local day, `hooks/usage/<YYYY-MM-DD>`: `{"version":1,"date":"2026-11-09","apps":{"<bundle id>":{"vi":n,"en":n,"corrected":n}},"total":{"vi":n,"en":n,"corrected":n}}`. It counts committed words by app and language, and corrections; no text is stored. The day comes from the session's `wall_unix_ms` plus `t` elapsed since `session_start`, shifted by `utc_offset_min`. `nimk_hook_summary(core, "usage")` returns today's blob.
+The `usage` hook keeps one blob per local day, `hooks/usage/<YYYY-MM-DD>`: `{"version":1,"date":"2026-11-09","apps":{"<bundle id>":{"vi":n,"en":n,"corrected":n}},"total":{"vi":n,"en":n,"corrected":n}}`. It counts committed words by app and language, and corrections; no text is stored. The day comes from the session's `wall_unix_ms` plus the `t` elapsed since the session's first event after `session_start` (`session_start` itself is logged at `t = 0`, so the uptime clock is anchored on the next record), shifted by `utc_offset_min`. Dates follow the uptime clock, so they can drift if the Mac sleeps during a long session. `nimk_hook_summary(core, "usage")` returns today's blob.
 
 ## Event schema
 
