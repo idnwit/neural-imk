@@ -25,6 +25,11 @@ BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 # Marketing version: the workspace version in the root Cargo.toml (bumped by
 # release-plz), so the app, the IME and the release tag always agree.
 VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+# Commit shown in the IME menu ("Bản build"); "+dirty" marks local changes.
+GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git diff --quiet HEAD 2>/dev/null; then
+  GIT_COMMIT="$GIT_COMMIT+dirty"
+fi
 if [[ -z "$VERSION" ]]; then
   echo "error: no workspace version in Cargo.toml" >&2
   exit 1
@@ -95,6 +100,7 @@ cp crates/nimk-engine/config/default.toml "$IME_APP/Contents/Resources/default-c
 cp "$SRC/Info.plist" "$IME_APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$IME_APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$IME_APP/Contents/Info.plist"
+plutil -replace NIMKGitCommit -string "$GIT_COMMIT" "$IME_APP/Contents/Info.plist"
 plutil -lint "$IME_APP/Contents/Info.plist" >/dev/null
 
 echo "==> icon"
@@ -130,6 +136,7 @@ fi
 cp "$APP_SRC/Info.plist" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace NIMKGitCommit -string "$GIT_COMMIT" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 echo "==> app icon"
@@ -159,4 +166,4 @@ sign "$APP/Contents/Library/InputMethods/NeuralIMK.app"
 sign "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
-echo "built $APP (version $VERSION, build $BUILD_NUMBER)"
+echo "built $APP (version $VERSION, build $BUILD_NUMBER, $GIT_COMMIT)"
