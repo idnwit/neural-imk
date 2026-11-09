@@ -1,17 +1,15 @@
 //! The model stage: scores the observation and picks the action, with the
 //! display hysteresis, the manual-switch lock and the commit-step rule.
 
-use std::sync::Arc;
-
 use nimk_types::{Action, EditAction, Lang, Observation, Transform};
 
 use crate::{ImeModel, decide};
 
-/// Input of [`ModelTransform`].
-#[derive(Debug, Clone)]
-pub struct ModelInput {
+/// Input of [`ModelTransform`]; borrows the observation so the key path never copies it.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelInput<'a> {
     /// What the model sees.
-    pub obs: Observation,
+    pub obs: &'a Observation,
     /// Rendering shown before this key (or the sticky mode for a prior).
     pub base: Lang,
     /// A manual switch locked the rendering for this word.
@@ -50,26 +48,26 @@ pub fn hysteresis(base: Lang, p: f32, margin: f32) -> (Option<f32>, Lang) {
     (Some(p), chosen)
 }
 
-/// The model stage around one read-only snapshot.
-#[derive(Clone)]
-pub struct ModelTransform {
-    model: Arc<dyn ImeModel>,
+/// The model stage around one read-only snapshot (borrowed: no allocation).
+#[derive(Clone, Copy)]
+pub struct ModelTransform<'a> {
+    model: &'a dyn ImeModel,
 }
 
-impl ModelTransform {
+impl<'a> ModelTransform<'a> {
     /// Wraps a model snapshot.
     #[must_use]
-    pub fn new(model: Arc<dyn ImeModel>) -> Self {
+    pub fn new(model: &'a dyn ImeModel) -> Self {
         Self { model }
     }
 }
 
-impl Transform for ModelTransform {
-    type Input = ModelInput;
+impl<'a> Transform for ModelTransform<'a> {
+    type Input = ModelInput<'a>;
     type Output = ModelOutput;
 
-    fn apply(&self, input: &ModelInput) -> ModelOutput {
-        let scores = self.model.score(&input.obs);
+    fn apply(&self, input: &ModelInput<'a>) -> ModelOutput {
+        let scores = self.model.score(input.obs);
         let (p, held) = hysteresis(input.base, scores.p_vi, input.margin);
         if input.prior {
             return ModelOutput {

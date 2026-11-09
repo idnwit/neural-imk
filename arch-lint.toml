@@ -161,7 +161,7 @@ message = "Keystroke path: no I/O, locks or threads outside trainer/logger."
 [[restrict-use]]
 name = "engine-uses-transforms"
 scope = "engine"
-deny = ["nimk_telex::transform", "nimk_policy::decide"]
+deny = ["nimk_telex::transform", "nimk_telex::transform::**", "nimk_policy::decide", "nimk_policy::decide::**"]
 message = "The engine reaches Telex and the model only through TelexTransform / ModelTransform."
 
 # Engine modules are independent; only engine.rs wires them. `[[independent]]`

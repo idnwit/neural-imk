@@ -1,8 +1,6 @@
 //! Per-key flow of [`Engine`]: observation, model call, mechanical
 //! application of the action, commits, labels and trainer outputs.
 
-use std::sync::Arc;
-
 use nimk_policy::{ModelInput, ModelKind, ModelTransform};
 use nimk_types::{
     Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
@@ -284,8 +282,8 @@ impl Engine {
                 None,
             ),
             None => {
-                let out = ModelTransform::new(Arc::clone(&self.model)).apply(&ModelInput {
-                    obs: obs.clone(),
+                let out = ModelTransform::new(&*self.model).apply(&ModelInput {
+                    obs: &obs,
                     base: self.shown,
                     locked: self.locked,
                     margin: self.live.switch_margin,
@@ -431,8 +429,8 @@ impl Engine {
     pub(super) fn decide_prior(&mut self, focus_id: u64, t: f64, out: &mut EngineOutput) {
         self.shown = self.mode;
         let obs = self.observation(None, ActionMask::default(), t);
-        let scored = ModelTransform::new(Arc::clone(&self.model)).apply(&ModelInput {
-            obs: obs.clone(),
+        let scored = ModelTransform::new(&*self.model).apply(&ModelInput {
+            obs: &obs,
             base: self.mode,
             locked: false,
             margin: self.live.switch_margin,
