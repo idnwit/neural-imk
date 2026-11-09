@@ -1,6 +1,6 @@
 # Coding standard
 
-> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`, `scripts/check-commit-msg.sh`
 
 `make check` (fmt, clippy, test, arch-lint) must pass before every commit.
 Tools enforce every rule below except those marked as conventions.
@@ -102,6 +102,34 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | Files only via `Storage` | `engine-not-up`, `leaf-policy`, `ffi-thin` |
 | API, event schema or default config changes update `docs/` in the same commit | Review |
 | An incompatible schema change bumps `SCHEMA_VERSION` | Review |
+
+## Commit messages
+
+Every commit subject is a [Conventional Commit](https://www.conventionalcommits.org/). release-plz reads the subjects to write `CHANGELOG.md` and to pick the next version ([07](07-build-and-install.md#automated-releases-release-plz--github-actions)).
+
+```text
+<type>(<scope>)!: <summary>
+
+feat(hook): add usage statistics per app
+fix(app): keep config.toml when it cannot be read
+docs: describe the release flow
+```
+
+| Part | Rule |
+| --- | --- |
+| `type` | `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert` |
+| `scope` | Optional, lowercase: a crate without the `nimk-` prefix (`engine`, `hook`, `ffi`, `policy`), or `app`, `ime`, `ci`, `release` |
+| `!` | Breaking change (also add a `BREAKING CHANGE:` footer) |
+| Version bump | `feat` bumps the minor version, `fix` and the others the patch, `!` the major (minor while below 1.0) |
+
+Git's own subjects (`Merge ...`, `Revert "..."`, `fixup!`, `squash!`) are accepted.
+
+| Check | Where |
+| --- | --- |
+| `.githooks/commit-msg` | Local; install once with `make hooks` |
+| `.github/workflows/commits.yml` | Every pull request: all its commits and its title (the squash-merge subject) |
+
+Both run `scripts/check-commit-msg.sh`.
 
 ## Tests
 

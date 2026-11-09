@@ -1,4 +1,4 @@
-.PHONY: swift-test check fmt lint test arch header models app install dmg
+.PHONY: swift-test check fmt lint test arch header models app install dmg hooks
 
 check: fmt lint test arch
 
@@ -60,3 +60,7 @@ install: app
 
 dmg:
 	./scripts/package-dmg.sh
+
+# Git hooks in .githooks/ (commit-msg: Conventional Commits).
+hooks:
+	git config core.hooksPath .githooks

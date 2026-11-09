@@ -20,6 +20,7 @@ There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the
 | `models` | Pretrain both bundled models | See below |
 | `app` | `scripts/build-app.sh` | Builds `build/NeuralIMK.app` (companion app with the IME nested) |
 | `dmg` | `scripts/package-dmg.sh` | Universal (arm64 + x86_64) `build/NeuralIMK-<version>.dmg`; see Release |
+| `hooks` | `git config core.hooksPath .githooks` | Installs the `commit-msg` hook (Conventional Commits, see [08](08-coding-standard.md#commit-messages)) |
 | `install` | `app`, then `scripts/install.sh` | Copies the nested IME into `~/Library/Input Methods/`; `INSTALL_APP=1` also copies the app to `/Applications` |
 
 ## Build pipeline
