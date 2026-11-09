@@ -18,7 +18,7 @@ use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use nimk_hook::{EventLogHook, Hook, ModelStatsHook};
+use nimk_hook::{EventLogHook, Hook, ModelStatsHook, UsageHook};
 use nimk_policy::{ImeLearner, ImeModel, ModelKind, build_action};
 use nimk_storage::{EventSink, Storage};
 use nimk_types::{
@@ -351,6 +351,7 @@ impl Engine {
         let hooks: Vec<Box<dyn Hook>> = vec![
             Box::new(EventLogHook::new(sink)),
             Box::new(ModelStatsHook::new()),
+            Box::new(UsageHook::new()),
         ];
         let hooks = HookBus::new(session.id.clone(), Arc::clone(&storage), hooks, background);
 

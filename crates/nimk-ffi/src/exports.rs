@@ -4,7 +4,7 @@
 //! `catch_unwind`; on any failure the answer is "pass the key through".
 
 use std::any::Any;
-use std::ffi::c_char;
+use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
@@ -400,6 +400,36 @@ pub unsafe extern "C" fn nimk_policy_id(core: *mut NimkCore) -> *const c_char {
     }
 }
 
+/// Latest summary JSON of hook `name` ("model_stats", "usage"), or null.
+/// The string stays valid until the next `nimk_hook_summary` call on `core`.
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`; `name` null or a C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_hook_summary(
+    core: *mut NimkCore,
+    name: *const c_char,
+) -> *const c_char {
+    // SAFETY: null or live and exclusively used per contract.
+    let Some(core) = (unsafe { core.as_mut() }) else {
+        return ptr::null();
+    };
+    if name.is_null() {
+        return ptr::null();
+    }
+    // SAFETY: non-null NUL-terminated string per contract.
+    let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else {
+        return ptr::null();
+    };
+    match catch_unwind(AssertUnwindSafe(|| core.hook_summary(name))) {
+        Ok(p) => p,
+        Err(payload) => {
+            record_panic(core, "nimk_hook_summary", &*payload);
+            ptr::null()
+        }
+    }
+}
+
 /// Drains warnings as one newline-joined string, or null when there are
 /// none. Valid until the next `nimk_take_diagnostics` call on this core.
 ///
@@ -548,6 +578,7 @@ mod tests {
             assert_eq!(nimk_mode(ptr::null()), NIMK_MODE_EN);
             assert!(nimk_take_diagnostics(ptr::null_mut()).is_null());
             assert!(nimk_policy_id(ptr::null_mut()).is_null());
+            assert!(nimk_hook_summary(ptr::null_mut(), c"usage".as_ptr()).is_null());
             assert!(!nimk_set_model(ptr::null_mut(), 1, 0.0, ptr::null_mut()));
             assert_eq!(nimk_model(ptr::null()), NIMK_MODEL_LINEAR);
             assert_eq!(nimk_checkpoint_source(ptr::null(), 0), NIMK_CHECKPOINT_NONE);
@@ -621,6 +652,46 @@ mod tests {
             assert!(nimk_mode(core) <= 1);
             let _ = nimk_take_diagnostics(core);
             assert!(!nimk_policy_id(core).is_null());
+            assert!(nimk_shutdown(core));
+        }
+    }
+
+    #[test]
+    fn hook_summary_reports_usage_after_a_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = new_core(&dir);
+        let ctx = NimkCtx {
+            bundle_id: c"com.apple.TextEdit".as_ptr(),
+            field_id: 1,
+            caret_rel_x: 0.5,
+            caret_rel_y: 0.5,
+            timestamp: 1.0,
+        };
+        let mut out = NimkOut::pass_through();
+        // SAFETY: live core and pointers.
+        unsafe {
+            assert!(nimk_hook_summary(core, ptr::null()).is_null());
+            assert!(nimk_hook_summary(core, c"nope".as_ptr()).is_null());
+            nimk_context(core, &ctx, &mut out);
+            nimk_key(core, &key(c"a", 1.1), &mut out);
+            nimk_key(core, &key(c" ", 1.2), &mut out);
+            // Hooks may run on a worker thread; their summaries are picked up
+            // on later engine calls, so poll with a bounded wait.
+            let mut p = ptr::null();
+            for i in 0..200 {
+                nimk_commit_pending(core, 1.3 + f64::from(i) * 0.01, &mut out);
+                p = nimk_hook_summary(core, c"usage".as_ptr());
+                if !p.is_null() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!p.is_null());
+            let json = CStr::from_ptr(p).to_str().unwrap();
+            assert!(
+                json.starts_with('{') && json.contains("\"total\""),
+                "{json}"
+            );
             assert!(nimk_shutdown(core));
         }
     }

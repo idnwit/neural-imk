@@ -71,6 +71,7 @@ The data dir is `<Application Support>/<bundle id>`, taken from `FileManager` an
   blobs/
     model/<kind>/latest           # learned snapshot, <kind> = linear_action | gru_action
     hooks/model_stats/<kind>      # per-model stats, model_stats hook (see 04-engine-ml.md)
+    hooks/usage/<YYYY-MM-DD>      # per-day usage counts, usage hook
     stats/<kind>                  # legacy per-model stats; migrated once, then unused
     settings/model                # {"model":"linear_action"}, chosen in the menu
     settings/models               # {"online_training":{"gru_action":false}}, menu toggles
@@ -82,6 +83,8 @@ NeuralIMK.app/Contents/Resources/models/
 The diagnostic log is `<Library>/Logs/<bundle id>.log`, also sent to `os.Logger(subsystem: <bundle id>)`.
 Online learning writes `model/<kind>/latest` in the user layer; deleting it (`Engine::reset_model`) restores the bundled model.
 Per-model stats live in `hooks/model_stats/<kind>` (`StatsTracker` JSON, version 2). When that key is absent and the legacy `stats/<kind>` exists, the hook reads it once at start and writes it to the new key; `reset_model` deletes the legacy blob.
+
+The `usage` hook keeps one blob per local day, `hooks/usage/<YYYY-MM-DD>`: `{"version":1,"date":"2026-11-09","apps":{"<bundle id>":{"vi":n,"en":n,"corrected":n}},"total":{"vi":n,"en":n,"corrected":n}}`. It counts committed words by app and language, and corrections; no text is stored. The day comes from the session's `wall_unix_ms` plus `t` elapsed since `session_start`, shifted by `utc_offset_min`. `nimk_hook_summary(core, "usage")` returns today's blob.
 
 ## Event schema
 
@@ -99,7 +102,7 @@ Logs hold keystrokes, so they are local files only; docs and tools report aggreg
 
 | `type` | Own fields | Written when |
 | --- | --- | --- |
-| `session_start` | `wall_unix_ms`, `app_version`, `config_json`, `policy_id` | First record of a session |
+| `session_start` | `wall_unix_ms`, `app_version`, `config_json`, `policy_id`, `utc_offset_min` (minutes east of UTC at start, host clock; default 0) | First record of a session |
 | `context` | `bundle_id`, `field_id`, `caret` (`{x, y}` or `null`) | App or field change, first key of a word |
 | `key` | `key` (`KeyEvent`), `word_id` (`u64` or `null`) | Every key the IME receives |
 | `decision` | `target`, `at_key`, `policy_id`, `p_vi` (`null` for teacher-forced), `rule` (always `null`), `chosen`, `edit` | Each time the model is asked, plus the focus prior |
