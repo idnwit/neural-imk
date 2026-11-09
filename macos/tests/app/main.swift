@@ -70,4 +70,16 @@ check(tail.last, "line 19999 padding padding")
 try? FileManager.default.removeItem(at: tmpLog)
 check(StatsLogic.readLogTail(tmpLog), [])
 
+// SettingsLogic
+check(SettingsLogic.preset(fromConfig: ""), .doubleShift)
+check(SettingsLogic.preset(fromConfig: "ctrl_space = true # x\n"), .both)
+check(SettingsLogic.preset(fromConfig: "double_shift=false\nctrl_space = true\n"), .ctrlSpace)
+check(SettingsLogic.preset(fromConfig: "double_shift = false\n[t]\nctrl_space = true\n"), .off)
+check(SettingsLogic.readBool("a = 1\n", key: "a"), nil)
+check(SettingsLogic.pick(["a", "b", "c"], 4), "b")
+check(SettingsLogic.pick(["a", "b", "c"], -1), "c")
+check(SettingsLogic.pick([], 1), "")
+check(SettingsLogic.usesCtrlSpace(.both), true)
+check(SettingsLogic.usesCtrlSpace(.doubleShift), false)
+
 print("app ok")

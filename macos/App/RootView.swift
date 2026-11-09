@@ -52,8 +52,7 @@ struct RootView: View {
         switch model.section {
         case .overview: OverviewView()
         case .statistics: StatisticsView()
-        // Replaced by SettingsView (Task 12).
-        case .settings: PlaceholderView(title: Strings.settings)
+        case .settings: SettingsView()
         case .log: LogView()
         }
     }
