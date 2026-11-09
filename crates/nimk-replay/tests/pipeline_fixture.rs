@@ -109,6 +109,26 @@ fn run(kind: ModelKind) -> String {
     out
 }
 
+/// `out` with every `"seq":N,` removed. Unpinned records (`model_score`
+/// since Task 5) take sequence numbers between the pinned ones, so the
+/// pinned lines are compared byte for byte except for `seq`.
+fn without_seq(out: &str) -> String {
+    let mut rest = out;
+    let mut kept = String::with_capacity(out.len());
+    while let Some(i) = rest.find("\"seq\":") {
+        kept.push_str(&rest[..i]);
+        let tail = &rest[i + "\"seq\":".len()..];
+        let digits = tail.len() - tail.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let after = &tail[digits..];
+        rest = match after.strip_prefix(',') {
+            Some(r) => r,
+            None => after,
+        };
+    }
+    kept.push_str(rest);
+    kept
+}
+
 fn check(kind: ModelKind) {
     let path = format!(
         "{}/tests/fixtures/pipeline_{}.txt",
@@ -126,7 +146,7 @@ fn check(kind: ModelKind) {
     // arch-lint: allow(no-sync-io) reason="test reads and blesses fixture files"
     let want = std::fs::read_to_string(&path).expect("fixture missing; run with NIMK_BLESS=1");
     assert!(
-        got == want,
+        without_seq(&got) == without_seq(&want),
         "pipeline output changed for {}; diff {path} against a blessed run",
         kind.name()
     );

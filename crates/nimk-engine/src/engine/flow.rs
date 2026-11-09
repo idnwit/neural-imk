@@ -4,15 +4,37 @@
 use nimk_hook::HookMsg;
 use nimk_policy::{ModelInput, ModelKind, ModelTransform};
 use nimk_types::{
-    Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
-    RECENT_WINDOW, Target, Transform,
+    Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, ModelStats,
+    Observation, RECENT_WINDOW, StatCategory, Target, Transform,
 };
 
 use super::machine::{Class, Move, State, transition};
 use super::{Engine, EngineOutput, META_KEPT, Overlay, PendingWord, TelexFlags, WordMeta};
 use crate::composer::{Committed, boundary_of, printable_char};
 use crate::labeler::{FinalLabel, Step};
-use crate::trainer::{KeyObs, StatCategory, TrainerOut, WordInfo};
+use crate::trainer::{KeyObs, TrainerOut, WordInfo};
+
+/// Name of the hook publishing per-model counters.
+const MODEL_STATS: &str = "model_stats";
+
+/// Counters per [`ModelKind::index`] from the `model_stats` summary
+/// (`{"<kind>": ModelStats, ...}`); a missing or malformed entry reads as
+/// zero counters.
+fn parse_model_stats(json: &str) -> [ModelStats; 2] {
+    let mut stats = [ModelStats::default(); 2];
+    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(json)
+    else {
+        return stats;
+    };
+    for kind in ModelKind::ALL {
+        if let (Some(v), Some(slot)) = (map.remove(kind.name()), stats.get_mut(kind.index()))
+            && let Ok(s) = serde_json::from_value(v)
+        {
+            *slot = s;
+        }
+    }
+    stats
+}
 
 /// Most model calls kept per word for training (a pathological word stops
 /// recording instead of growing without bound).
@@ -596,42 +618,74 @@ impl Engine {
     }
 
     /// Picks up trainer outputs (word boundaries only, never mid-word).
+    /// Scores are logged before the hooks are drained, so in `Inline` mode
+    /// the `model_stats` summary is current when this returns.
     pub(super) fn drain_trainer(&mut self, t: f64) {
         let mut outs = Vec::new();
         self.trainer.drain(&mut outs);
         for o in outs {
-            match o {
-                TrainerOut::Update {
-                    policy_id,
-                    n_samples,
-                    loss,
-                } => {
-                    self.hooks.log(
-                        t,
-                        Event::ModelUpdate {
-                            policy_id,
-                            n_samples,
-                            loss,
-                        },
-                    );
-                }
-                TrainerOut::Snapshot(model) => {
+            match self.log_trainer_out(t, o) {
+                Some(TrainerOut::Snapshot(model)) => {
                     self.model_id = std::sync::Arc::from(model.id());
                     self.model = model;
                 }
-                TrainerOut::Stats(kind, stats) => self.stats[kind.index()] = stats,
-                TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
+                Some(TrainerOut::Diagnostic(d)) => self.diagnostics.push(d),
+                Some(TrainerOut::Update { .. } | TrainerOut::Score { .. }) | None => {}
             }
         }
         self.drain_hooks();
     }
 
-    /// Picks up hook messages: caches the latest summary per hook and
-    /// queues diagnostics.
+    /// Logs a trainer output that is a record (`Update` as `model_update`,
+    /// `Score` as `model_score`) at event time `t`; hands back the others.
+    pub(super) fn log_trainer_out(&mut self, t: f64, o: TrainerOut) -> Option<TrainerOut> {
+        let event = match o {
+            TrainerOut::Update {
+                policy_id,
+                n_samples,
+                loss,
+            } => Event::ModelUpdate {
+                policy_id,
+                n_samples,
+                loss,
+            },
+            TrainerOut::Score {
+                kind,
+                word_id,
+                category,
+                correct,
+                display_hits,
+                display_total,
+                flips,
+                amend,
+                served,
+            } => Event::ModelScore {
+                kind: kind.name().into(),
+                word_id,
+                category,
+                correct,
+                display_hits,
+                display_total,
+                flips,
+                amend,
+                served,
+            },
+            other @ (TrainerOut::Snapshot(_) | TrainerOut::Diagnostic(_)) => return Some(other),
+        };
+        self.hooks.log(t, event);
+        None
+    }
+
+    /// Picks up hook messages: caches the latest summary per hook (the
+    /// `model_stats` one also parsed into the counters) and queues
+    /// diagnostics.
     pub(super) fn drain_hooks(&mut self) {
         for m in self.hooks.drain() {
             match m {
                 HookMsg::Summary { hook, json } => {
+                    if hook == MODEL_STATS {
+                        self.stats = parse_model_stats(&json);
+                    }
                     self.summaries.insert(hook, json);
                 }
                 HookMsg::Diagnostic(d) => self.diagnostics.push(d),

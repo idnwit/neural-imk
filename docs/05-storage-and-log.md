@@ -70,7 +70,8 @@ The data dir is `<Application Support>/<bundle id>`, taken from `FileManager` an
     2026-11-08_<session>.jsonl    # one segment per day and session, one Record per line
   blobs/
     model/<kind>/latest           # learned snapshot, <kind> = linear_action | gru_action
-    stats/<kind>                  # per-model stats (see 04-engine-ml.md)
+    hooks/model_stats/<kind>      # per-model stats, model_stats hook (see 04-engine-ml.md)
+    stats/<kind>                  # legacy per-model stats; migrated once, then unused
     settings/model                # {"model":"linear_action"}, chosen in the menu
     settings/models               # {"online_training":{"gru_action":false}}, menu toggles
 
@@ -80,6 +81,7 @@ NeuralIMK.app/Contents/Resources/models/
 
 The diagnostic log is `<Library>/Logs/<bundle id>.log`, also sent to `os.Logger(subsystem: <bundle id>)`.
 Online learning writes `model/<kind>/latest` in the user layer; deleting it (`Engine::reset_model`) restores the bundled model.
+Per-model stats live in `hooks/model_stats/<kind>` (`StatsTracker` JSON, version 2). When that key is absent and the legacy `stats/<kind>` exists, the hook reads it once at start and writes it to the new key; `reset_model` deletes the legacy blob.
 
 ## Event schema
 
@@ -106,6 +108,8 @@ Logs hold keystrokes, so they are local files only; docs and tools report aggreg
 | `label` | `target`, `label`, `weight`, `source` (`implicit`, `correction`) | A final label |
 | `model_update` | `policy_id`, `n_samples`, `loss` | Trainer update |
 | `model_switch` | `from`, `to` (e.g. `linear_action@v3`) | The user changes model; replay ignores it |
+| `model_score` | `kind`, `word_id`, `category`, `correct`, `display_hits`, `display_total`, `flips`, `amend`, `served` | One per measured model per labelled word (`amend: true` re-scores a late-corrected word); counted by the `model_stats` hook; replay ignores it |
+| `model_reset` | `kind` | The user restores a model's bundled default; the `model_stats` hook zeroes its counters; replay ignores it |
 
 - `target` is `{"kind":"word","id":7}` or `{"kind":"focus","id":2}`.
 - `edit` is `append`, `pop`, `commit` or `pass` (`null` for the focus prior); `#[serde(default)]` keeps old logs readable.

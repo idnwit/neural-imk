@@ -1,8 +1,9 @@
 //! Runtime model selection: per-model checkpoints, statistics and the
 //! persisted choices.
 //!
-//! Each [`ModelKind`] keeps its own snapshot at `model/<kind>/latest` and
-//! its counters at `stats/<kind>`; the chosen kind is remembered in the
+//! Each [`ModelKind`] keeps its own snapshot at `model/<kind>/latest`; its
+//! counters belong to the `model_stats` hook (`hooks/model_stats/<kind>`,
+//! formerly `stats/<kind>`). The chosen kind is remembered in the
 //! blob [`SETTINGS_KEY`] and the per-model online-training toggles of the
 //! IME menu in [`MODELS_KEY`]; [`Engine::new`] reads both back.
 
@@ -14,7 +15,7 @@ use super::{
     Engine, EngineOutput, ModelStats, Started, TrainerOut, load_all, snapshot_key, start_trainer,
 };
 use crate::config::ModelsConfig;
-use crate::trainer::{Trainer, stats_key};
+use crate::trainer::Trainer;
 
 /// Blob holding the selected model, `{ "model": "linear_action" }`.
 const SETTINGS_KEY: &str = "settings/model";
@@ -146,10 +147,19 @@ impl Engine {
         let old = std::mem::replace(&mut self.trainer, scratch);
         self.finish_trainer(old, timestamp);
 
-        // Its counters restart with it.
-        if let Err(e) = self.storage.blobs().delete(&stats_key(kind)) {
+        // Its counters restart with it: the `model_stats` hook zeroes them
+        // on this record. The legacy blob goes too, so it is never migrated
+        // again.
+        self.hooks.log(
+            timestamp,
+            Event::ModelReset {
+                kind: kind.name().into(),
+            },
+        );
+        let legacy = format!("stats/{}", kind.name());
+        if let Err(e) = self.storage.blobs().delete(&legacy) {
             self.diagnostics
-                .push(format!("reset {kind:?}: cannot delete its stats ({e})"));
+                .push(format!("reset {kind:?}: cannot delete {legacy} ({e})"));
         }
         let key = snapshot_key(kind);
         let note = match self.storage.blobs().delete(&key) {
@@ -161,6 +171,11 @@ impl Engine {
 
         self.restart_trainer(kind);
         self.last_snapshot_t = Some(timestamp);
+        // Zero at once; the hook's summary (immediate when inline) agrees.
+        if let Some(s) = self.stats.get_mut(kind.index()) {
+            *s = ModelStats::default();
+        }
+        self.drain_hooks();
         out
     }
 
@@ -169,32 +184,29 @@ impl Engine {
     fn restart_trainer(&mut self, kind: ModelKind) {
         let learners = load_all(self.storage.as_ref(), self.cfg.seed, &mut self.diagnostics);
         self.cfg.policy = kind;
-        let started = start_trainer(
-            &self.cfg,
-            kind,
-            &self.storage,
-            learners,
-            &mut self.diagnostics,
-        );
+        let started = start_trainer(&self.cfg, kind, &self.storage, learners);
         let Started {
             trainer,
             model,
-            stats,
             loaded,
         } = started;
         self.trainer = trainer;
-        self.stats = stats;
         self.loaded = loaded;
         self.model_id = std::sync::Arc::from(model.id());
         self.model = model;
     }
 
-    /// Counters of `kind` as of the last drained trainer output (all zero
-    /// for a model the engine does not hold). `words_total` counts words
-    /// with a final label; see docs/04-engine-ml.md.
+    /// Counters of `kind` from the `model_stats` hook summary as of the
+    /// last word boundary (all zero for a model the engine does not hold).
+    /// `words_total` counts words with a final label; see
+    /// docs/04-engine-ml.md.
     #[must_use]
     pub fn model_stats(&self, kind: ModelKind) -> ModelStats {
-        self.stats[kind.index()]
+        let i = kind.index();
+        match (self.loaded.get(i), self.stats.get(i)) {
+            (Some(true), Some(s)) => *s,
+            _ => ModelStats::default(),
+        }
     }
 
     /// Whether online training of `kind` is on.
@@ -231,22 +243,9 @@ impl Engine {
         let mut outs = Vec::new();
         let saved = old.shutdown(&mut outs);
         for o in outs {
-            match o {
-                TrainerOut::Update {
-                    policy_id,
-                    n_samples,
-                    loss,
-                } => self.hooks.log(
-                    timestamp,
-                    Event::ModelUpdate {
-                        policy_id,
-                        n_samples,
-                        loss,
-                    },
-                ),
-                TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
-                // The old model is being replaced; counters were saved.
-                TrainerOut::Snapshot(_) | TrainerOut::Stats(..) => {}
+            // A final snapshot is dropped: the old model is being replaced.
+            if let Some(TrainerOut::Diagnostic(d)) = self.log_trainer_out(timestamp, o) {
+                self.diagnostics.push(d);
             }
         }
         if let Err(e) = saved {

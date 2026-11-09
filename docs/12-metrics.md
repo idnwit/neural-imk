@@ -34,7 +34,7 @@ What counts as not corrected: implicit finalization, i.e. `correction_words` mor
 | Flips | display changes between consecutive keystrokes of a word | `flips_*` |
 | Offline word accuracy | decision at commit == labelled language (replay: `correct_words`; synth: `render_correct`) | `nimk-replay`, `nimk-synth` |
 
-Online numbers are kept for the lifetime and for the last 500 words, per model, in the blob `stats/<kind>` (version 2; older blobs start empty). The shadow models are scored on the same words as the active one, so the three are directly comparable. Offline, the labelled language of the replay or synthetic data plays the correction, so the same names and semantics apply.
+Online numbers are kept for the lifetime and for the last 500 words, per model, in the blob `hooks/model_stats/<kind>` (version 2; older blobs start empty; formerly `stats/<kind>`, migrated once). The shadow models are scored on the same words as the active one, so the three are directly comparable. Offline, the labelled language of the replay or synthetic data plays the correction, so the same names and semantics apply.
 
 ## Excluded
 

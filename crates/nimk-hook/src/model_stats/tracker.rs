@@ -1,7 +1,8 @@
 //! Per-model quality statistics, counted per committed word.
 //!
-//! Every word with a language decision is recorded for the active model and
-//! for each shadow model whose online training is on. The ground truth is
+//! The trainer scores every word with a language decision for the active
+//! model and for each shadow model whose online training is on, and the
+//! engine logs each score as a `model_score` record. The ground truth is
 //! defined once ([`nimk_types::ground_truth`], `docs/12-metrics.md`): the
 //! committed rendering when the user did not correct it, the language the
 //! user switched to otherwise. Measures:
@@ -18,11 +19,12 @@
 //! correction of a word already counted amends its record
 //! ([`StatsTracker::amend`]); the word count never grows twice.
 //!
-//! Persisted as JSON in the blob `stats/<kind>` (versioned).
+//! Persisted as JSON in the blob `hooks/model_stats/<kind>` (versioned;
+//! formerly `stats/<kind>`, same format).
 
 use std::collections::VecDeque;
 
-use nimk_types::Lang;
+use nimk_types::{ModelStats, StatCategory};
 
 /// Words in the rolling window.
 pub(crate) const WINDOW: usize = 500;
@@ -32,80 +34,24 @@ pub(crate) const WINDOW: usize = 500;
 /// corrections amend instead of double counting; older blobs start empty.
 const VERSION: u32 = 2;
 
-pub use nimk_types::StatCategory;
-
-/// What the engine knows about one finalized word.
+/// One scored word as counted by [`StatsTracker::record`] (the counts the
+/// trainer derived from the word's keystrokes and its ground truth).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WordInfo {
-    /// Word id (matches the keystrokes' [`super::KeyObs::word_id`]).
+pub(crate) struct Scored {
+    /// Word id.
     pub(crate) word_id: u64,
-    /// Ground truth of the word.
-    pub(crate) label: Lang,
-    /// The rendering the model chose (committed) for the word.
-    pub(crate) committed: Lang,
-    /// `Some(previous truth)`: a late correction of a word already counted.
-    pub(crate) amends: Option<Lang>,
     /// Category of the app the word was typed in.
     pub(crate) category: StatCategory,
-}
-
-/// Display decisions of one word's keystrokes so far.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct WordAcc {
-    vi: u16,
-    en: u16,
-    flips: u16,
-    last: Option<Lang>,
-}
-
-impl WordAcc {
-    /// Adds one keystroke whose display decision was `lang`.
-    pub(crate) fn push(&mut self, lang: Lang) {
-        match lang {
-            Lang::Vi => self.vi = self.vi.saturating_add(1),
-            Lang::En => self.en = self.en.saturating_add(1),
-        }
-        if self.last.is_some_and(|prev| prev != lang) {
-            self.flips = self.flips.saturating_add(1);
-        }
-        self.last = Some(lang);
-    }
-
-    /// The latest display decision (at the commit step: the commit
-    /// rendering).
-    pub(crate) fn last(&self) -> Option<Lang> {
-        self.last
-    }
-
-    fn keys(&self) -> u16 {
-        self.vi.saturating_add(self.en)
-    }
-
-    fn matches(&self, label: Lang) -> u16 {
-        match label {
-            Lang::Vi => self.vi,
-            Lang::En => self.en,
-        }
-    }
-}
-
-/// One word as counted by [`StatsTracker::record`].
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WordResult {
-    pub(crate) word_id: u64,
-    /// The model's rendering of the word (active: committed; shadow: its own
-    /// decision at the commit step).
-    pub(crate) render: Lang,
-    pub(crate) category: StatCategory,
+    /// The model was the active one for the word.
     pub(crate) served: bool,
-    pub(crate) acc: WordAcc,
-    pub(crate) label: Lang,
-}
-
-impl WordResult {
-    fn corrected(&self) -> bool {
-        !nimk_types::word_correct(self.render, self.label)
-    }
+    /// The model's rendering equalled the ground truth.
+    pub(crate) correct: bool,
+    /// Keystrokes of the word with a display decision.
+    pub(crate) keys: u16,
+    /// Of those, keystrokes whose display decision equalled the truth.
+    pub(crate) matched: u16,
+    /// Display changes between consecutive keystrokes of the word.
+    pub(crate) flips: u16,
 }
 
 /// A recently counted word, kept in memory so a late correction can amend it.
@@ -113,7 +59,10 @@ impl WordResult {
 struct Recorded {
     /// Sequence number of the record (position in the rolling window).
     seq: u64,
-    word: WordResult,
+    word_id: u64,
+    category: StatCategory,
+    correct: bool,
+    matched: u16,
 }
 
 /// Recorded words kept for amendments (the labeler keeps as many).
@@ -123,61 +72,6 @@ const RECORDED_KEPT: usize = 8;
 /// display matched the label, flips.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Entry(bool, u16, u16, u16);
-
-/// Counters of one model (a snapshot; see the module docs for the meaning).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ModelStats {
-    /// Words counted over the lifetime of the model's stats.
-    pub words_total: u64,
-    /// Of those, corrected (or, for a shadow, would-have-been corrected).
-    pub corrected_total: u64,
-    /// Words in the rolling window (at most 500).
-    pub words_recent: u32,
-    /// Corrected words in the rolling window.
-    pub corrected_recent: u32,
-    /// Words (of `words_total`) typed while this model was the active one.
-    pub served_words_total: u64,
-    /// Lifetime corrected words per [`StatCategory::ALL`].
-    pub corrected_by_category: [u64; 5],
-    /// Keystrokes counted for display accuracy, lifetime.
-    pub keys_total: u64,
-    /// Of those, keystrokes whose display decision equalled the final label.
-    pub keys_match_total: u64,
-    /// Display changes between consecutive keystrokes of a word, lifetime.
-    pub flips_total: u64,
-    /// `keys_total` over the rolling window.
-    pub keys_recent: u32,
-    /// `keys_match_total` over the rolling window.
-    pub keys_match_recent: u32,
-    /// `flips_total` over the rolling window.
-    pub flips_recent: u32,
-}
-
-impl ModelStats {
-    /// Word accuracy over the lifetime: `1 - corrected / words` (1 when
-    /// nothing is counted). Same definition as the offline reports.
-    #[must_use]
-    pub fn word_accuracy_total(&self) -> f64 {
-        accuracy(self.words_total, self.corrected_total)
-    }
-
-    /// Word accuracy over the rolling window.
-    #[must_use]
-    pub fn word_accuracy_recent(&self) -> f64 {
-        accuracy(
-            u64::from(self.words_recent),
-            u64::from(self.corrected_recent),
-        )
-    }
-}
-
-fn accuracy(words: u64, corrected: u64) -> f64 {
-    if words == 0 {
-        1.0
-    } else {
-        1.0 - corrected as f64 / words as f64
-    }
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Saved {
@@ -269,10 +163,8 @@ impl StatsTracker {
     }
 
     /// Counts one word.
-    pub(crate) fn record(&mut self, w: WordResult) {
-        let keys = w.acc.keys();
-        let matched = w.acc.matches(w.label);
-        let corrected = w.corrected();
+    pub(crate) fn record(&mut self, w: Scored) {
+        let corrected = !w.correct;
         let t = &mut self.totals;
         t.words_total = t.words_total.saturating_add(1);
         if w.served {
@@ -284,50 +176,49 @@ impl StatsTracker {
                 *n = n.saturating_add(1);
             }
         }
-        t.keys_total = t.keys_total.saturating_add(u64::from(keys));
-        t.keys_match_total = t.keys_match_total.saturating_add(u64::from(matched));
-        t.flips_total = t.flips_total.saturating_add(u64::from(w.acc.flips));
+        t.keys_total = t.keys_total.saturating_add(u64::from(w.keys));
+        t.keys_match_total = t.keys_match_total.saturating_add(u64::from(w.matched));
+        t.flips_total = t.flips_total.saturating_add(u64::from(w.flips));
         if self.recent.len() >= WINDOW {
             self.recent.pop_front();
         }
         self.recent
-            .push_back(Entry(corrected, keys, matched, w.acc.flips));
+            .push_back(Entry(corrected, w.keys, w.matched, w.flips));
         if self.recorded.len() >= RECORDED_KEPT {
             self.recorded.pop_front();
         }
         self.recorded.push_back(Recorded {
             seq: self.next_seq,
-            word: w,
+            word_id: w.word_id,
+            category: w.category,
+            correct: w.correct,
+            matched: w.matched,
         });
         self.next_seq += 1;
         self.refresh_recent();
         self.dirty = true;
     }
 
-    /// A late correction: the truth of the already counted word `word_id`
-    /// is now `label`. Re-evaluates the word against it, adjusting the
-    /// lifetime counters and its rolling-window entry if it is still there.
-    /// The word count does not change; an unknown word (never counted by
-    /// this model, or no longer remembered) is ignored.
-    pub(crate) fn amend(&mut self, word_id: u64, label: Lang) {
+    /// A late correction: the already counted word `word_id` is re-scored
+    /// against its new truth as `correct` with `matched` matching
+    /// keystrokes. Swaps the old values for the new ones in the lifetime
+    /// counters and in its rolling-window entry if it is still there. The
+    /// word count does not change; an unknown word (never counted by this
+    /// model, or no longer remembered) is ignored.
+    pub(crate) fn amend(&mut self, word_id: u64, correct: bool, matched: u16) {
         let Some(rec) = self
             .recorded
             .iter_mut()
             .rev()
-            .find(|r| r.word.word_id == word_id)
+            .find(|r| r.word_id == word_id)
         else {
             return;
         };
-        let old = rec.word;
-        if old.label == label {
-            return;
-        }
-        let mut new = old;
-        new.label = label;
-        rec.word = new;
-        let seq = rec.seq;
-        let (old_matched, new_matched) = (old.acc.matches(old.label), new.acc.matches(label));
-        let (old_c, new_c) = (old.corrected(), new.corrected());
+        let old = *rec;
+        rec.correct = correct;
+        rec.matched = matched;
+        let (old_matched, new_matched) = (old.matched, matched);
+        let (old_c, new_c) = (!old.correct, !correct);
         let t = &mut self.totals;
         t.keys_match_total = t
             .keys_match_total
@@ -348,7 +239,7 @@ impl StatsTracker {
             }
         }
         // Window position: this session's records are its tail.
-        let pos = i128::from(seq) + self.recent.len() as i128 - i128::from(self.next_seq);
+        let pos = i128::from(old.seq) + self.recent.len() as i128 - i128::from(self.next_seq);
         if let Ok(pos) = usize::try_from(pos)
             && let Some(e) = self.recent.get_mut(pos)
         {
@@ -376,26 +267,27 @@ impl StatsTracker {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
+    #[allow(clippy::too_many_arguments)]
     fn word(
+        word_id: u64,
         corrected: bool,
-        cat: StatCategory,
+        category: StatCategory,
         served: bool,
-        langs: &[Lang],
-        label: Lang,
-    ) -> WordResult {
-        let mut acc = WordAcc::default();
-        for l in langs {
-            acc.push(*l);
-        }
-        WordResult {
-            word_id: 0,
-            render: if corrected { label.flip() } else { label },
-            category: cat,
+        keys: u16,
+        matched: u16,
+        flips: u16,
+    ) -> Scored {
+        Scored {
+            word_id,
+            category,
             served,
-            acc,
-            label,
+            correct: !corrected,
+            keys,
+            matched,
+            flips,
         }
     }
 
@@ -403,13 +295,8 @@ mod tests {
     fn window_rolls_and_totals_keep_counting() {
         let mut t = StatsTracker::default();
         for i in 0..(WINDOW + 10) {
-            t.record(word(
-                i < 10,
-                StatCategory::Ide,
-                i % 2 == 0,
-                &[Lang::Vi],
-                Lang::Vi,
-            ));
+            // One Vi keystroke, label Vi.
+            t.record(word(0, i < 10, StatCategory::Ide, i % 2 == 0, 1, 1, 0));
         }
         let s = t.summary();
         assert_eq!(s.words_total, (WINDOW + 10) as u64);
@@ -426,14 +313,9 @@ mod tests {
     fn word_accuracy_is_one_minus_corrected_share() {
         let mut t = StatsTracker::default();
         assert!((t.summary().word_accuracy_total() - 1.0).abs() < 1e-9);
-        t.record(word(true, StatCategory::Other, true, &[Lang::Vi], Lang::En));
-        t.record(word(
-            false,
-            StatCategory::Other,
-            true,
-            &[Lang::Vi],
-            Lang::Vi,
-        ));
+        // [Vi] labelled En, then [Vi] labelled Vi.
+        t.record(word(0, true, StatCategory::Other, true, 1, 0, 0));
+        t.record(word(0, false, StatCategory::Other, true, 1, 1, 0));
         let s = t.summary();
         assert!((s.word_accuracy_total() - 0.5).abs() < 1e-9);
         assert!((s.word_accuracy_recent() - 0.5).abs() < 1e-9);
@@ -442,13 +324,8 @@ mod tests {
     #[test]
     fn display_accuracy_and_flips() {
         let mut t = StatsTracker::default();
-        t.record(word(
-            false,
-            StatCategory::Other,
-            true,
-            &[Lang::Vi, Lang::En, Lang::En, Lang::Vi],
-            Lang::En,
-        ));
+        // [Vi, En, En, Vi] labelled En.
+        t.record(word(0, false, StatCategory::Other, true, 4, 2, 2));
         let s = t.summary();
         assert_eq!((s.keys_total, s.keys_match_total, s.flips_total), (4, 2, 2));
         assert_eq!(
@@ -460,14 +337,9 @@ mod tests {
     #[test]
     fn bytes_round_trip() {
         let mut t = StatsTracker::default();
-        t.record(word(
-            true,
-            StatCategory::Terminal,
-            true,
-            &[Lang::Vi, Lang::En],
-            Lang::En,
-        ));
-        t.record(word(false, StatCategory::Other, false, &[], Lang::Vi));
+        // [Vi, En] labelled En, then no keystroke.
+        t.record(word(0, true, StatCategory::Terminal, true, 2, 1, 1));
+        t.record(word(0, false, StatCategory::Other, false, 0, 0, 0));
         let back = StatsTracker::from_bytes(&t.to_bytes().unwrap()).unwrap();
         assert_eq!(back.summary(), t.summary());
         assert!(!back.is_dirty());
@@ -481,27 +353,27 @@ mod tests {
 mod amend_tests {
     use super::*;
 
-    fn rec(id: u64, render: Lang, label: Lang, langs: &[Lang]) -> WordResult {
-        let mut acc = WordAcc::default();
-        for l in langs {
-            acc.push(*l);
-        }
-        WordResult {
+    /// A word of category Ide, served, with `keys` keystrokes.
+    fn rec(id: u64, correct: bool, keys: u16, matched: u16) -> Scored {
+        Scored {
             word_id: id,
-            render,
             category: StatCategory::Ide,
             served: true,
-            acc,
-            label,
+            correct,
+            keys,
+            matched,
+            flips: 0,
         }
     }
 
     #[test]
     fn amend_flips_correct_to_corrected_without_growing_the_count() {
         let mut t = StatsTracker::default();
-        t.record(rec(1, Lang::Vi, Lang::Vi, &[Lang::Vi, Lang::Vi]));
-        t.record(rec(2, Lang::Vi, Lang::Vi, &[Lang::Vi]));
-        t.amend(1, Lang::En);
+        // Rendered Vi, labelled Vi, keystrokes [Vi, Vi]; then [Vi].
+        t.record(rec(1, true, 2, 2));
+        t.record(rec(2, true, 1, 1));
+        // The truth becomes En: wrong, no keystroke matches.
+        t.amend(1, false, 0);
         let s = t.summary();
         assert_eq!((s.words_total, s.corrected_total), (2, 1));
         assert_eq!((s.words_recent, s.corrected_recent), (2, 1));
@@ -509,8 +381,8 @@ mod amend_tests {
         assert_eq!((s.keys_total, s.keys_match_total), (3, 1));
         assert_eq!((s.keys_recent, s.keys_match_recent), (3, 1));
         // Back again, and an unknown word is ignored.
-        t.amend(1, Lang::Vi);
-        t.amend(99, Lang::En);
+        t.amend(1, true, 2);
+        t.amend(99, false, 0);
         let s = t.summary();
         assert_eq!(
             (s.words_total, s.corrected_total, s.corrected_recent),
@@ -523,16 +395,16 @@ mod amend_tests {
     fn amend_of_a_word_rolled_out_of_the_window_only_touches_totals() {
         let mut t = StatsTracker::default();
         for id in 0..(WINDOW as u64 + 3) {
-            t.record(rec(id, Lang::Vi, Lang::Vi, &[Lang::Vi]));
+            t.record(rec(id, true, 1, 1));
             // Only the last few records are amendable; amend the newest.
         }
         let last = WINDOW as u64 + 2;
-        t.amend(last, Lang::En);
+        t.amend(last, false, 0);
         let s = t.summary();
         assert_eq!((s.corrected_total, s.corrected_recent), (1, 1));
         assert_eq!(s.words_recent as usize, WINDOW);
         // A word no longer remembered is ignored.
-        t.amend(0, Lang::En);
+        t.amend(0, false, 0);
         assert_eq!(t.summary().corrected_total, 1);
     }
 }

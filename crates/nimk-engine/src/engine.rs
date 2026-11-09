@@ -18,20 +18,20 @@ use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use nimk_hook::{EventLogHook, Hook};
+use nimk_hook::{EventLogHook, Hook, ModelStatsHook};
 use nimk_policy::{ImeLearner, ImeModel, ModelKind, build_action};
 use nimk_storage::{EventSink, Storage};
-use nimk_types::{Action, AppContext, Event, Example, KeyEvent, LabelSource, Lang, Target};
+use nimk_types::{
+    Action, AppContext, Event, Example, KeyEvent, LabelSource, Lang, ModelStats, StatCategory,
+    Target,
+};
 
 use crate::composer::Composer;
 use crate::config::LiveParams;
 use crate::hookbus::{HookBus, NullSink};
 use crate::hotkey::{HotkeyDetector, HotkeyParams};
 use crate::labeler::{Labeler, LabelerParams, Step};
-use crate::trainer::{
-    Core, ModelStats, SaveTarget, StatCategory, StatsTracker, Trainer, TrainerOut, TrainerParams,
-    stats_key,
-};
+use crate::trainer::{Core, SaveTarget, Trainer, TrainerOut, TrainerParams};
 use crate::{EngineConfig, Threading};
 
 /// Why the overlay is shown.
@@ -123,36 +123,11 @@ fn load_all(
         .collect()
 }
 
-/// Reads the statistics blob of `kind`; absent is silent, unusable gives
-/// empty counters and a note.
-fn load_stats(
-    storage: &dyn Storage,
-    kind: ModelKind,
-    diagnostics: &mut Vec<String>,
-) -> StatsTracker {
-    let key = stats_key(kind);
-    match storage.blobs().get(&key) {
-        Ok(None) => StatsTracker::default(),
-        Ok(Some(bytes)) => match StatsTracker::from_bytes(&bytes) {
-            Ok(tracker) => tracker,
-            Err(e) => {
-                diagnostics.push(format!("{key} unusable ({e}); counting from zero"));
-                StatsTracker::default()
-            }
-        },
-        Err(e) => {
-            diagnostics.push(format!("cannot read {key} ({e}); counting from zero"));
-            StatsTracker::default()
-        }
-    }
-}
-
 /// A started trainer and what the engine caches from it.
 struct Started {
     trainer: Trainer,
     /// Snapshot of the active model.
     model: Arc<dyn ImeModel>,
-    stats: [ModelStats; 2],
     loaded: [bool; 2],
 }
 
@@ -164,7 +139,6 @@ fn start_trainer(
     active: ModelKind,
     storage: &Arc<dyn Storage>,
     learners: Vec<(ModelKind, Box<dyn ImeLearner>)>,
-    diagnostics: &mut Vec<String>,
 ) -> Started {
     let params = TrainerParams {
         correction_window: cfg.correction_window,
@@ -175,7 +149,6 @@ fn start_trainer(
         seed: cfg.seed,
     };
     let mut model = None;
-    let mut stats = [ModelStats::default(); 2];
     let mut loaded = [false; 2];
     let mut cores = Vec::with_capacity(learners.len());
     for (kind, learner) in learners {
@@ -187,9 +160,7 @@ fn start_trainer(
             key: snapshot_key(kind),
         };
         let core = Core::new(kind, learner, params, save)
-            .with_flags(cfg.models.online_training(kind), kind == active)
-            .with_stats(load_stats(storage.as_ref(), kind, diagnostics));
-        stats[kind.index()] = core.stats_summary();
+            .with_flags(cfg.models.online_training(kind), kind == active);
         loaded[kind.index()] = true;
         cores.push(core);
     }
@@ -200,7 +171,6 @@ fn start_trainer(
     Started {
         trainer: Trainer::new(cores, cfg.threading == Threading::Background),
         model,
-        stats,
         loaded,
     }
 }
@@ -271,8 +241,8 @@ pub struct Engine {
     model: Arc<dyn ImeModel>,
     model_id: Arc<str>,
     trainer: Trainer,
-    /// Cached counters per model kind (`ModelKind::index`), updated when
-    /// trainer outputs are drained.
+    /// Counters per model kind (`ModelKind::index`), parsed from the
+    /// `model_stats` hook summary when hook messages are drained.
     stats: [ModelStats; 2],
     /// Which kinds the trainer holds.
     loaded: [bool; 2],
@@ -378,15 +348,17 @@ impl Engine {
                 Box::new(NullSink)
             }
         };
-        let hooks: Vec<Box<dyn Hook>> = vec![Box::new(EventLogHook::new(sink))];
+        let hooks: Vec<Box<dyn Hook>> = vec![
+            Box::new(EventLogHook::new(sink)),
+            Box::new(ModelStatsHook::new()),
+        ];
         let hooks = HookBus::new(session.id.clone(), Arc::clone(&storage), hooks, background);
 
         let Started {
             trainer,
             model,
-            stats,
             loaded,
-        } = start_trainer(&cfg, cfg.policy, &storage, learners, &mut diagnostics);
+        } = start_trainer(&cfg, cfg.policy, &storage, learners);
         let model_id: Arc<str> = Arc::from(model.id());
         let labeler = Labeler::new(LabelerParams {
             implicit: cfg.hotkeys,
@@ -416,7 +388,7 @@ impl Engine {
             model,
             model_id,
             trainer,
-            stats,
+            stats: [ModelStats::default(); 2],
             loaded,
             word_meta: VecDeque::with_capacity(16),
             hooks,
@@ -701,23 +673,12 @@ impl Engine {
         self.labeler.flush(&mut finals);
         self.emit_labels(t, finals);
         let mut outs = Vec::new();
-        let saved = self.trainer.shutdown(&mut outs);
+        let trainer = std::mem::replace(&mut self.trainer, Trainer::new(Vec::new(), false));
+        let saved = trainer.shutdown(&mut outs);
         for o in outs {
-            if let TrainerOut::Update {
-                policy_id,
-                n_samples,
-                loss,
-            } = o
-            {
-                self.hooks.log(
-                    t,
-                    Event::ModelUpdate {
-                        policy_id,
-                        n_samples,
-                        loss,
-                    },
-                );
-            }
+            // Updates and scores are logged (the hooks still count them);
+            // a last snapshot or warning has no one left to reach.
+            drop(self.log_trainer_out(t, o));
         }
         let flushed = self.hooks.shutdown();
         saved?;

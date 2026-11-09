@@ -23,6 +23,6 @@ pub use event::{
 };
 pub use key::{KeyEvent, KeyKind, Modifiers, keycode};
 pub use lang::Lang;
-pub use stat::StatCategory;
+pub use stat::{ModelStats, StatCategory};
 pub use transform::Transform;
 pub use truth::{ground_truth, word_correct};

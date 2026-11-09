@@ -150,6 +150,12 @@ pub enum Event {
         #[serde(default)]
         served: bool,
     },
+    /// The user reset a model to its bundled default; its quality counters
+    /// restart from zero (additive; replay ignores it).
+    ModelReset {
+        /// Model kind name, e.g. `linear_action`.
+        kind: String,
+    },
 }
 
 /// Subject of a decision or label. Ids are per session, assigned by the
@@ -248,5 +254,11 @@ mod tests {
             json.contains(r#""type":"model_score""#) && json.contains(r#""category":"terminal""#)
         );
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ms);
+        let reset = Event::ModelReset {
+            kind: "linear_action".into(),
+        };
+        let json = serde_json::to_string(&reset).unwrap();
+        assert_eq!(json, r#"{"type":"model_reset","kind":"linear_action"}"#);
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), reset);
     }
 }
