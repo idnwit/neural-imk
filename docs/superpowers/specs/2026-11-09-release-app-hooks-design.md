@@ -110,10 +110,10 @@ New event (additive; `SCHEMA_VERSION` stays 1, `nimk-replay` ignores it):
 
 ```json
 {"type":"model_score","kind":"gru_action","word_id":7,"category":"terminal","correct":true,
- "display_hits":3,"display_total":4,"flips":1,"amend":false}
+ "display_hits":3,"display_total":4,"flips":1,"amend":false,"served":true}
 ```
 
-`amend: true` re-scores a word already counted (late correction), mirroring `StatsTracker::amend`.
+`served` is true when the model was the active one for that word. `amend: true` re-scores a word already counted (late correction), mirroring `StatsTracker::amend`.
 
 `usage` blob per local day:
 
