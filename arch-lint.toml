@@ -158,6 +158,12 @@ deny = ["std::fs::**", "std::net::**", "std::thread::**", "std::sync::Mutex", "s
         "std::sync::RwLock", "std::sync::RwLock::**", "std::sync::Condvar"]
 message = "Keystroke path: no I/O, locks or threads outside trainer/logger."
 
+[[restrict-use]]
+name = "engine-uses-transforms"
+scope = "engine"
+deny = ["nimk_telex::transform", "nimk_policy::decide"]
+message = "The engine reaches Telex and the model only through TelexTransform / ModelTransform."
+
 # Engine modules are independent; only engine.rs wires them. `[[independent]]`
 # / `[[deny-scope-dep]]` do not resolve crate:: paths here (arch-lint 0.11,
 # verified with a probe), so siblings are denied by path text instead.

@@ -67,6 +67,7 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | `pure-no-side-effects` | `pure` | `std::fs/io/net/thread/time/env`, `std::sync` (except `Arc`, `atomic`), `parking_lot` | No I/O, locks or clock in pure crates |
 | `engine-event-clock` | `engine` | `std::time`, `std::env` | Event timestamps are the only clock |
 | `hot-path-no-io` | `engine-no-threads` | `std::fs`, `std::net`, `std::thread`, `Mutex`, `RwLock`, `Condvar` | Key path has no I/O, locks or threads |
+| `engine-uses-transforms` | `engine` | `nimk_telex::transform`, `nimk_policy::decide` | Engine reaches Telex and the model only through `TelexTransform` / `ModelTransform` |
 | `eng-<module>-independent` (5 rules) | each engine module | `crate::` and `super::` paths of its siblings and `engine` | Only `engine.rs` wires modules together |
 | `no-c-exports-outside-ffi` | `non-ffi` | `#[no_mangle]`, `#[export_name]` | Only `nimk-ffi` exports C symbols |
 | `no-unwrap-expect` | repo | `unwrap`/`expect` outside tests | Backs up the clippy lints |

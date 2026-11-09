@@ -164,9 +164,50 @@ pub fn is_viable_prefix(word: &str) -> bool {
     syllable::is_viable(&bases)
 }
 
+/// Telex rendering of a raw buffer and its flags.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BufferState {
+    /// Vietnamese rendering.
+    pub vi: String,
+    /// Complete valid Vietnamese syllable.
+    pub valid_vi: bool,
+    /// Could still become a valid syllable.
+    pub viable_vi: bool,
+}
+
+/// The Telex stage: raw keys to Vietnamese rendering.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TelexTransform;
+
+impl nimk_types::Transform for TelexTransform {
+    type Input = str;
+    type Output = BufferState;
+    fn apply(&self, raw: &str) -> BufferState {
+        let tr = transform(raw);
+        BufferState {
+            vi: tr.text,
+            valid_vi: tr.valid_vi,
+            viable_vi: tr.viable_vi,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn telex_transform_matches_transform() {
+        use nimk_types::Transform;
+        for raw in ["vieejt", "has", "", "ddaay"] {
+            let tr = transform(raw);
+            let st = TelexTransform.apply(raw);
+            assert_eq!(
+                (st.vi.as_str(), st.valid_vi, st.viable_vi),
+                (tr.text.as_str(), tr.valid_vi, tr.viable_vi)
+            );
+        }
+    }
 
     #[track_caller]
     fn check(raw: &str, text: &str, has_telex: bool, valid_vi: bool) {

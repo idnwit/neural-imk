@@ -1,10 +1,12 @@
 //! Per-key flow of [`Engine`]: observation, model call, mechanical
 //! application of the action, commits, labels and trainer outputs.
 
-use nimk_policy::{ModelKind, decide};
+use std::sync::Arc;
+
+use nimk_policy::{ModelInput, ModelKind, ModelTransform};
 use nimk_types::{
     Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
-    RECENT_WINDOW, Target,
+    RECENT_WINDOW, Target, Transform,
 };
 
 use super::machine::{Class, Move, State, transition};
@@ -241,29 +243,13 @@ impl Engine {
         }
     }
 
-    /// Hysteresis: leave `base` only if `|p - 0.5| > margin`. Returns the
-    /// sanitized probability for the log (`None` if not finite) and the
-    /// chosen rendering.
-    fn hysteresis(&self, base: Lang, p: f32) -> (Option<f32>, Lang) {
-        if !p.is_finite() {
-            return (None, base);
-        }
-        let p = p.clamp(0.0, 1.0);
-        let chosen = if (p - 0.5).abs() > self.live.switch_margin {
-            Lang::from_p_vi(p)
-        } else {
-            base
-        };
-        (Some(p), chosen)
-    }
-
     /// Recomputes the Telex rendering and flags of the buffer.
     fn refresh_telex(&mut self) {
-        let tr = nimk_telex::transform(self.composer.raw());
-        self.composer.set_vi(&tr.text);
+        let st = nimk_telex::TelexTransform.apply(self.composer.raw());
+        self.composer.set_vi(&st.vi);
         self.telex = TelexFlags {
-            valid_vi: tr.valid_vi,
-            viable_vi: tr.viable_vi,
+            valid_vi: st.valid_vi,
+            viable_vi: st.viable_vi,
         };
     }
 
@@ -298,25 +284,15 @@ impl Engine {
                 None,
             ),
             None => {
-                let scores = self.model.score(&obs);
-                let edit = match structural {
-                    Some(edit) => edit,
-                    None => decide(&scores, mask).edit,
-                };
-                let base = self.shown;
-                let (p, held) = self.hysteresis(base, scores.p_vi);
-                let render = if self.locked {
-                    // A manual switch locks the rendering for the rest of the word.
-                    base
-                } else if edit == EditAction::Commit {
-                    // Hysteresis only steadies the display mid-word; the
-                    // committed text is the model's decision at the commit
-                    // step itself.
-                    p.map_or(base, Lang::from_p_vi)
-                } else {
-                    held
-                };
-                (Action { edit, render }, p)
+                let out = ModelTransform::new(Arc::clone(&self.model)).apply(&ModelInput {
+                    obs: obs.clone(),
+                    base: self.shown,
+                    locked: self.locked,
+                    margin: self.live.switch_margin,
+                    structural,
+                    prior: false,
+                });
+                (out.action, out.p_vi)
             }
         };
 
@@ -455,8 +431,15 @@ impl Engine {
     pub(super) fn decide_prior(&mut self, focus_id: u64, t: f64, out: &mut EngineOutput) {
         self.shown = self.mode;
         let obs = self.observation(None, ActionMask::default(), t);
-        let scores = self.model.score(&obs);
-        let (p_vi, render) = self.hysteresis(self.mode, scores.p_vi);
+        let scored = ModelTransform::new(Arc::clone(&self.model)).apply(&ModelInput {
+            obs: obs.clone(),
+            base: self.mode,
+            locked: false,
+            margin: self.live.switch_margin,
+            structural: None,
+            prior: true,
+        });
+        let (p_vi, render) = (scored.p_vi, scored.action.render);
         let target = Target::Focus(focus_id);
         self.logger.log(
             t,

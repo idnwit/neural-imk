@@ -14,10 +14,12 @@ pub mod encode;
 mod gru_action;
 mod gru_net;
 mod linear_action;
+mod transform;
 
 pub use action_model::{ImeLearner, ImeModel, ModelKind, build_action, decide};
 pub use gru_action::{GRU_LR, GRU_ONLINE_LR, GruAction};
 pub use linear_action::{ACTION_BUCKETS, LINEAR_LR, LINEAR_ONLINE_SCALE, LinearAction};
+pub use transform::{ModelInput, ModelOutput, ModelTransform, hysteresis};
 
 /// Policy errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
