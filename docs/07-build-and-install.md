@@ -1,6 +1,6 @@
 # Build and install
 
-> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Makefile`, `scripts/`, `macos/App`, `Cargo.toml`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `Makefile`, `scripts/`, `macos/App`, `Cargo.toml`, `release-plz.toml`, `.github/workflows/`, `crates/nimk-ffi`, `crates/nimk-synth/src/bin/nimk-synth.rs`
 
 There is no Xcode project. `cargo` builds `libnimk_ffi.a`, `cbindgen` writes the C header, and `swiftc` links the input method and the companion app.
 `build/NeuralIMK.app` is the companion app (`com.giangndm.NeuralIMK`, SwiftUI) with the input method nested inside it.
@@ -177,6 +177,30 @@ NIMK_NOTARY_PROFILE=<profile> make dmg
 `NIMK_SIGN_IDENTITY` signs the apps (hardened runtime, timestamp) and the DMG. `NIMK_NOTARY_PROFILE` submits the DMG to Apple and staples the ticket; without it, notarization is skipped.
 
 An ad hoc build is not notarized. Gatekeeper blocks it on other Macs until the user opens System Settings, Privacy & Security, and clicks Open Anyway.
+
+### Automated releases (release-plz + GitHub Actions)
+
+One version covers the app: `[workspace.package] version` in the root `Cargo.toml`. `build-app.sh` writes it to `CFBundleShortVersionString` of both bundles, and the release tag is `v<version>`.
+
+| Step | Who | What happens |
+| --- | --- | --- |
+| Push to `master` | `release-plz.yml`, job `release-pr` | Opens or updates the release PR: bumps the workspace version and updates `CHANGELOG.md` from the commits since the last `v*` tag |
+| Merge the release PR | `release-plz.yml`, job `release` | Tags `vX.Y.Z` and creates the GitHub release "NeuralIMK vX.Y.Z" |
+| Same run | `build-dmg.yml` (called) | Builds the universal DMG on `macos-15` and uploads it to that release |
+| Rebuild a tag | Actions, Build DMG, Run workflow | Same build for an existing tag (`--clobber` replaces the asset) |
+
+`release-plz.toml` runs in git-only mode: nothing is published to crates.io, and the last release is the latest `v*` tag. Only `nimk-ffi` is released; its changelog includes the commits of every crate. Commits that are not Conventional Commits (`feat:`, `fix:`) still land in the changelog and bump the patch version.
+
+Repository settings: Settings, Actions, General, Workflow permissions must allow "Allow GitHub Actions to create and approve pull requests", or `release-pr` fails.
+
+Signing secrets (optional; without them the DMG is ad hoc signed):
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERT_P12_BASE64` | Developer ID Application certificate exported as `.p12`, base64 |
+| `MACOS_CERT_PASSWORD` | Password of that `.p12` |
+| `MACOS_SIGN_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | Notarization (app-specific password); all three or none |
 
 ### Manual release checklist
 

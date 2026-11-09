@@ -1,0 +1,36 @@
+# release-plz: one version for the whole app (docs/07-build-and-install.md).
+#
+# Nothing is published to crates.io (git-only mode: the last release is the
+# latest `v*` tag). Every crate inherits `[workspace.package] version`, so
+# only `nimk-ffi` (the library linked into NeuralIMK.app) is released: its
+# bump rewrites the workspace version, its tag `vX.Y.Z` names the GitHub
+# release the DMG is attached to, and the root CHANGELOG.md collects the
+# commits of every crate.
+
+[workspace]
+git_only = true
+semver_check = false
+release = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "nimk-ffi"
+release = true
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_name = "NeuralIMK v{{ version }}"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = [
+  "nimk-types",
+  "nimk-storage",
+  "nimk-telex",
+  "nimk-policy",
+  "nimk-hook",
+  "nimk-engine",
+  "nimk-replay",
+  "nimk-synth",
+]
