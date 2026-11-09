@@ -26,6 +26,18 @@ These are expectations to confirm by hand, not measurements.
 | `NSTextView` and Cocoa apps | TextEdit, Notes, Pages, Messages, Xcode | Expected to work | Unverified |
 | Other native editors | Zed | Implements its own `NSTextInputClient` | Unverified |
 
+## Terminal key bindings bypass the IME
+
+A terminal key binding runs before the input method. If it is bound to a key that should commit the word (Return, Shift+Return, Tab), the IME never sees that key, and the word being typed stays as marked text.
+
+```
+Shift+Return --> WezTerm: matches config.keys?
+                   yes --> SendString to the pty     (IME never sees it)
+                   no  --> IME commits the word --> WezTerm encodes the key
+```
+
+Seen on 2026-11-09 with WezTerm. Its `config.keys` mapped `Shift+Enter` to `SendString '\x1b[13;2u'`, a binding often added for Claude Code and Codex. The real log had 0 Shift+Return keys from WezTerm. The fix was to delete the binding and keep `config.enable_kitty_keyboard = true`. WezTerm then sends `\x1b[13;2u` itself to apps that enable the kitty protocol, after the IME has committed the word. With that change, the real log shows Shift+Return in WezTerm committing the word (`boundary: "return"`).
+
 ## Manual test plan
 
 Run it on an installed build with pretrained models ([07](07-build-and-install.md)). Record results in the last table.
