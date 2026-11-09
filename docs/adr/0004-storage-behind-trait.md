@@ -1,22 +1,22 @@
-# 0004. Mọi dữ liệu bền đi qua trait `Storage`
+# 0004. All persistent data goes through the `Storage` trait
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08
+> **Status:** accepted · **Date:** 2026-11-08
 
-## Bối cảnh
+## Context
 
-Log ghi mọi phím người dùng gõ; PoC cố ý để plaintext, nhưng bản sau chắc chắn cần mã hoá.
-Replay và test cần chạy trên bộ nhớ, không chạm file thật.
+The log records every key the user types. The PoC stores it as plaintext on purpose, but later versions will need encryption.
+Replay and tests must run in memory without touching real files.
 
-## Quyết định
+## Decision
 
-- Event log, model snapshot, config và replay buffer đi qua `Storage` (`EventSink`, `EventSource`, `BlobStore`) trong `nimk-storage`.
-- `Storage` chỉ thấy `&[u8]`; serialize nằm ở lớp trên.
-- PoC có `PlainFsStorage` (file thường) và `MemStorage` (test, replay).
-- Không crate nào ngoài `nimk-storage` dùng `std::fs` (trừ `nimk-replay` khi ghi report); `arch-lint.toml` hiện chặn `std::fs` trong `nimk-types`, `nimk-telex`, `nimk-policy`, `nimk-engine` và `nimk-ffi`.
+- Event log, model snapshots, config and the replay buffer go through `Storage` (`EventSink`, `EventSource`, `BlobStore`) in `nimk-storage`.
+- `Storage` only sees `&[u8]`; serialization lives in the layer above.
+- The PoC ships `PlainFsStorage` (plain files) and `MemStorage` (tests, replay).
+- No crate outside `nimk-storage` uses `std::fs` (except `nimk-replay` when writing reports). `arch-lint.toml` enforces this.
 
-## Hệ quả
+## Consequences
 
-- Mã hoá hoặc nén là một decorator `EncryptedStorage<S: Storage>`, không sửa engine hay replay.
-- Mỗi record/blob là một đơn vị độc lập, thuận cho mã hoá từng phần.
-- Thêm một lớp `Box<dyn ...>`; log writer chạy nền nên chi phí này không chạm hot path.
-- Truy vấn log phải đọc tuần tự theo segment; không có index.
+- Encryption or compression becomes a decorator, `EncryptedStorage<S: Storage>`, with no change to the engine or replay.
+- Each record or blob is an independent unit, which suits per-part encryption.
+- One extra `Box<dyn ...>` layer; the log writer runs in the background, so the hot path is unaffected.
+- Log queries read segments sequentially; there is no index.

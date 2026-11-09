@@ -1,47 +1,47 @@
-# Tương thích app: marked text
+# App compatibility: marked text
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `macos/NeuralIMK/InputController.swift`, `crates/nimk-engine/src/engine/flow.rs`
+> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `macos/NeuralIMK/InputController.swift`, `crates/nimk-engine/src/engine/flow.rs`
 
-Sửa từ bằng nháy Shift hai lần không còn cần `replacementRange`: từ model kết thúc ở lại marked text và được lật tại chỗ ([ADR 0011](adr/0011-pending-word-commit.md)).
-Điều IME còn phụ thuộc vào app là `setMarkedText` và `insertText` thông thường, kể cả marked text kéo dài qua dấu cách và dấu câu.
-Chưa có mục nào dưới đây được thử trên máy thật.
+A double Shift tap flips the pending word in place, so it needs no `replacementRange` ([ADR 0011](adr/0011-pending-word-commit.md)).
+The IME depends on only two app behaviors: `setMarkedText` and plain `insertText`.
+Nothing below has been tested on a real app yet.
 
-## Điều IME cần từ app
+## What the IME needs from an app
 
-| Hành vi | Vì sao |
+| Behavior | Why |
 | --- | --- |
-| `setMarkedText` hiển thị marked text liên tục tới đúng 1 ký tự ranh giới sau từ | Từ pending gồm từ cộng một ký tự không phải chữ (ADR 0012) |
-| Phím Return, Tab, mũi tên tới app sau khi `insertText` commit | Engine commit pending rồi trả phím, nên gửi tin nhắn và di chuyển vẫn hoạt động |
-| `commitComposition` được gọi khi click chuột hoặc mất focus | Chốt từ pending; nếu app không gọi, `deactivateServer` cũng commit |
-| Hai client kích hoạt xen kẽ khi click (Electron) | `Debouncer` gộp việc gửi context trong 120 ms; phím tới trước thì gửi ngay |
+| `setMarkedText` keeps showing the marked text up to one boundary character after the word | A pending word is the word plus one non-letter character (ADR 0012) |
+| Return, Tab and arrow keys reach the app after the commit `insertText` | The engine commits the pending word, then passes the key on |
+| `commitComposition` runs on a mouse click or focus loss | It settles the pending word; `deactivateServer` also commits |
+| Two clients may activate back to back on a click (Electron) | A `Debouncer` merges context sends for 120 ms; a key arriving first sends at once |
 
-## Rủi ro theo loại app
+## Risk by app type
 
-Dự kiến, cần test tay trước khi tin; không có cột nào đã đo.
+These are expectations to confirm by hand, not measurements.
 
-| Loại | App | Rủi ro | Mức chắc chắn |
+| Type | Apps | Risk | Confidence |
 | --- | --- | --- | --- |
-| Editor Electron, trình duyệt Chromium | VS Code, Cursor, Chrome | Gửi mỗi `flagsChanged` hai lần (engine bỏ bản sao); marked text trong editor tuỳ biến có thể bị gạch chân hoặc nháy | Verified (log thật) cho `flagsChanged`; Unverified cho marked text |
-| Terminal | Ghostty, Terminal.app, iTerm2, WezTerm, Kitty, Alacritty, Warp | Hiển thị preedit kiểu terminal có thể khác; marked text kéo dài qua dấu cách cần xem | Unverified |
-| NSTextView và app Cocoa | TextEdit, Notes, Pages, Messages, Xcode | Dự kiến ổn | Unverified |
-| Editor native khác | Zed | Tự cài `NSTextInputClient`, chưa rõ | Unverified |
+| Electron editors, Chromium browsers | VS Code, Cursor, Chrome | Each `flagsChanged` arrives twice (the engine drops the copy); marked text in custom editors may flicker or be underlined | Verified for `flagsChanged` (real log); unverified for marked text |
+| Terminals | Ghostty, Terminal.app, iTerm2, WezTerm, Kitty, Alacritty, Warp | Preedit may render differently; marked text across spaces needs a check | Unverified |
+| `NSTextView` and Cocoa apps | TextEdit, Notes, Pages, Messages, Xcode | Expected to work | Unverified |
+| Other native editors | Zed | Implements its own `NSTextInputClient` | Unverified |
 
-## Kế hoạch test tay
+## Manual test plan
 
-Chạy trên bản đã cài, với model đã pretrain ([07](07-build-and-install.md)); ghi kết quả vào bảng cuối.
+Run it on an installed build with pretrained models ([07](07-build-and-install.md)). Record results in the last table.
 
-| # | Tình huống | Kỳ vọng |
+| # | Case | Expected |
 | --- | --- | --- |
-| 1 | `has ` rồi nháy Shift hai lần | Marked text đổi `has ` thành `há ` (hoặc ngược lại), chưa có gì chèn |
-| 2 | `has ` rồi gõ chữ | Chèn `has ` (hoặc `há `), chữ mới bắt đầu từ mới |
-| 3 | `has. ` rồi nháy Shift hai lần | `há. `, dấu câu giữ nguyên |
-| 4 | `has ` rồi Return | Chèn `has `, Return tới app (gửi tin nhắn, xuống dòng) |
-| 5 | `has ` rồi `@` hoặc chữ số | Chèn `has `, ký tự tới app |
-| 6 | `has ` rồi Backspace hai lần | Về marked text `has`, rồi Backspace xoá chữ |
-| 7 | `has ` rồi click chuột sang chỗ khác | Từ được chèn ở chỗ cũ |
-| 8 | Nháy Shift hai lần ngay sau khi click vào ô, chưa gõ gì | Đổi mode, overlay hiện ở con trỏ (hoặc chuột nếu app không trả caret) |
-| 9 | VS Code: nháy Shift hai lần | Hit đúng một lần dù sự kiện đến hai lần |
+| 1 | `has ` then double Shift | Marked text flips `has ` to `há ` (or back); nothing inserted yet |
+| 2 | `has ` then a letter | `has ` (or `há `) is inserted; the letter starts a new word |
+| 3 | `has. ` then double Shift | `há. `; punctuation unchanged |
+| 4 | `has ` then Return | `has ` inserted; Return reaches the app |
+| 5 | `has ` then `@` or a digit | `has ` inserted; the character reaches the app |
+| 6 | `has ` then Backspace twice | Back to marked `has`, then a letter is deleted |
+| 7 | `has ` then click elsewhere | The word is inserted at the old place |
+| 8 | Double Shift right after clicking into a field, nothing typed | Mode flips; overlay appears at the caret (or the mouse if the app gives no caret) |
+| 9 | VS Code: double Shift | Exactly one flip, even though the event arrives twice |
 
-| App | Bundle id | Kết quả đo | Ngày |
+| App | Bundle id | Result | Date |
 | --- | --- | --- | --- |
-| (chưa đo) | | | |
+| (none yet) | | | |

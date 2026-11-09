@@ -1,13 +1,13 @@
 # Storage, event log & replay
 
-> **Trạng thái:** stable · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-storage`, `crates/nimk-types/src/event.rs`, `crates/nimk-replay`, `crates/nimk-synth/src/log.rs`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `crates/nimk-storage`, `crates/nimk-types/src/event.rs`, `crates/nimk-replay`, `crates/nimk-synth/src/log.rs`
 
-Mọi dữ liệu bền (event log, model snapshot, config) đi qua trait `Storage` và chỉ thấy bytes.
-PoC dùng `PlainFsStorage`; mã hoá sau này là một decorator, không sửa code gọi ([ADR 0004](adr/0004-storage-behind-trait.md)).
+All durable data (event log, model snapshots, settings) goes through the `Storage` trait and is seen only as bytes.
+Encryption can later be added as a decorator without changing callers ([ADR 0004](adr/0004-storage-behind-trait.md)).
 
 ## Trait
 
-Serialize (serde JSON) nằm ở lớp trên (`nimk-engine::logger`); `nimk-storage` không phụ thuộc crate `nimk-*` nào, kể cả `nimk-types`.
+Serialization (serde JSON) lives in the layer above (`nimk-engine::logger`); `nimk-storage` depends on no `nimk-*` crate.
 
 ```rust
 pub struct SegmentId(pub String);
@@ -16,24 +16,17 @@ pub trait EventSink: Send {
     fn append(&mut self, record: &[u8]) -> io::Result<()>;
     fn flush(&mut self) -> io::Result<()>;
 }
-
-pub type RecordIter<'a> = Box<dyn Iterator<Item = io::Result<Vec<u8>>> + 'a>;
-
 pub trait EventSource {
     fn segments(&self) -> io::Result<Vec<SegmentId>>;
     fn read_segment(&self, id: &SegmentId) -> io::Result<RecordIter<'_>>;
 }
-
 pub trait BlobStore: Send + Sync {
     fn put(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
     fn get(&self, key: &str) -> io::Result<Option<Vec<u8>>>;
     fn list(&self, prefix: &str) -> io::Result<Vec<String>>;
     fn delete(&self, key: &str) -> io::Result<bool>;
-    fn origin(&self, key: &str) -> io::Result<Option<BlobOrigin>>; // mặc định: User nếu có
+    fn origin(&self, key: &str) -> io::Result<Option<BlobOrigin>>; // User | Default
 }
-
-pub enum BlobOrigin { User, Default }
-
 pub trait Storage: Send + Sync {
     fn event_sink(&self, session: &str) -> io::Result<Box<dyn EventSink>>;
     fn event_source(&self) -> io::Result<Box<dyn EventSource + '_>>;
@@ -41,117 +34,100 @@ pub trait Storage: Send + Sync {
 }
 ```
 
-| Hợp đồng | Nội dung |
+| Call | Contract |
 | --- | --- |
-| `event_sink(session)` | Mở writer cho một session; sink được nhúng `session` vào tên segment |
-| `SegmentId` | Sink tự đặt tên và xoay segment, ví dụ `2026-11-08_<session>`; thứ tự chuỗi = thứ tự thời gian |
-| `append` | Một record đã serialize, không có newline cuối |
-| `read_segment` | Trả record theo thứ tự append |
-| `put` | Atomic: reader thấy bản cũ hoặc bản mới, không bao giờ lẫn (tmp + rename) |
-| `get` | `Ok(None)` khi không có key |
-| `list` | Key bắt đầu bằng `prefix`, đã sắp xếp |
-| `delete` | `Ok(true)` nếu đã xoá, `Ok(false)` nếu không có; store chỉ đọc trả `Unsupported` |
-| `origin` | Tầng mà `get` sẽ đọc: `User` hay `Default` (bản đóng gói); `None` nếu không có |
-| Kiểm tra đầu vào | Chung cho mọi backend: `session` đổi ký tự lạ thành `_` (rỗng → lỗi); `SegmentId` phải là `[A-Za-z0-9_-]+`; record chứa `\n` → lỗi; blob key gồm các đoạn nối bằng `/`, mỗi đoạn không rỗng, không bắt đầu bằng `.`, không chứa `\` hay NUL. Vi phạm → `io::ErrorKind::InvalidInput` |
+| `event_sink(session)` | Writer for one session; the sink names and rotates segments, e.g. `2026-11-08_<session>` (string order = time order) |
+| `append` | One serialized record, no trailing newline |
+| `put` | Atomic (tmp + rename): readers see the old or the new blob |
+| `get` | `Ok(None)` if the key is missing |
+| `list` | Sorted keys starting with `prefix` |
+| `delete` | `Ok(true)` if deleted, `Ok(false)` if absent; read-only stores return `Unsupported` |
+| `origin` | Layer that `get` reads: `User` or `Default` (bundled) |
 
-## Implementation
+Validation is shared by all backends and fails with `InvalidInput`:
 
-| Kiểu | Dùng cho | Ghi chú |
+- `session` has odd characters replaced by `_`; an empty one is an error.
+- `SegmentId` must match `[A-Za-z0-9_-]+`.
+- A record must not contain `\n`.
+- A blob key is `/`-joined segments; none may be empty, start with `.`, or contain `\` or NUL.
+
+## Implementations
+
+| Type | Used for | Notes |
 | --- | --- | --- |
-| `PlainFsStorage::open(root)` | IME thật | Tạo `root/events` và `root/blobs` nếu chưa có |
-| `MemStorage::new()` | Unit test, replay | Clone dùng chung dữ liệu |
-| `ReadOnlyDirBlobs::open(dir)` | Model đóng gói trong app | `BlobStore` chỉ đọc trên thư mục có sẵn; `put`/`delete` → `Unsupported`; cùng luật blob key |
-| `LayeredStorage::new(user, defaults)` | IME thật | Sự kiện chỉ vào `user`; `get` đọc `user` rồi `defaults`; `put`/`delete` chỉ tác động `user`; `list` là hợp đã sắp xếp, bỏ trùng; `user_blobs()` cho tầng người dùng riêng |
-| `EncryptedStorage<S: Storage>` | Sau PoC | Decorator mã hoá từng record/blob rồi chuyển cho `S` |
+| `PlainFsStorage::open(root)` | The real IME | Creates `root/events` and `root/blobs` |
+| `MemStorage::new()` | Unit tests, replay | Clones share data |
+| `ReadOnlyDirBlobs::open(dir)` | Models bundled in the app | Read-only `BlobStore`; `put`/`delete` return `Unsupported` |
+| `LayeredStorage::new(user, defaults)` | The real IME | Events go to `user`; `get` reads `user` then `defaults`; writes touch only `user`; `list` is the sorted union |
+| `EncryptedStorage<S>` | Not implemented yet | Planned decorator that encrypts each record or blob |
 
-Data dir là `<Application Support>/<bundle id>`, do `FileManager.url(for: .applicationSupportDirectory, ...)` trả về rồi nối `Bundle.main.bundleIdentifier`; không đường dẫn nào được viết cứng.
-Layout của `PlainFsStorage` với root đó:
+The data dir is `<Application Support>/<bundle id>`, taken from `FileManager` and `Bundle.main.bundleIdentifier`; no path is hard-coded.
 
 ```text
 <Application Support>/<bundle id>/
+  config.toml                     # optional user override (see 11-config.md)
   events/
-    2026-11-08_<session>.jsonl   # one segment per day and session, one Record per line
-    2026-11-09_<session>.jsonl
+    2026-11-08_<session>.jsonl    # one segment per day and session, one Record per line
   blobs/
-    model/<kind>/latest     # learned snapshot, <kind> = linear_action | gru_action
-    settings/model          # {"model":"linear_action"}, model chọn trên GUI
-```
+    model/<kind>/latest           # learned snapshot, <kind> = linear_action | gru_action
+    stats/<kind>                  # per-model stats (see 04-engine-ml.md)
+    settings/model                # {"model":"linear_action"}, chosen in the menu
+    settings/models               # {"online_training":{"gru_action":false}}, menu toggles
 
-Model gốc nằm trong app, đọc qua `ReadOnlyDirBlobs`:
-
-```text
 NeuralIMK.app/Contents/Resources/models/
-  model/<kind>/latest        # pretrained on synthetic data (make models)
+  model/<kind>/latest             # pretrained on synthetic data (make models), read-only
 ```
 
-Log chẩn đoán là `<Library>/Logs/<bundle id>.log` (`FileManager` `.libraryDirectory`), đồng thời đi qua `os.Logger(subsystem: <bundle id>)`.
-`LayeredStorage` ghi đè lên key `model/<kind>/latest` ở tầng người dùng khi học online; xoá key đó (`Engine::reset_model`) trả về model gốc.
+The diagnostic log is `<Library>/Logs/<bundle id>.log`, also sent to `os.Logger(subsystem: <bundle id>)`.
+Online learning writes `model/<kind>/latest` in the user layer; deleting it (`Engine::reset_model`) restores the bundled model.
 
-Thêm mã hoá chỉ là bọc thêm một lớp; engine vẫn cầm `Arc<dyn Storage>`.
+## Event schema
 
-```text
-+-------------+   Arc<dyn Storage>   +-----------------------+   bytes   +----------------+
-| nimk-engine | -------------------> | EncryptedStorage<S>   | --------> | PlainFsStorage |
-+-------------+                      | encrypt / decrypt     |           | events/, blobs/|
-                                     +-----------------------+           +----------------+
-```
+Each log line is one JSON `Record` with common fields `v`, `seq`, `t`, `session`, `type` and a flat payload (`#[serde(flatten)]`).
+`SCHEMA_VERSION = 1`; an incompatible change must bump it and update this table.
+Logs hold keystrokes, so they are local files only; docs and tools report aggregates.
 
-Decorator thấy đúng một record hoặc một blob mỗi lần gọi, đủ để mã hoá độc lập từng đơn vị.
-
-## Schema sự kiện
-
-Mỗi dòng log là một `Record` JSON; trường chung `v`, `seq`, `t`, `session`, `type`, payload phẳng cạnh nhau (`#[serde(flatten)]`).
-`SCHEMA_VERSION = 1`; đổi không tương thích phải tăng số và cập nhật bảng này.
-
-| Trường chung | Kiểu | Nghĩa |
+| Field | Type | Meaning |
 | --- | --- | --- |
-| `v` | `u32` | Phiên bản schema |
-| `seq` | `u64` | Số thứ tự trong session, từ 0; sắp xếp record theo `(session, seq)` |
-| `t` | `f64` | Giây từ lúc boot, lấy từ event kích hoạt (`NSEvent.timestamp`); không duy nhất, reset khi reboot |
-| `session` | `String` | Id ngẫu nhiên của lần chạy process IME |
-| `type` | tag | Tên biến thể `Event`, `snake_case` |
+| `v` | `u32` | Schema version |
+| `seq` | `u64` | Sequence in the session, from 0; sort by `(session, seq)` |
+| `t` | `f64` | Seconds since boot from the triggering event (`NSEvent.timestamp`); not unique, resets on reboot |
+| `session` | `String` | Random id of one IME process run |
+| `type` | tag | `Event` variant name, `snake_case` |
 
-| `type` | Trường riêng | Ghi khi |
+| `type` | Own fields | Written when |
 | --- | --- | --- |
-| `session_start` | `wall_unix_ms`, `app_version`, `config_json` (`EngineConfig` dạng JSON), `policy_id` | Record đầu tiên của mỗi session |
-| `context` | `bundle_id`, `field_id`, `caret` (`{x, y}` hoặc `null`) | `activateServer` (sau debounce 120 ms), đổi app/ô nhập, phím đầu của từ |
-| `key` | `key` (`KeyEvent`), `word_id` (`u64` hoặc `null`) | Mỗi phím IME nhận |
-| `decision` | `target`, `at_key` (số phím của từ sau action, 0 cho prior), `policy_id`, `p_vi` (`null` khi `teach` hoặc giá trị không hữu hạn), `rule` (luôn `null` ở log mới; `invalid_vi`/`no_telex` chỉ có trong log cũ), `chosen`, `edit` | Mỗi lần model được hỏi: phím không phải hotkey mà có từ đang gõ hoặc là chữ cái, và prior lúc focus. Phím không phải chữ khi buffer rỗng, và ranh giới nối vào từ pending, không gọi model nên không có `decision` |
-| `manual_switch` | `scope` (`in_word`/`after_commit`/`before_typing`), `word_id`, `to` | Hotkey (double Shift hoặc Ctrl+Space) |
-| `word_commit` | `word_id`, `raw`, `vi`, `en`, `mode`, `boundary` (phím kết thúc từ) | Commit thật: khi từ pending được chèn vào app, không phải lúc model kết thúc từ; Backspace quay lại từ thì không ghi |
-| `label` | `target`, `label`, `weight`, `source` (`implicit`/`correction`) | Nhãn chốt; từ pending bị lật ghi `correction` ngay lúc commit thật; nhãn `correction` muộn hơn vẫn ghi đè nhãn ngầm đã chốt |
-| `model_update` | `policy_id`, `n_samples`, `loss` | Trainer cập nhật |
-| `model_switch` | `from`, `to` (policy id, ví dụ `linear_action@v3`) | Người dùng đổi model; replay bỏ qua record này |
+| `session_start` | `wall_unix_ms`, `app_version`, `config_json`, `policy_id` | First record of a session |
+| `context` | `bundle_id`, `field_id`, `caret` (`{x, y}` or `null`) | App or field change, first key of a word |
+| `key` | `key` (`KeyEvent`), `word_id` (`u64` or `null`) | Every key the IME receives |
+| `decision` | `target`, `at_key`, `policy_id`, `p_vi` (`null` for teacher-forced), `rule` (always `null`), `chosen`, `edit` | Each time the model is asked, plus the focus prior |
+| `manual_switch` | `scope` (`in_word`, `after_commit`, `before_typing`), `word_id`, `to` | Switch hotkey |
+| `word_commit` | `word_id`, `raw`, `vi`, `en`, `mode`, `boundary` | A word is really inserted into the app |
+| `label` | `target`, `label`, `weight`, `source` (`implicit`, `correction`) | A final label |
+| `model_update` | `policy_id`, `n_samples`, `loss` | Trainer update |
+| `model_switch` | `from`, `to` (e.g. `linear_action@v3`) | The user changes model; replay ignores it |
 
-`target` là `Target` tag `kind`/`id`: `{"kind":"word","id":7}` hoặc `{"kind":"focus","id":2}`.
-`edit` là `EditAction` dạng `snake_case` (`append`, `pop`, `commit`, `pass`); trường có `#[serde(default)]` nên log cũ không có nó vẫn đọc được, và prior lúc focus ghi `null`.
-Giá trị enum: `Lang` = `"en"`/`"vi"`; `KeyKind` = `"key_down"`/`"flags_changed"`; `Boundary` = `space`, `return`, `tab`, `punct`, `navigation`, `shortcut`, `external`; `mods` là số bit `NSEvent.ModifierFlags`.
+- `target` is `{"kind":"word","id":7}` or `{"kind":"focus","id":2}`.
+- `edit` is `append`, `pop`, `commit` or `pass` (`null` for the focus prior); `#[serde(default)]` keeps old logs readable.
+- `Lang` is `"en"` or `"vi"`. `Boundary` is `space`, `return`, `tab`, `punct`, `navigation`, `shortcut`, `external`. `mods` is the `NSEvent.ModifierFlags` bit set.
+- Keys that never reach the model (non-letter with empty buffer, a boundary joining a pending word) produce no `decision`.
 
-Ví dụ một từ `has` gõ trong VS Code (rút gọn, mỗi record một dòng):
+A shortened session fragment (placeholder values; one record per line):
 
 ```json
 {"v":1,"seq":0,"t":5120.0,"session":"4f1c9a","type":"session_start","wall_unix_ms":1794111700000,"app_version":"0.1.0","config_json":"{...}","policy_id":"gru_action@v1"}
-{"v":1,"seq":1,"t":5123.4,"session":"4f1c9a","type":"context","bundle_id":"com.microsoft.VSCode","field_id":91823,"caret":{"x":0.31,"y":0.62}}
 {"v":1,"seq":2,"t":5123.4,"session":"4f1c9a","type":"decision","target":{"kind":"focus","id":0},"at_key":0,"policy_id":"gru_action@v1","p_vi":0.41,"rule":null,"chosen":"en","edit":null}
-{"v":1,"seq":3,"t":5123.41,"session":"4f1c9a","type":"key","key":{"kind":"key_down","keycode":4,"chars":"h","mods":0,"timestamp":5123.41},"word_id":7}
 {"v":1,"seq":6,"t":5123.62,"session":"4f1c9a","type":"decision","target":{"kind":"word","id":7},"at_key":3,"policy_id":"gru_action@v1","p_vi":0.12,"rule":null,"chosen":"en","edit":"append"}
 {"v":1,"seq":8,"t":5123.7,"session":"4f1c9a","type":"word_commit","word_id":7,"raw":"has","vi":"há","en":"has","mode":"en","boundary":"space"}
 {"v":1,"seq":15,"t":5126.1,"session":"4f1c9a","type":"label","target":{"kind":"word","id":7},"label":"en","weight":0.3,"source":"implicit"}
 {"v":1,"seq":16,"t":5126.11,"session":"4f1c9a","type":"model_update","policy_id":"gru_action@v1","n_samples":3,"loss":0.13}
 ```
 
-Hotkey và một quyết định `Commit` (rendering tại bước commit):
-
-```json
-{"v":1,"seq":30,"t":5130.02,"session":"4f1c9a","type":"manual_switch","scope":"in_word","word_id":9,"to":"vi"}
-{"v":1,"seq":41,"t":5131.5,"session":"4f1c9a","type":"decision","target":{"kind":"word","id":10},"at_key":6,"policy_id":"gru_action@v1","p_vi":0.03,"rule":null,"chosen":"en","edit":"commit"}
-```
-
-Log đủ để dựng lại nguyên phiên gõ: replay dựng engine từ `session_start`, chỉ dùng `context` + `key` làm input và `label` làm đáp án; `decision.edit` của log gốc chỉ dùng để tính `edit_acc`.
+The log is enough to rebuild a session: replay builds the engine from `session_start`, feeds `context` and `key` as input, and uses `label` as the answer.
 
 ## Replay harness
 
-`nimk-replay` cho một hoặc nhiều action model quyết định lại trên log và xuất metric.
+`nimk-replay` re-decides a log with one or more action models and reports metrics.
 
 ```sh
 nimk-replay --data ~/Library/Application\ Support/NeuralIMK \
@@ -159,73 +135,62 @@ nimk-replay --data ~/Library/Application\ Support/NeuralIMK \
             --init /path/to/pretrained --report report.json
 ```
 
-| Cờ | Nội dung |
+| Flag | Meaning |
 | --- | --- |
-| `--data DIR` | Bắt buộc; root `PlainFsStorage` (chứa `events/`) |
-| `--model LIST` | Danh sách `linear_action`, `gru_action` (phẩy ngăn cách); mặc định cả hai |
-| `--from PREFIX` | Chỉ segment có id từ prefix này trở đi |
-| `--report FILE` | Ghi `report.json` |
-| `--seed N` | Ghi đè `EngineConfig::seed` của mọi session |
-| `--init DIR` | Nạp blob `model/<kind>/latest` của `DIR` (file `DIR/blobs/model/<kind>/latest`) làm model khởi đầu (ví dụ đầu ra của `nimk-synth pretrain`); thiếu thì model bắt đầu chưa train và báo cảnh báo |
-| `--frozen` | Không đưa nhãn vào engine, model không học online; chỉ dùng nhãn làm đáp án đo |
+| `--data DIR` | Required; `PlainFsStorage` root (holds `events/`) |
+| `--model LIST` | Comma list of `linear_action`, `gru_action`; default both |
+| `--from PREFIX` | Only segments with an id at or after this prefix |
+| `--report FILE` | Write `report.json` |
+| `--seed N` | Override `EngineConfig::seed` of every session |
+| `--init DIR` | Start from `DIR/blobs/model/<kind>/latest` (e.g. from `nimk-synth pretrain`); without it the model starts untrained, with a warning |
+| `--frozen` | Do not feed labels to the engine; labels are only the scoring truth |
 
-| Cơ chế | Nội dung |
+| Mechanism | Detail |
 | --- | --- |
-| Dựng engine | Mỗi session dựng lại từ `config_json` của `session_start` (lỗi parse → mặc định kèm cảnh báo), ghi đè `policy` theo `--model`, `hotkeys = false`, `Threading::Inline` |
-| Nạp event | `context` → `on_context`, `key` → `on_key`, `label` → `Engine::inject_label` đúng vị trí, `word_commit` có boundary `external` → `commit_pending` |
-| Nhãn | Record `label` trong log gốc là ground truth (nhãn cuối của mỗi target thắng) |
-| Restart | Một `MemStorage` cho mỗi model sống xuyên session + `Engine::new` mỗi session, nên nhịp snapshot giống production |
-| Prequential | Luôn như vậy: engine quyết định tại commit trước, rồi mới học nhãn; không có cờ `--online` |
-| Đọc log | Dòng hỏng hoặc không phải schema v1 bị bỏ qua và đếm; session theo thứ tự xuất hiện đầu tiên, record theo `seq` |
-| Output | Bảng trên stdout (một dòng `ALL` mỗi model, rồi một dòng mỗi bundle id) và `report.json` kèm metadata (50 cảnh báo đầu) |
+| Engine | Rebuilt per session from `config_json` (parse error: defaults plus warning); `policy` set by `--model`, `hotkeys = false`, `Threading::Inline` |
+| Input | `context` to `on_context`, `key` to `on_key`, `label` to `Engine::inject_label` at its position, `word_commit` with boundary `external` to `commit_pending` |
+| Ground truth | The logged `label` records (the last label per target wins) |
+| Restart | One `MemStorage` per model lives across sessions; a new `Engine::new` per session mimics production snapshots |
+| Prequential | Always: decide at commit first, then learn the label |
+| Bad lines | Corrupt or non-v1 lines are skipped and counted |
+| Output | stdout table (an `ALL` row per model, then one row per bundle id) and `report.json` with metadata (first 50 warnings) |
 
-`Engine::inject_label` cũng là cửa nạp nhãn cho log synthetic:
+### Synthetic logs
 
-```rust
-pub fn inject_label(&mut self, target: Target, label: Lang, weight: f32, source: LabelSource);
-```
+`nimk_synth::write_log` writes scripts as a normal event log so models can be benchmarked without real logs ([ADR 0006](adr/0006-synthetic-pretraining.md)).
 
-### Log synthetic
-
-`nimk_synth::write_log` ghi script synthetic thành event log thường để replay benchmark model khi chưa có log thật ([ADR 0006](adr/0006-synthetic-pretraining.md)).
-
-```rust
-pub fn write_log(scripts: &[Script], storage: &dyn Storage) -> io::Result<()>;
-```
-
-| Record | Nội dung |
+| Record | Content |
 | --- | --- |
-| `session_start` | Một mỗi script; `session` = `synth-<seed>-<n>`, `policy_id = "synthetic"`, config mặc định với `hotkeys = true` |
-| `context` | Một, `bundle_id = "synthetic"` |
-| `key` | Toàn bộ phím, gồm ranh giới; không có hotkey |
-| `label` | Một mỗi từ ngay sau phím ranh giới kết từ, `source = correction`, `weight = 1.0` |
+| `session_start` | One per script; `session = synth-<seed>-<n>`, `policy_id = "synthetic"`, default config with `hotkeys = true` |
+| `context` | One, `bundle_id = "synthetic"` |
+| `key` | All keys including boundaries; no hotkeys |
+| `label` | One per word, after the key that ends it, `source = correction`, `weight = 1.0` |
 
-Phím ranh giới kết từ N mang `word_id = Some(N)` như engine; các phím ranh giới sau đó không có `word_id`.
-`write_log` không ghi `decision`, nên `edit_acc` là `-` khi replay log synthetic: metric này cần log IME thật có `decision.edit`.
-Vì mọi từ là `correction`, replay trên log synthetic trả chi phí cửa sổ correction cho từng từ; log synthetic phải để ở storage riêng, trộn với log thật sẽ làm sai metric manual switch.
+- There are no `decision` records, so `edit_acc` is `-` on synthetic logs.
+- Every label is a `correction`, so replay pays the correction-window cost per word. Keep synthetic logs in their own storage; mixing them with real logs corrupts the manual-switch metric.
+- With `p_typo > 0` scripts contain Backspace and word ids drift from the engine. Use `p_typo > 0` only for `pretrain`, never for `write_log`.
 
-Mặc định `p_typo = 0`. Với `p_typo > 0`, script có Backspace và `write_log` lệch word id so với engine (walk của nó coi Backspace là phím kết từ), nên chỉ dùng `p_typo > 0` cho `pretrain` (qua `Script::targets`), không dùng cho `write_log`.
+## Metrics
 
-## Metric
+The main metric is manual switches per 1000 words; the others explain why it moves.
+Stdout columns: `model scope words labelled acc amb_acc auto_sw auto_prec manual/1k prior_acc edit_acc`.
 
-Metric chính là manual switch / 1000 từ; các metric khác giải thích vì sao nó lên hay xuống.
-Cột stdout: `model scope words labelled acc amb_acc auto_sw auto_prec manual/1k prior_acc edit_acc`.
-
-| Metric | Định nghĩa (`nimk-replay/src/{metrics,report}.rs`) | Mục tiêu |
+| Metric | Definition (`nimk-replay/src/{metrics,report}.rs`) | Goal |
 | --- | --- | --- |
-| `manual/1k` | `(labelled - correct) * 1000 / words`: mỗi từ sai sẽ cần một lần sửa tay | Chính, tiến về 0 |
-| `acc` | Từ commit có nhãn mà `mode` tại commit bằng nhãn, chia số từ có nhãn | Tham khảo |
-| `amb_acc` | Như `acc` nhưng chỉ từ mập mờ: bản Telex khác `raw` (`vi != raw`), tức là lựa chọn có ý nghĩa | Tham khảo, khó hơn `acc` |
-| `auto_sw` | Số quyết định replay làm đổi mode | Tham khảo |
-| `auto_prec` | Tỉ lệ `auto_sw` có nhãn mà `chosen` bằng nhãn | > 95% |
-| `prior_acc` | Tỉ lệ prior lúc focus (có nhãn) đúng | Tham khảo theo app |
-| `edit_acc` | Edit của quyết định replay bằng edit của log gốc cho cùng `(target, at_key)`; cặp lặp được ghép theo thứ tự; bỏ qua quyết định không có `edit` gốc | Tiến về 100% |
-| Latency p50/p99 | Thời gian `nimk_key` trong process thật; replay không đo | p99 < 2 ms |
+| `manual/1k` | `(labelled - correct) * 1000 / words`; each wrong word needs one manual fix | Main, toward 0 |
+| `acc` | Labelled committed words whose `mode` equals the label | Reference |
+| `amb_acc` | Like `acc`, only for ambiguous words (`vi != raw`) | Reference, harder |
+| `auto_sw` | Decisions that changed the mode | Reference |
+| `auto_prec` | Share of labelled `auto_sw` whose `chosen` equals the label | > 95% |
+| `prior_acc` | Share of labelled focus priors that were right | Per-app reference |
+| `edit_acc` | Replay edit equals the logged edit for the same `(target, at_key)` | Near 100% (edit is structural) |
+| Latency p50/p99 | `nimk_key` time in the real process; replay does not measure it | p99 < 2 ms |
 
-Một tỉ lệ có mẫu số 0 hiển thị `-`. `ambiguous` nghĩa là `raw != vi` (không còn xét `valid_vi`); điều này khác định nghĩa của `pretrain`, nơi từ mập mờ còn phải là âm tiết hợp lệ ([04](04-engine-ml.md)).
+A ratio with a zero denominator prints `-`.
+Here "ambiguous" is `raw != vi`; pretrain evaluation also requires `vi` to be a valid syllable ([04](04-engine-ml.md)).
 
-## Thiên lệch của replay
+## Replay bias
 
-Nhãn ngầm "không sửa = đúng" sinh ra dưới model cũ, nên replay chỉ là ước lượng.
-Model mới chọn khác ở từ không bị sửa sẽ bị tính sai dù người dùng có thể chấp nhận; kết luận cuối dựa trên metric dùng thật (M5).
-`--frozen` cho đường cơ sở "không học online" để tách phần đóng góp của online learning.
+The implicit label "not corrected means right" was produced under the old model, so replay is only an estimate.
+A new model that chooses differently on an uncorrected word is scored wrong even if the user might accept it.
+`--frozen` gives a no-online-learning baseline to isolate the effect of online learning.

@@ -1,125 +1,124 @@
 # Coding standard
 
-> **Trạng thái:** stable · **Cập nhật:** 2026-11-08 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`
 
-`make check` (fmt + clippy + test + arch-lint) phải xanh trước mỗi commit.
-Mọi quy tắc dưới đây được máy kiểm; quy tắc chưa kiểm được ghi rõ là quy ước.
+`make check` (fmt, clippy, test, arch-lint) must pass before every commit.
+Tools enforce every rule below except those marked as conventions.
 
-## Cổng kiểm tra
+## Gate
 
-| Bước | Lệnh (`Makefile`) | Chặn |
+| Step | Command | Blocks |
 | --- | --- | --- |
-| `fmt` | `cargo fmt --all -- --check` | Code chưa format |
-| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | Mọi warning của rustc và clippy, kể cả lint workspace |
-| `test` | `cargo test --workspace` | Test đỏ |
-| `arch` | `cargo arch-lint check` rồi `cargo arch-lint check --rules no-panic-in-lib` | Vi phạm contract kiến trúc |
+| `fmt` | `cargo fmt --all -- --check` | Unformatted code |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | Any rustc or clippy warning |
+| `test` | `cargo test --workspace` | Failing tests |
+| `arch` | `cargo arch-lint check`, then `--rules no-panic-in-lib` | Architecture violations |
 
-## Lint workspace
+## Lints
 
-Mọi crate khai báo `[lints] workspace = true`; lint đặt ở `Cargo.toml` gốc và `clippy.toml`.
+Lints live in the root `Cargo.toml` (`[workspace.lints]`) and `clippy.toml`. Crates inherit them with `[lints] workspace = true`.
+`nimk-ffi` is the exception: it has its own `[lints]` table with the same clippy lints, and it may use `unsafe`.
 
-| Lint | Mức | Nguồn | Ý nghĩa |
-| --- | --- | --- | --- |
-| `unsafe_code` | deny | `[workspace.lints.rust]` | Cấm `unsafe` ở mọi crate; `nimk-ffi` phải tự `allow` có chủ đích. Bắt cả `#[unsafe(no_mangle)]` |
-| `missing_docs` | warn (→ lỗi qua `-D warnings`) | `[workspace.lints.rust]` | Mọi item công khai phải có doc |
-| `clippy::unwrap_used` | deny | `[workspace.lints.clippy]` | Không `unwrap()` |
-| `clippy::expect_used` | deny | `[workspace.lints.clippy]` | Không `expect()` |
-| `clippy::print_stdout` | deny | `[workspace.lints.clippy]` | Không `println!`; `nimk-replay` (`main.rs`) và `nimk-synth` (`bin/nimk-synth.rs`) được `allow` vì in report |
-| `allow-unwrap-in-tests`, `allow-expect-in-tests` | true | `clippy.toml` | Test được `unwrap`/`expect` |
+| Lint | Level | Meaning |
+| --- | --- | --- |
+| `unsafe_code` | deny | No `unsafe` outside `nimk-ffi` (also catches `#[unsafe(no_mangle)]`) |
+| `missing_docs` | warn (error via `-D warnings`) | Public items need docs |
+| `clippy::unwrap_used`, `expect_used` | deny | No `unwrap()` or `expect()` |
+| `clippy::print_stdout` | deny | No `println!`; `nimk-replay` and `nimk-synth` binaries allow it to print reports |
+| `allow-unwrap-in-tests`, `allow-expect-in-tests` | true | Tests may use both (`clippy.toml`) |
 
-Mỗi crate trừ `nimk-ffi` còn có `#![forbid(unsafe_code)]` ở `lib.rs`/`main.rs`; `nimk-ffi` đặt `#![allow(unsafe_code)]` và mỗi khối `unsafe` có comment `SAFETY`.
-Code dùng `match`/`if let` thay cho `unwrap_or` vì rule AL013 của arch-lint 0.11 báo mọi `unwrap_or`; ngoại lệ có chủ đích ghi bằng `// arch-lint: allow(<rule>) reason="..."`.
+Every crate except `nimk-ffi` also has `#![forbid(unsafe_code)]`. `nimk-ffi` has `#![allow(unsafe_code)]` and comments each `unsafe` block.
+Use `match` or `if let` instead of `unwrap_or`: arch-lint rule AL013 flags every `unwrap_or`. Deliberate exceptions use `// arch-lint: allow(<rule>) reason="..."`.
 
-## Contract arch-lint
+## Architecture contract
 
-`arch-lint.toml` (arch-lint 0.11, `preset = "recommended"`, `fail_on = "warning"`) khoá tầng và hot path theo đường dẫn `use`.
+`arch-lint.toml` (arch-lint 0.11, `preset = "recommended"`, `fail_on = "warning"`) locks layers and the key path by `use` path.
 
-### Scope
+```text
+ ffi, replay, synth  -->  engine  -->  telex | policy  -->  types
+                             \-->  storage   (true leaf, no nimk deps)
+```
 
-| Scope | Đường dẫn |
+Dependencies point down only. `Cargo.toml` also enforces this, since a crate without the dependency cannot `use` it.
+
+### Scopes
+
+| Scope | Paths |
 | --- | --- |
-| `types`, `storage`, `telex`, `policy`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<tên>/src/**` |
+| `types`, `storage`, `telex`, `policy`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
 | `pure` | `nimk-types`, `nimk-telex`, `nimk-policy` |
-| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-logger` | Từng file `crates/nimk-engine/src/<module>.rs` (`eng-trainer` gồm `trainer.rs` và `trainer/**`) |
-| `engine-no-threads` | `crates/nimk-engine/src/**` (gồm `engine/flow.rs`, `engine/switch.rs`) trừ `trainer.rs`, `trainer/**`, `logger.rs` |
-| `non-ffi` | `crates/*/src/**` trừ `crates/nimk-ffi/src/**` |
+| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-logger` | One engine module each (`eng-trainer` includes `trainer/**`) |
+| `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `logger.rs` |
+| `non-ffi` | `crates/*/src/**` except `nimk-ffi` |
 
-### Quy tắc
+`crates/*/examples/**` is excluded from arch-lint; clippy still checks it.
 
-| Quy tắc | Loại | Scope | Cấm | Bảo vệ điều gì |
-| --- | --- | --- | --- | --- |
-| `types-is-bottom` | `restrict-use` | `types` | `nimk_storage`, `nimk_telex`, `nimk_policy`, `nimk_engine`, `nimk_ffi`, `nimk_synth`, `nimk_replay` | `nimk-types` là tầng đáy |
-| `leaf-storage` | `restrict-use` | `storage` | `nimk_types`, `nimk_telex`, `nimk_policy`, `nimk_engine`, `nimk_ffi`, `nimk_synth`, `nimk_replay` | Storage chỉ biết bytes, giữ `EncryptedStorage` là decorator thuần |
-| `leaf-telex` | `restrict-use` | `telex` | `nimk_storage`, `nimk_policy`, `nimk_engine`, `nimk_ffi`, `nimk_synth`, `nimk_replay` | Telex chỉ phụ thuộc `nimk-types` |
-| `leaf-policy` | `restrict-use` | `policy` | `nimk_storage`, `nimk_telex`, `nimk_engine`, `nimk_ffi`, `nimk_synth`, `nimk_replay`, `std::fs`, `std::thread` | Policy chỉ map `Observation` → điểm action |
-| `engine-not-up` | `restrict-use` | `engine` | `nimk_ffi`, `nimk_synth`, `nimk_replay`, `std::fs` | Engine không biết tầng trên, ghi file qua `Storage` |
-| `ffi-thin` | `restrict-use` | `ffi` | `nimk_policy`, `nimk_telex`, `nimk_synth`, `nimk_replay`, `std::fs` | FFI chỉ adapt `Engine` (và dựng `PlainFsStorage`) sang C |
-| `replay-not-ffi` | `restrict-use` | `replay` | `nimk_ffi` | Replay gọi `Engine` trực tiếp |
-| `synth-not-ffi` | `restrict-use` | `synth` | `nimk_ffi` | Synth gọi `Engine` trực tiếp |
-| `pure-no-side-effects` | `restrict-use` | `pure` | `std::fs`, `std::io`, `std::net`, `std::thread`, `std::sync` (trừ `Arc`, `atomic`), `std::time`, `std::env`, `parking_lot` | Crate thuần: không I/O, thread, lock, env, wall clock |
-| `engine-event-clock` | `restrict-use` | `engine` | `std::time`, `std::env` | Đồng hồ duy nhất là timestamp của event (replay tất định) |
-| `hot-path-no-io` | `restrict-use` | `engine-no-threads` | `std::fs`, `std::net`, `std::thread`, `Mutex`, `RwLock`, `Condvar` | Đường phím không I/O, lock, thread |
-| `eng-composer-independent` | `restrict-use` | `eng-composer` | `hotkey`, `labeler`, `trainer`, `logger`, `engine` (dạng `crate::<mod>` và `super::<mod>`) | Module engine độc lập |
-| `eng-hotkey-independent` | `restrict-use` | `eng-hotkey` | `composer`, `labeler`, `trainer`, `logger`, `engine` | Như trên |
-| `eng-labeler-independent` | `restrict-use` | `eng-labeler` | `composer`, `hotkey`, `trainer`, `logger`, `engine` | Như trên |
-| `eng-trainer-independent` | `restrict-use` | `eng-trainer` | `composer`, `hotkey`, `labeler`, `logger`, `engine` | Như trên |
-| `eng-logger-independent` | `restrict-use` | `eng-logger` | `composer`, `hotkey`, `labeler`, `trainer`, `engine` | Như trên |
-| `no-c-exports-outside-ffi` | `deny-attr` | `non-ffi` | `#[no_mangle]`, `#[export_name]` | Chỉ `nimk-ffi` export symbol C |
-| `no-unwrap-expect` | built-in | toàn repo | `unwrap`/`expect` ngoài test | Trùng lint clippy, chạy cả khi không build |
-| `no-panic-in-lib` | built-in (AL011) | toàn repo | `panic!` và tương tự trong lib, ngoài test | Chạy ở pass thứ hai của `make arch` |
+### Rules
 
-Cấm theo pattern `<path>` và `<path>::**`; ràng buộc giữa crate còn được `Cargo.toml` khoá lần nữa vì crate thiếu dependency không thể `use`.
+| Rule | Scope | Forbids | Protects |
+| --- | --- | --- | --- |
+| `types-is-bottom` | `types` | all other nimk crates | `nimk-types` is the bottom layer |
+| `leaf-storage` | `storage` | all other nimk crates | Storage handles bytes only |
+| `leaf-telex` | `telex` | every nimk crate except `types` | Telex depends only on `types` |
+| `leaf-policy` | `policy` | storage, telex, engine, ffi, synth, replay, `std::fs`, `std::thread` | Policy only maps `Observation` to action scores |
+| `engine-not-up` | `engine` | ffi, synth, replay, `std::fs` | Engine writes files only via `Storage` |
+| `ffi-thin` | `ffi` | policy, telex, synth, replay, `std::fs` | FFI only adapts the engine to C |
+| `replay-not-ffi`, `synth-not-ffi` | `replay`, `synth` | `nimk_ffi` | They call the engine directly |
+| `pure-no-side-effects` | `pure` | `std::fs/io/net/thread/time/env`, `std::sync` (except `Arc`, `atomic`), `parking_lot` | No I/O, locks or clock in pure crates |
+| `engine-event-clock` | `engine` | `std::time`, `std::env` | Event timestamps are the only clock |
+| `hot-path-no-io` | `engine-no-threads` | `std::fs`, `std::net`, `std::thread`, `Mutex`, `RwLock`, `Condvar` | Key path has no I/O, locks or threads |
+| `eng-<module>-independent` (5 rules) | each engine module | `crate::` and `super::` paths of its siblings and `engine` | Only `engine.rs` wires modules together |
+| `no-c-exports-outside-ffi` | `non-ffi` | `#[no_mangle]`, `#[export_name]` | Only `nimk-ffi` exports C symbols |
+| `no-unwrap-expect` | repo | `unwrap`/`expect` outside tests | Backs up the clippy lints |
+| `no-panic-in-lib` (AL011) | repo | `panic!` and similar in libraries | Runs as the second `make arch` pass |
 
-### Giới hạn đã biết của arch-lint 0.11
+### Known arch-lint 0.11 limits
 
-| Giới hạn | Cách xử lý |
+| Limit | Workaround |
 | --- | --- |
-| Không quy `use other_crate::…` về scope | Tầng giữa crate dùng `restrict-use` deny theo đường dẫn crate |
-| `[[independent]]`, `[[deny-scope-dep]]` không resolve `crate::` trong layout này | Độc lập module engine dùng `restrict-use` trên text `crate::<mod>` và `super::<mod>` |
-| `deny-attr` không bắt dạng edition 2024 `#[unsafe(no_mangle)]` | Lint rustc `unsafe_code = "deny"` bắt thay |
-| `no-panic-in-lib` (AL011) không nằm trong preset `recommended`, `enabled = true` không thêm được | `make arch` chạy pass thứ hai với `--rules no-panic-in-lib` |
-| AL013 báo mọi `unwrap_or` | Dùng `match`/`if let`; cân nhắc chỉnh rule này |
-| Scope theo file không bao phủ file con | Thêm glob thư mục con vào scope (ví dụ `trainer/**`) mỗi khi tách module thành thư mục |
+| It does not map `use other_crate::...` to scopes | Layering uses `restrict-use` deny lists on crate paths |
+| `[[independent]]` and `[[deny-scope-dep]]` do not resolve `crate::` here | Sibling modules are denied by path text |
+| `deny-attr` misses `#[unsafe(no_mangle)]` | The rustc `unsafe_code` lint catches it |
+| AL011 is not in the `recommended` preset | `make arch` runs a second pass for it |
+| A file scope does not cover its child directory | Add a glob such as `trainer/**` when a module becomes a directory |
 
-### Thêm quy tắc
+### Adding a rule
 
-1. Thêm scope/quy tắc vào `arch-lint.toml`, kèm `message` nói lý do.
-2. Viết probe vi phạm, chạy `make arch`, xác nhận bị chặn, rồi xoá probe.
-3. Cập nhật bảng trên và [01-architecture.md](01-architecture.md) trong cùng commit.
+1. Add the scope or rule to `arch-lint.toml` with a `message` that gives the reason.
+2. Write a violating probe, run `make arch`, confirm it is blocked, then delete the probe.
+3. Update the tables above and [01-architecture.md](01-architecture.md) in the same commit.
 
-## Quy ước code
+## Conventions
 
-| Quy ước | Kiểm bởi |
+| Convention | Checked by |
 | --- | --- |
-| Swift shim không có logic quyết định; đổi hành vi làm trong Rust, kèm test | Review |
-| Lỗi trên hot path: ghi diagnostics, trả `consumed = false`; không bao giờ làm mất phím | Review + golden test |
-| Hot path (`ImeModel::score`, `Encoded::new`) không cấp phát lớn và p99 < 1 ms | Review, `tests/action_latency.rs` (ignored, chạy tay) |
-| Không đọc wall clock trong engine và crate thuần | `engine-event-clock`, `pure-no-side-effects` |
-| File chỉ qua `Storage` | `engine-not-up`, `leaf-policy`, `ffi-thin`, `pure-no-side-effects` |
-| Đổi API công khai, schema sự kiện, config mặc định → cập nhật `docs/` cùng commit | Review ([README](README.md)) |
-| Đổi schema không tương thích → tăng `SCHEMA_VERSION` | Review |
+| The Swift shim holds no decision logic; behavior changes go in Rust with a test | Review |
+| An error on the key path is logged and returns `consumed = false`; a key is never lost | Review, golden tests |
+| Hot path (`ImeModel::score`, `Encoded::new`) allocates little; p99 under 1 ms | Review, `tests/action_latency.rs` (ignored, run by hand) |
+| No wall clock in the engine or pure crates | `engine-event-clock`, `pure-no-side-effects` |
+| Files only via `Storage` | `engine-not-up`, `leaf-policy`, `ffi-thin` |
+| API, event schema or default config changes update `docs/` in the same commit | Review |
+| An incompatible schema change bumps `SCHEMA_VERSION` | Review |
 
-## Test
+## Tests
 
-`make check` hiện chạy 187 test xanh (185 test thường + 2 doc-test của `nimk-telex`) và 2 test `#[ignore]` của `nimk-policy`.
+- Use fixed seeds and `Threading::Inline` for deterministic tests.
+- Heavy learning tests (`GruAction`) run in release; dependencies get `opt-level = 3` so debug tests stay usable ([07](07-build-and-install.md)).
+- An engine behavior change needs a golden or integration test in `crates/nimk-engine/tests/`.
 
-| Crate | Số test | Loại test |
-| --- | --- | --- |
-| `nimk-types` | 4 | Unit: `CaretRel::new`/`cell`, `Lang` |
-| `nimk-storage` | 19 | 7 unit; 12 integration chạy cùng một bộ test trên `MemStorage` và `PlainFsStorage` (`tempfile`) |
-| `nimk-telex` | 13 + 2 doc | 10 unit; 3 integration: `transform(&encode(w)).text == w` trên hơn 5000 âm tiết tổ hợp (thường, Title, HOA), mọi tiền tố viable |
-| `nimk-policy` | 18 (+2 ignored) | `action_encode` 6, `action_model` 9 (neutral init, save/load, `Corrupt`, `decide`), `action_learn` 1 chạy ở release (bản debug bị `ignore`), 2 unit codec; `action_latency` ignored, chạy tay |
-| `nimk-engine` | 69 | 18 unit (hotkey, composer, labeler, trainer, logger); integration `golden` 19 (chuỗi phím → `EngineOutput` và record, `Threading::Inline`), `retro` 15 (sửa ngược), `robust` 7 (20 000 sự kiện ngẫu nhiên không panic), `teach` 4, `commit` 3, `fresh` 3 |
-| `nimk-ffi` | 18 | Unit qua C ABI: null-safe, `catch_unwind`, `NimkOut` |
-| `nimk-replay` | 14 | 7 unit (CLI, load, metric, report), 7 integration (fixture log nhỏ → metric kỳ vọng) |
-| `nimk-synth` | 30 | 28 unit (generate, `targets`, `write_log`, pretrain, eval) + 2 test CLI |
+| Crate | Test kinds |
+| --- | --- |
+| `nimk-types` | Unit |
+| `nimk-storage` | Unit; one integration suite run on both `MemStorage` and `PlainFsStorage` |
+| `nimk-telex` | Unit; `conformance` table; `roundtrip` (`transform(encode(w)) == w`) |
+| `nimk-policy` | `action_encode`, `action_model`, `action_learn`, `action_latency` (ignored) |
+| `nimk-engine` | Unit; `golden`, `boundary`, `pending`, `commit`, `fresh`, `model_switch`, `shadow`, `teach`, `robust` (random events must not panic) |
+| `nimk-ffi` | Unit through the C ABI: null safety, `catch_unwind`, `NimkOut` |
+| `nimk-replay` | Unit; integration on a small fixture log |
+| `nimk-synth` | Unit (generate, pretrain, eval) and CLI tests |
+| Swift | `make swift-test` for `Debouncer`, `IdleCommit`, `StatsText` |
 
-Quy ước test:
+## Experiment code
 
-- Seed cố định; `Threading::Inline` cho mọi test cần tất định.
-- Test học nặng (`GruAction`) chỉ chạy ở bản release; `Cargo.toml` gốc bật `opt-level = 3` cho dependency để test debug còn dùng được ([07](07-build-and-install.md)).
-- Đổi hành vi engine phải có golden hoặc test tích hợp tương ứng; hành vi sửa ngược nằm ở `tests/retro.rs`.
-
-## Code thí nghiệm
-
-Code thí nghiệm offline nằm trong `crates/*/examples/` (ví dụ `nimk-synth/examples/right_context.rs`). Thư mục này không thuộc contract sản phẩm nên arch-lint bỏ qua (`[analyzer] exclude`). `cargo clippy --all-targets -D warnings` vẫn kiểm tra nó. Kết quả thí nghiệm được ghi trong `docs/research/`.
+Offline experiments live in `crates/*/examples/` (for example `nimk-synth/examples/right_context.rs`). They are outside the product contract.
+Results go in `docs/research/`.

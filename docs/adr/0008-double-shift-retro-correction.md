@@ -1,39 +1,33 @@
-# 0008. Nháy Shift hai lần, sửa ngược từ vừa commit
+# 0008. Double-tap Shift and retroactive correction
 
-> **Trạng thái:** partially superseded by 0011 (phần sửa ngược bằng `replacementRange`; hotkey nháy Shift hai lần vẫn hiệu lực) · **Ngày:** 2026-11-08 · **Supersedes:** 0003
+> **Status:** accepted for the double-Shift hotkey; the retroactive `replacementRange` correction is superseded by [0011](0011-pending-word-commit.md) · **Date:** 2026-11-08 · **Supersedes:** [0003](0003-shift-tap-hotkey.md)
 
-## Bối cảnh
+## Context
 
-ADR 0003 chọn nháy một lần Shift trái làm hotkey. Switch sau commit chỉ đổi mode cho từ kế tiếp, không viết lại text. Cách này có hai vấn đề:
+ADR 0003 used a single Shift tap. A switch after a commit only changed the mode for the next word and did not rewrite text. Two problems:
 
-- Một lần nháy Shift dễ bấm nhầm.
-- Người dùng thường chỉ nhận ra từ sai *sau khi* gõ dấu cách. Lúc đó hotkey không sửa được từ sai, nên nhãn sinh ra mờ: người dùng đổi mode cho từ sau, chứ không xác nhận rằng từ vừa gõ bị sai.
+- A single Shift tap is easy to press by accident.
+- Users usually notice a wrong word only after typing the space. The hotkey could not fix that word, so the label was vague: it changed the next word's mode instead of confirming the last word was wrong.
 
-## Quyết định
+## Decision
 
-- **Hotkey:** nháy Shift hai lần. Hai lần nhấn-nhả một phím Shift bất kỳ (trái hoặc phải), mỗi lần đứng một mình và giữ ≤ `shift_tap_secs` (0,3 s); hai lần nhả cách nhau ≤ `double_shift_secs` (0,4 s). Phím hay modifier khác xen giữa thì huỷ; nháy thứ hai quá chậm bắt đầu một cặp mới. Một lần nháy đơn không làm gì. Ctrl+Space giữ làm dự phòng.
-- **Ngữ nghĩa theo thời điểm:**
+- **Hotkey:** double-tap Shift. Two press-and-release taps of either Shift key, each alone and held <= `shift_tap_secs` (0.3 s), with releases <= `double_shift_secs` (0.4 s) apart. Any other key or modifier in between cancels. A single tap does nothing. Ctrl+Space stays as a fallback.
+- **Semantics by timing:**
 
-| Lúc bấm | Hành động | Nhãn |
+| When pressed | Action | Label |
 | --- | --- | --- |
-| Đang gõ dở một từ | Lật rendering của từ hiện tại, khoá đến hết từ | Correction cho từ hiện tại, trọng số 1.0 |
-| Ngay sau khi commit: chỉ gõ thêm ký tự biên in được (space, dấu câu) | **Thay từ vừa commit** bằng rendering kia, giữ nguyên phần biên đã gõ | Correction cho từ đó, trọng số 1.0 |
-| Đã qua từ vừa commit (Return, Tab, phím khác làm quên biên) nhưng đã có commit kể từ focus | Chỉ đổi sticky mode, không thay text | Không có nhãn |
-| Chưa commit từ nào kể từ khi focus | Đổi mode prior | Correction cho focus prior |
+| Mid-word | Flip the current word's rendering, lock until word end | Correction, weight 1.0 |
+| Right after a commit, only printable boundary chars typed since | **Replace the just-committed word** with the other rendering, keep the boundary | Correction for that word, weight 1.0 |
+| Later (Return, Tab, other key forgot the boundary) but a commit exists since focus | Change sticky mode only | None |
+| No commit since focus | Change the prior mode | Correction for the focus prior |
 
-- **Engine** trả `EngineOutput.replace = Some(Replace { delete_before, text })`: xoá `delete_before` ký tự (đơn vị UTF-16, theo đơn vị của `NSString`) ngay trước con trỏ, rồi chèn `text`. `delete_before` gồm từ vừa commit cộng các ký tự biên đã gõ sau nó; `text` là rendering mới cộng lại đúng các ký tự biên đó.
-- **Swift** áp dụng bằng `client.insertText(text, replacementRange: NSRange(location: caret - delete_before, length: delete_before))`, với `caret` lấy từ `client.selectedRange()`.
-- **App không hỗ trợ thì chỉ đổi mode và học** (người dùng chốt ngày 2026-11-08).
-  - Trước khi thay, đọc lại đoạn text trước con trỏ. Nếu không khớp, hoặc `selectedRange` là `NSNotFound`, thì không đụng vào text.
-  - Engine vẫn đổi mode và ghi nhãn correction. Overlay hiện kiểu "không sửa được ở app này".
-  - **Không** dùng backspace giả qua `CGEvent`, nên không cần quyền Accessibility.
-  - Kết quả hỗ trợ được cache theo bundle id (`replace-compat.json`): `unknown` / `ok` / `unsupported`. Có sẵn danh sách cấm (các terminal, Firefox, JetBrains) và danh sách cho phép (các app NSTextView). Đọc lại sau khi thay mà sai thì đánh dấu app là `unsupported`. Người dùng ghi đè được qua menu.
-  - Mức hỗ trợ dự kiến theo từng app: xem `docs/09-app-compat.md`.
-- **Học:** sửa ngược sinh correction cho mọi bước của từ đó, kể cả khi nhãn ngầm đã chốt (labeler giữ steps của 4 từ cuối). Bấm lặp lại bật tắt rendering của từ và mỗi lần sinh một nhãn mới. Bỏ `correction_prev_weight`: chỉ từ vừa commit được sửa.
+- **Engine** returned `EngineOutput.replace = Some(Replace { delete_before, text })` (UTF-16 units); **Swift** applied it with `insertText(text, replacementRange:)`.
+- **Unsupported apps only flip mode and learn.** Swift re-read the text before the caret and skipped the edit on mismatch; no fake `CGEvent` backspaces, so no Accessibility permission. Support was cached per bundle id.
+- **Learning:** a retroactive fix produces a correction for every step of that word. Repeated taps toggle the rendering, each producing a label. Only the just-committed word can be fixed.
 
-## Hệ quả
+## Consequences
 
-- Tín hiệu online learning rõ: mỗi lần sửa ngược là một nhãn chắc chắn cho đúng một từ.
-- Phải kiểm tra thực tế từng app xem có hỗ trợ `replacementRange` không: TextEdit, Notes, Chrome, VS Code, Terminal.
-- Engine phải nhớ từ vừa commit (raw, hai rendering, chuỗi biên, tối đa 16 ký tự) cho tới khi người dùng gõ phím không phải biên; Return và Tab xoá bộ nhớ này.
-- Tình trạng thực tế theo app và kế hoạch test: [09-app-compat.md](../09-app-compat.md).
+- Clear online signal: each retroactive fix is a certain label for exactly one word.
+- Every app had to be checked for `replacementRange` support.
+- The engine had to remember the last committed word and its boundary chars.
+- Note: 0011 removed `replacementRange` editing, `EngineOutput.replace` and the compat cache. The double-Shift hotkey and the "flip, then learn" rule remain. See [09](../09-app-compat.md).
