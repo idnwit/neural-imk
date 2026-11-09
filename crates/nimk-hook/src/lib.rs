@@ -5,12 +5,14 @@
 //! `hookbus` owns the thread and calls hooks in registration order.
 
 mod cx;
+mod event_log;
 
 use std::io;
 
 use nimk_types::Record;
 
 pub use cx::{HookCx, HookMsg};
+pub use event_log::EventLogHook;
 
 /// One observer of the record stream.
 pub trait Hook: Send {

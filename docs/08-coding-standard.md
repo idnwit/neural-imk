@@ -48,8 +48,8 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | --- | --- |
 | `types`, `storage`, `telex`, `policy`, `hook`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
 | `pure` | `nimk-types`, `nimk-telex`, `nimk-policy` |
-| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-logger` | One engine module each (`eng-trainer` includes `trainer/**`) |
-| `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `logger.rs` |
+| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-hookbus` | One engine module each (`eng-trainer` includes `trainer/**`) |
+| `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `hookbus.rs` |
 | `non-ffi` | `crates/*/src/**` except `nimk-ffi` |
 
 `crates/*/examples/**` is excluded from arch-lint; clippy still checks it.

@@ -13,6 +13,7 @@ nimk-types.workspace = true
 nimk-storage.workspace = true
 nimk-telex.workspace = true
 nimk-policy.workspace = true
+nimk-hook.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

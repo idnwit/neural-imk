@@ -13,7 +13,7 @@ pub const DEFAULT_TOML: &str = include_str!("../config/default.toml");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Threading {
-    /// Trainer and log writer on background threads (production).
+    /// Trainer and hooks (event log included) on background threads (production).
     Background,
     /// Everything on the caller's thread, deterministic (tests, replay).
     Inline,

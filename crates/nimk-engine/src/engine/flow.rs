@@ -1,6 +1,7 @@
 //! Per-key flow of [`Engine`]: observation, model call, mechanical
 //! application of the action, commits, labels and trainer outputs.
 
+use nimk_hook::HookMsg;
 use nimk_policy::{ModelInput, ModelKind, ModelTransform};
 use nimk_types::{
     Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
@@ -54,7 +55,7 @@ impl Engine {
         let step = transition(self.state(), self.classify(key));
         let mask = mask_of(step);
         let word_id = (!self.composer.is_empty() || mask.append).then(|| self.composer.word_id());
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Key {
                 key: key.clone(),
@@ -301,7 +302,7 @@ impl Engine {
             EditAction::Pop => before.saturating_sub(1),
             EditAction::Commit | EditAction::Pass => before,
         };
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Decision {
                 target: Target::Word(self.composer.word_id()),
@@ -439,7 +440,7 @@ impl Engine {
         });
         let (p_vi, render) = (scored.p_vi, scored.action.render);
         let target = Target::Focus(focus_id);
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Decision {
                 target,
@@ -504,7 +505,7 @@ impl Engine {
             return;
         };
         let text = p.text();
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::WordCommit {
                 word_id: p.id,
@@ -563,7 +564,7 @@ impl Engine {
     /// Logs final labels and hands their examples to the trainer.
     pub(super) fn emit_labels(&mut self, t: f64, finals: Vec<FinalLabel>) {
         for f in finals {
-            self.logger.log(
+            self.hooks.log(
                 t,
                 Event::Label {
                     target: f.target,
@@ -605,7 +606,7 @@ impl Engine {
                     n_samples,
                     loss,
                 } => {
-                    self.logger.log(
+                    self.hooks.log(
                         t,
                         Event::ModelUpdate {
                             policy_id,
@@ -620,6 +621,20 @@ impl Engine {
                 }
                 TrainerOut::Stats(kind, stats) => self.stats[kind.index()] = stats,
                 TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
+            }
+        }
+        self.drain_hooks();
+    }
+
+    /// Picks up hook messages: caches the latest summary per hook and
+    /// queues diagnostics.
+    pub(super) fn drain_hooks(&mut self) {
+        for m in self.hooks.drain() {
+            match m {
+                HookMsg::Summary { hook, json } => {
+                    self.summaries.insert(hook, json);
+                }
+                HookMsg::Diagnostic(d) => self.diagnostics.push(d),
             }
         }
     }

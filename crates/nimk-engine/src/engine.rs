@@ -14,19 +14,20 @@ mod switch;
 
 pub use model::CheckpointSource;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use nimk_hook::{EventLogHook, Hook};
 use nimk_policy::{ImeLearner, ImeModel, ModelKind, build_action};
 use nimk_storage::{EventSink, Storage};
 use nimk_types::{Action, AppContext, Event, Example, KeyEvent, LabelSource, Lang, Target};
 
 use crate::composer::Composer;
 use crate::config::LiveParams;
+use crate::hookbus::{HookBus, NullSink};
 use crate::hotkey::{HotkeyDetector, HotkeyParams};
 use crate::labeler::{Labeler, LabelerParams, Step};
-use crate::logger::{Logger, NullSink};
 use crate::trainer::{
     Core, ModelStats, SaveTarget, StatCategory, StatsTracker, Trainer, TrainerOut, TrainerParams,
     stats_key,
@@ -277,7 +278,9 @@ pub struct Engine {
     loaded: [bool; 2],
     /// Categories of committed words awaiting their label.
     word_meta: VecDeque<WordMeta>,
-    logger: Logger,
+    hooks: HookBus,
+    /// Latest summary JSON per hook, updated when hook messages are drained.
+    summaries: HashMap<&'static str, String>,
     labeler: Labeler,
     hotkey: HotkeyDetector,
     composer: Composer,
@@ -375,7 +378,8 @@ impl Engine {
                 Box::new(NullSink)
             }
         };
-        let logger = Logger::new(session.id.clone(), sink, background);
+        let hooks: Vec<Box<dyn Hook>> = vec![Box::new(EventLogHook::new(sink))];
+        let hooks = HookBus::new(session.id.clone(), Arc::clone(&storage), hooks, background);
 
         let Started {
             trainer,
@@ -415,7 +419,8 @@ impl Engine {
             stats,
             loaded,
             word_meta: VecDeque::with_capacity(16),
-            logger,
+            hooks,
+            summaries: HashMap::new(),
             labeler,
             hotkey,
             composer: Composer::new(),
@@ -446,7 +451,8 @@ impl Engine {
             policy_id: engine.model_id.to_string(),
             utc_offset_min: session.utc_offset_min,
         };
-        engine.logger.log(0.0, start);
+        engine.hooks.log(0.0, start);
+        engine.drain_hooks();
         engine
     }
 
@@ -459,7 +465,7 @@ impl Engine {
     pub fn on_context(&mut self, ctx: &AppContext) -> EngineOutput {
         let mut out = EngineOutput::default();
         self.tick(ctx.timestamp);
-        self.logger.log(
+        self.hooks.log(
             ctx.timestamp,
             Event::Context {
                 bundle_id: ctx.bundle_id.clone(),
@@ -656,6 +662,13 @@ impl Engine {
         self.mode
     }
 
+    /// Latest summary JSON of hook `name`, as of the last word boundary;
+    /// `None` if that hook has not published one.
+    #[must_use]
+    pub fn hook_summary(&self, name: &str) -> Option<&str> {
+        self.summaries.get(name).map(String::as_str)
+    }
+
     /// Id of the model currently serving predictions.
     #[must_use]
     pub fn policy_id(&self) -> Arc<str> {
@@ -666,7 +679,7 @@ impl Engine {
     /// the host's debug log.
     pub fn take_diagnostics(&mut self) -> Vec<String> {
         let mut d = std::mem::take(&mut self.diagnostics);
-        d.extend(self.logger.take_diagnostics());
+        d.extend(self.hooks.take_diagnostics());
         d
     }
 
@@ -696,7 +709,7 @@ impl Engine {
                 loss,
             } = o
             {
-                self.logger.log(
+                self.hooks.log(
                     t,
                     Event::ModelUpdate {
                         policy_id,
@@ -706,7 +719,7 @@ impl Engine {
                 );
             }
         }
-        let flushed = self.logger.shutdown();
+        let flushed = self.hooks.shutdown();
         saved?;
         flushed?;
         Ok(())

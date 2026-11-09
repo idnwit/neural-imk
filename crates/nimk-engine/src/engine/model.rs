@@ -236,7 +236,7 @@ impl Engine {
                     policy_id,
                     n_samples,
                     loss,
-                } => self.logger.log(
+                } => self.hooks.log(
                     timestamp,
                     Event::ModelUpdate {
                         policy_id,
@@ -284,7 +284,7 @@ impl Engine {
         self.restart_trainer(kind);
         self.last_snapshot_t = Some(timestamp);
         self.write_setting(kind);
-        self.logger.log(
+        self.hooks.log(
             timestamp,
             Event::ModelSwitch {
                 from,

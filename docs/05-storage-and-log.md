@@ -7,7 +7,7 @@ Encryption can later be added as a decorator without changing callers ([ADR 0004
 
 ## Trait
 
-Serialization (serde JSON) lives in the layer above (`nimk-engine::logger`); `nimk-storage` depends on no `nimk-*` crate.
+Serialization (serde JSON) lives in the layer above (the `event_log` hook in `nimk-hook`, run by `nimk-engine::hookbus`); `nimk-storage` depends on no `nimk-*` crate.
 
 ```rust
 pub struct SegmentId(pub String);

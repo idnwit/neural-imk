@@ -78,14 +78,14 @@ name = "eng-trainer"
 paths = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/trainer/**"]
 
 [[scopes]]
-name = "eng-logger"
-paths = ["crates/nimk-engine/src/logger.rs"]
+name = "eng-hookbus"
+paths = ["crates/nimk-engine/src/hookbus.rs"]
 
 # Engine minus the worker modules: no threads here.
 [[scopes]]
 name = "engine-no-threads"
 paths = ["crates/nimk-engine/src/**"]
-exclude = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/trainer/**", "crates/nimk-engine/src/logger.rs"]
+exclude = ["crates/nimk-engine/src/trainer.rs", "crates/nimk-engine/src/trainer/**", "crates/nimk-engine/src/hookbus.rs"]
 
 # Every crate except ffi: no exported C symbols.
 [[scopes]]
@@ -168,7 +168,7 @@ name = "hot-path-no-io"
 scope = "engine-no-threads"
 deny = ["std::fs::**", "std::net::**", "std::thread::**", "std::sync::Mutex", "std::sync::Mutex::**",
         "std::sync::RwLock", "std::sync::RwLock::**", "std::sync::Condvar"]
-message = "Keystroke path: no I/O, locks or threads outside trainer/logger."
+message = "Keystroke path: no I/O, locks or threads outside trainer/hookbus."
 
 [[restrict-use]]
 name = "engine-uses-transforms"
@@ -183,32 +183,32 @@ message = "The engine reaches Telex and the model only through TelexTransform / 
 [[restrict-use]]
 name = "eng-composer-independent"
 scope = "eng-composer"
-deny = ["crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+deny = ["crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::hookbus", "crate::hookbus::**", "super::hookbus", "super::hookbus::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
 message = "Engine module `composer` must not use sibling modules; engine.rs wires them."
 
 [[restrict-use]]
 name = "eng-hotkey-independent"
 scope = "eng-hotkey"
-deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::hookbus", "crate::hookbus::**", "super::hookbus", "super::hookbus::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
 message = "Engine module `hotkey` must not use sibling modules; engine.rs wires them."
 
 [[restrict-use]]
 name = "eng-labeler-independent"
 scope = "eng-labeler"
-deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::hookbus", "crate::hookbus::**", "super::hookbus", "super::hookbus::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
 message = "Engine module `labeler` must not use sibling modules; engine.rs wires them."
 
 [[restrict-use]]
 name = "eng-trainer-independent"
 scope = "eng-trainer"
-deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::logger", "crate::logger::**", "super::logger", "super::logger::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
+deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::hookbus", "crate::hookbus::**", "super::hookbus", "super::hookbus::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
 message = "Engine module `trainer` must not use sibling modules; engine.rs wires them."
 
 [[restrict-use]]
-name = "eng-logger-independent"
-scope = "eng-logger"
+name = "eng-hookbus-independent"
+scope = "eng-hookbus"
 deny = ["crate::composer", "crate::composer::**", "super::composer", "super::composer::**", "crate::hotkey", "crate::hotkey::**", "super::hotkey", "super::hotkey::**", "crate::labeler", "crate::labeler::**", "super::labeler", "super::labeler::**", "crate::trainer", "crate::trainer::**", "super::trainer", "super::trainer::**", "crate::engine", "crate::engine::**", "super::engine", "super::engine::**"]
-message = "Engine module `logger` must not use sibling modules; engine.rs wires them."
+message = "Engine module `hookbus` must not use sibling modules; engine.rs wires them."
 
 [[deny-attr]]
 name = "no-c-exports-outside-ffi"

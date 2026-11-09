@@ -45,7 +45,7 @@ Test `every_field_is_in_default_toml` checks that every `EngineConfig` field is 
 | `replay_every` | integer | 0 to 100000 | 50 | no | Train one minibatch per N new examples (0 = off) |
 | `replay_batch` | integer | 1 to 4096 | 32 | no | Minibatch size |
 | `snapshot_every_secs` | float | 10 to 86400 | 300 | yes | Checkpoint interval |
-| `threading` | `"background"`, `"inline"` | enum | `background` | no | Trainer and logger on background threads or inline |
+| `threading` | `"background"`, `"inline"` | enum | `background` | no | Trainer and hooks on background threads or inline |
 | `double_shift` | bool | | true | yes | Accept a double Shift tap |
 | `double_shift_secs` | float | 0.05 to 2 | 0.4 | yes | Max time between the two releases |
 | `shift_tap_secs` | float | 0.05 to 1 | 0.3 | yes | Max Shift down-to-up time for a tap |

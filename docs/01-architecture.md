@@ -3,23 +3,23 @@
 > **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `arch-lint.toml`, `crates/nimk-engine/src/{lib,engine}.rs`, `crates/nimk-ffi/src`
 
 NeuralIMK is one process, `NeuralIMK.app`. A thin Swift shim talks to IMK/AppKit; all logic lives in a Rust core linked statically through a C ABI.
-The hot path only reads a model snapshot. Training and log writing run in the background, so a keystroke never waits for I/O.
+The hot path only reads a model snapshot. Training and hooks (including log writing) run in the background, so a keystroke never waits for I/O.
 
 ## Process and threads
 
-One process, three Rust threads. Only the `trainer` and `logger` modules spawn threads.
+One process, three Rust threads. Only the `trainer` and `hookbus` modules spawn threads.
 
 | Thread | Runs | Communicates |
 | --- | --- | --- |
 | Main (IMK, called from Swift) | `Engine::on_key`, `on_context`, `commit_pending`, `teach`: hotkey, composer, model score, apply | Reads the current `Arc<dyn ImeModel>`; sends `Record` and `Example` over channels |
 | Trainer | Replay buffer, correction window, `ImeLearner::update`, snapshots, per-model stats | Sends new `Arc<dyn ImeModel>` over mpsc; the engine `try_recv`s at a word boundary |
-| Log writer | Serializes `Record` to `EventSink::append` | Receives records over a channel |
+| Hook thread | Runs every hook on each `Record` (the `event_log` hook appends it to `EventSink`) | Receives records over a channel; sends summaries and diagnostics back, drained at word boundaries |
 
 With `Threading::Inline` (tests, replay, synth) all three run on the calling thread, so results are deterministic.
 
 ```text
 +------------+  C ABI   +-----------------------------+ Record  +--------+ bytes +---------+
-| Swift shim | -------> | main thread: Engine         | ------> | logger | ----> | Storage |
+| Swift shim | -------> | main thread: Engine         | ------> | hooks  | ----> | Storage |
 |   (IMK)    | <------- | hotkey > composer > model   |         +--------+       +---------+
 +------------+ NimkOut  +-----------------------------+                               ^
                            |                    ^                                     |
@@ -100,7 +100,7 @@ A layer may skip the one below it (`nimk-synth` uses `nimk-policy` directly) but
 | `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore` and their implementations; bytes only |
 | `nimk-telex` | lib | `transform`, `encode`, `is_valid_syllable` ([10](10-telex.md)) |
 | `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `LinearAction`, `GruAction` (backend `burn`); see [linear](models/linear.md), [gru](models/gru.md) |
-| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, logger |
+| `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, hookbus |
 | `nimk-ffi` | staticlib | C ABI for Swift; the only crate with `extern "C"` and `unsafe` |
 | `nimk-replay` | bin + lib | Replays a log through a model and reports metrics ([05](05-storage-and-log.md)) |
 | `nimk-synth` | lib + bin | Synthetic typing data and pretraining ([ADR 0006](adr/0006-synthetic-pretraining.md)) |
@@ -118,12 +118,12 @@ The five inner modules do not `use` each other. `engine.rs` wires them together;
 | `hotkey` | Double-Shift / Ctrl+Space detector ([02](02-keyboard-io.md)) |
 | `labeler` | Commits, focus prior and corrections become labels and `Example`s ([04](04-engine-ml.md)) |
 | `trainer` | Replay buffer, correction window, snapshots, stats; background or inline |
-| `logger` | Serializes `Record` into the `EventSink` |
+| `hookbus` | Wraps events into `Record`s and runs the hooks (`nimk-hook`); the `event_log` hook writes the `EventSink` |
 | `engine/flow.rs`, `machine.rs` | Per-key loop and the 4-state machine |
 | `engine/switch.rs` | `manual_switch`: hotkey handling, flipping the pending word |
 | `engine/model.rs` | Model switch, reset, checkpoints, per-model online training and stats |
 
-Threads are spawned only in `trainer` and `logger` (lint `hot-path-no-io`).
+Threads are spawned only in `trainer` and `hookbus` (lint `hot-path-no-io`).
 
 ## Public API of `nimk-engine`
 
