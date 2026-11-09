@@ -279,7 +279,11 @@ fn stats_persist_and_reset_with_the_model() {
     let (a, b) = (e.model_stats(LIN), e.model_stats(GRU));
     assert_eq!((a.words_total, b.words_total), (1, 1));
     e.shutdown().unwrap();
-    assert!(blob(&storage, "stats/linear_action").is_some());
+    assert!(blob(&storage, "hooks/model_stats/linear_action").is_some());
+    assert!(
+        blob(&storage, "stats/linear_action").is_none(),
+        "no legacy key"
+    );
 
     // A new engine starts from the saved counters.
     let mut e = Engine::new(cfg(Threading::Inline), Arc::new(storage.clone()), session());
@@ -289,13 +293,40 @@ fn stats_persist_and_reset_with_the_model() {
     // Resetting the active model restarts only its counters.
     e.reset_model(5.0);
     assert_eq!(e.model_stats(LIN).words_total, 0);
-    assert!(blob(&storage, "stats/linear_action").is_none());
     assert_eq!(e.model_stats(GRU), b, "the other model keeps its counters");
     e.shutdown().unwrap();
+    let e = Engine::new(cfg(Threading::Inline), Arc::new(storage.clone()), session());
+    assert_eq!(e.model_stats(LIN).words_total, 0, "nothing counted since");
+    assert_eq!(e.model_stats(GRU), b);
+}
+
+#[test]
+fn legacy_stats_are_migrated_and_reset_deletes_them() {
+    let storage = MemStorage::new();
+    let (learners, _, _) = disagreeing_pair();
+    let mut e = engine(cfg(Threading::Inline), &storage, learners);
+    let mut t = 1.0;
+    e.on_context(&ctx("com.apple.TextEdit", 1, t));
+    type_str(&mut e, "ab ", &mut t);
+    label(&mut e, 0, Lang::Vi);
+    let a = e.model_stats(LIN);
+    e.shutdown().unwrap();
+    // Pretend the counters were written by a build before the hook.
+    let saved = blob(&storage, "hooks/model_stats/linear_action").unwrap();
+    storage.blobs().put("stats/linear_action", &saved).unwrap();
     assert!(
-        blob(&storage, "stats/linear_action").is_none(),
-        "nothing counted since"
+        storage
+            .blobs()
+            .delete("hooks/model_stats/linear_action")
+            .unwrap()
     );
+
+    let mut e = Engine::new(cfg(Threading::Inline), Arc::new(storage.clone()), session());
+    assert_eq!(e.model_stats(LIN), a, "migrated from stats/<kind>");
+    assert!(blob(&storage, "hooks/model_stats/linear_action").is_some());
+    e.reset_model(5.0);
+    assert!(blob(&storage, "stats/linear_action").is_none());
+    e.shutdown().unwrap();
 }
 
 #[test]
@@ -341,7 +372,7 @@ fn inline_runs_are_deterministic() {
         e.shutdown().unwrap();
         (
             stats,
-            blob(&storage, "stats/gru_action"),
+            blob(&storage, "hooks/model_stats/gru_action"),
             blob(&storage, "model/gru_action/latest"),
         )
     };

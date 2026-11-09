@@ -22,6 +22,7 @@ pub struct NimkCore {
     pub(crate) own_diags: Vec<String>,
     diag_buf: Option<CString>,
     policy_buf: Option<CString>,
+    summary_buf: Option<CString>,
 }
 
 impl NimkCore {
@@ -37,6 +38,7 @@ impl NimkCore {
             id: session_id(),
             wall_unix_ms: wall_unix_ms(),
             app_version,
+            utc_offset_min: local_utc_offset_min(),
         };
         Self {
             engine: Engine::new(EngineConfig::default(), storage, session),
@@ -44,7 +46,16 @@ impl NimkCore {
             own_diags,
             diag_buf: None,
             policy_buf: None,
+            summary_buf: None,
         }
+    }
+
+    /// Reads the wall clock and local UTC offset now and hands them to the
+    /// engine (logged as a `clock` record). May panic inside the engine;
+    /// callers catch unwinds.
+    pub(crate) fn note_wall_clock(&mut self) {
+        self.engine
+            .note_wall_clock(wall_unix_ms(), local_utc_offset_min());
     }
 
     /// Applies the user's TOML override over the embedded defaults; returns
@@ -71,6 +82,18 @@ impl NimkCore {
     pub(crate) fn policy_id(&mut self) -> *const c_char {
         let id = to_cstring(self.engine.policy_id().to_string());
         self.policy_buf.insert(id).as_ptr()
+    }
+
+    /// Latest summary JSON of hook `name`; null if it has none. Valid until
+    /// the next call of this method.
+    pub(crate) fn hook_summary(&mut self, name: &str) -> *const c_char {
+        self.summary_buf = self
+            .engine
+            .hook_summary(name)
+            .map(|json| to_cstring(json.to_owned()));
+        self.summary_buf
+            .as_deref()
+            .map_or(ptr::null(), CStr::as_ptr)
     }
 }
 
@@ -122,8 +145,58 @@ fn session_id() -> String {
     format!("{:016x}", h.finish())
 }
 
+/// C `struct tm` (macOS and glibc layout).
+#[repr(C)]
+struct Tm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+    tm_gmtoff: i64,
+    tm_zone: *const c_char,
+}
+
+unsafe extern "C" {
+    fn time(t: *mut i64) -> i64;
+    fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+}
+
+/// Local UTC offset in minutes from the C library (the FFI may read the
+/// clock); 0 if it cannot be determined.
+fn local_utc_offset_min() -> i32 {
+    let mut tm = Tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: ptr::null(),
+    };
+    // SAFETY: `time(null)` has no preconditions; `localtime_r` reads `now`
+    // and writes only into `tm`, both live locals.
+    let ok = unsafe {
+        let now = time(ptr::null_mut());
+        !localtime_r(&now, &mut tm).is_null()
+    };
+    if ok {
+        i32::try_from(tm.tm_gmtoff / 60).map_or(0, |m| m)
+    } else {
+        0
+    }
+}
+
 /// Wall clock in Unix milliseconds (0 if the clock is before 1970).
-fn wall_unix_ms() -> u64 {
+pub(crate) fn wall_unix_ms() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => d
             .as_secs()

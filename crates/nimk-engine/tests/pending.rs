@@ -151,6 +151,8 @@ fn single_tap_passes_through() {
 fn double_shift_can_be_disabled() {
     let cfg = EngineConfig {
         double_shift: false,
+        // Ctrl+Space is off by default; this test opts in.
+        ctrl_space: true,
         ..inline_cfg()
     };
     let (mut e, storage) = const_engine(0.9, cfg);

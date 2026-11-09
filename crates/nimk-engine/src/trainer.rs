@@ -1,9 +1,10 @@
 //! Trainer: online updates, correction re-training, replay buffer, model
-//! snapshots and per-model word statistics.
+//! snapshots and per-model word scores.
 //!
 //! The trainer owns one [`Core`] per loaded model (ADR 0013, shadow
 //! training): every finalized word goes to each core whose online training
-//! is on, each core scores the word for its statistics (`stats`), and only
+//! is on, each core scores the word ([`TrainerOut::Score`], counted by the
+//! `model_stats` hook once the engine logs it), and only
 //! the active core publishes snapshots to the hot path. The same logic runs
 //! either on a background thread (production) or synchronously on the
 //! caller's thread (`Inline`, deterministic). The engine submits samples and
@@ -18,13 +19,12 @@ use std::thread::JoinHandle;
 
 use nimk_policy::{ImeLearner, ImeModel, ModelKind};
 use nimk_storage::Storage;
-use nimk_types::{Example, Lang, Observation};
+use nimk_types::{Example, Lang, Observation, StatCategory};
 
-mod stats;
+mod word;
 
-pub use stats::{ModelStats, StatCategory};
-pub(crate) use stats::{StatsTracker, WordInfo};
-use stats::{WordAcc, WordResult};
+pub(crate) use word::WordInfo;
+use word::{Scored, WordAcc};
 
 /// Publish a snapshot after this many learner updates (and after every
 /// correction).
@@ -61,8 +61,27 @@ pub(crate) enum TrainerOut {
     },
     /// New read-only model to serve predictions (active model only).
     Snapshot(Arc<dyn ImeModel>),
-    /// Counters of a model changed.
-    Stats(ModelKind, ModelStats),
+    /// A model's score for one counted word (logged as `model_score`).
+    Score {
+        /// Model scored.
+        kind: ModelKind,
+        /// Word id.
+        word_id: u64,
+        /// Category of the app the word was typed in.
+        category: StatCategory,
+        /// The model's rendering equalled the ground truth.
+        correct: bool,
+        /// Keystrokes whose display decision equalled the truth.
+        display_hits: u16,
+        /// Keystrokes with a display decision.
+        display_total: u16,
+        /// Display changes between consecutive keystrokes.
+        flips: u16,
+        /// Re-scores a word already counted (late correction).
+        amend: bool,
+        /// The model was the active one for the word.
+        served: bool,
+    },
     /// Human-readable warning.
     Diagnostic(String),
 }
@@ -85,6 +104,10 @@ pub(crate) struct KeyObs {
 /// Word accumulators kept per core (words never labelled age out).
 const ACCS_KEPT: usize = 512;
 
+/// Scored words kept per core so a late correction can re-score them (the
+/// labeler keeps as many).
+const RECORDED_KEPT: usize = 8;
+
 /// Where snapshots are saved.
 #[derive(Clone)]
 pub(crate) struct SaveTarget {
@@ -101,16 +124,17 @@ pub(crate) struct Core {
     /// Online training on: the learner updates (and saves) from labels.
     learn: bool,
     /// This core serves predictions: its snapshots are published and its
-    /// stats use the rendering that was really committed.
+    /// scores use the rendering that was really committed.
     active: bool,
     /// The learner changed since it was loaded or last saved.
     dirty: bool,
     /// Read-only copy of the current weights, for scoring shadow words;
     /// dropped when the learner updates.
     scorer: Option<Arc<dyn ImeModel>>,
-    stats: StatsTracker,
     /// Keystroke decisions of words not yet labelled.
     accs: VecDeque<(u64, WordAcc)>,
+    /// The last scored words, for amendments.
+    scored: VecDeque<Scored>,
     params: TrainerParams,
     save: SaveTarget,
     replay: VecDeque<Example>,
@@ -137,8 +161,8 @@ impl Core {
             active: true,
             dirty: false,
             scorer: None,
-            stats: StatsTracker::default(),
             accs: VecDeque::new(),
+            scored: VecDeque::with_capacity(RECORDED_KEPT),
             params,
             save,
             replay: VecDeque::with_capacity(cap),
@@ -156,18 +180,6 @@ impl Core {
         self.learn = learn;
         self.active = active;
         self
-    }
-
-    /// Starts from restored statistics.
-    #[must_use]
-    pub(crate) fn with_stats(mut self, stats: StatsTracker) -> Self {
-        self.stats = stats;
-        self
-    }
-
-    /// Counters now (for the engine's initial cache).
-    pub(crate) fn stats_summary(&self) -> ModelStats {
-        self.stats.summary()
     }
 
     /// splitmix64 step.
@@ -252,19 +264,33 @@ impl Core {
         }
     }
 
-    /// Counts the finalized word, before the learner sees it, against its
+    /// Scores the finalized word, before the learner sees it, against its
     /// ground truth (`info.label`). The active model's rendering is the
     /// committed one; a shadow's is its own display decision at the commit
     /// step (its latest one when the word ended without a commit step). A
-    /// shadow that saw no keystroke of the word does not count it. A late
-    /// correction (`info.amends`) amends the earlier record instead.
+    /// shadow that saw no keystroke of the word does not score it. A late
+    /// correction (`info.amends`) re-scores one of the last
+    /// [`RECORDED_KEPT`] scored words (`amend: true`); an unknown word, or
+    /// an unchanged truth, gives nothing.
     fn record_word(&mut self, info: WordInfo, out: &mut Vec<TrainerOut>) {
         if !self.counts() {
             return;
         }
         if info.amends.is_some() {
-            self.stats.amend(info.word_id, info.label);
-            out.push(TrainerOut::Stats(self.kind, self.stats.summary()));
+            let Some(w) = self
+                .scored
+                .iter_mut()
+                .rev()
+                .find(|w| w.word_id == info.word_id)
+            else {
+                return;
+            };
+            if w.label == info.label {
+                return;
+            }
+            w.label = info.label;
+            let w = *w;
+            self.push_score(&w, info.category, true, out);
             return;
         }
         let found = match self.accs.iter().rposition(|(id, _)| *id == info.word_id) {
@@ -283,15 +309,38 @@ impl Core {
             };
             last
         };
-        self.stats.record(WordResult {
+        let w = Scored {
             word_id: info.word_id,
-            render,
-            category: info.category,
-            served: self.active,
             acc,
+            render,
             label: info.label,
+        };
+        if self.scored.len() >= RECORDED_KEPT {
+            self.scored.pop_front();
+        }
+        self.scored.push_back(w);
+        self.push_score(&w, info.category, false, out);
+    }
+
+    /// Reports the score of `w` against its current label.
+    fn push_score(
+        &self,
+        w: &Scored,
+        category: StatCategory,
+        amend: bool,
+        out: &mut Vec<TrainerOut>,
+    ) {
+        out.push(TrainerOut::Score {
+            kind: self.kind,
+            word_id: w.word_id,
+            category,
+            correct: nimk_types::word_correct(w.render, w.label),
+            display_hits: w.acc.matches(w.label),
+            display_total: w.acc.keys(),
+            flips: w.acc.flips(),
+            amend,
+            served: self.active,
         });
-        out.push(TrainerOut::Stats(self.kind, self.stats.summary()));
     }
 
     /// Learns from the examples of one finalized word (all its steps):
@@ -384,42 +433,22 @@ impl Core {
         }
     }
 
-    /// Saves what changed: the learner (when online training is on and it
-    /// is active or was updated, so an untouched shadow never copies a
-    /// bundled model into the user layer) and the statistics.
+    /// Saves the learner when online training is on and it is active or
+    /// was updated (so an untouched shadow never copies a bundled model
+    /// into the user layer).
     ///
     /// # Errors
-    /// Returns the first storage error (both writes are attempted).
+    /// Returns the storage error.
     pub(crate) fn save(&mut self) -> io::Result<()> {
-        let mut result = Ok(());
         if self.learn && (self.active || self.dirty) {
-            result = self
-                .save
+            self.save
                 .storage
                 .blobs()
-                .put(&self.save.key, &self.learner.save());
-            if result.is_ok() {
-                self.dirty = false;
-            }
+                .put(&self.save.key, &self.learner.save())?;
+            self.dirty = false;
         }
-        if self.stats.is_dirty() {
-            let key = stats_key(self.kind);
-            let put = match self.stats.to_bytes() {
-                Ok(bytes) => self.save.storage.blobs().put(&key, &bytes),
-                Err(e) => Err(io::Error::other(e)),
-            };
-            if put.is_ok() {
-                self.stats.mark_saved();
-            }
-            result = result.and(put);
-        }
-        result
+        Ok(())
     }
-}
-
-/// Blob key of the statistics of `kind`.
-pub(crate) fn stats_key(kind: ModelKind) -> String {
-    format!("stats/{}", kind.name())
 }
 
 fn dispatch_key(cores: &mut [Core], key: &KeyObs) {
@@ -574,7 +603,7 @@ impl Trainer {
     }
 
     /// Submits the examples of one finalized word; `info` (with a word
-    /// label) also feeds the statistics.
+    /// label) also gets the word scored.
     pub(crate) fn submit(
         &mut self,
         examples: Vec<Example>,

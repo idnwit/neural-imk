@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{CaretRel, EditAction, KeyEvent, Lang};
+use crate::{CaretRel, EditAction, KeyEvent, Lang, StatCategory};
 
 /// Version of the event log schema. Bump on breaking changes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -37,6 +37,9 @@ pub enum Event {
         config_json: String,
         /// Policy serving predictions at start.
         policy_id: String,
+        /// Local time offset from UTC at start, minutes (host-supplied).
+        #[serde(default)]
+        utc_offset_min: i32,
     },
     /// App focus or caret context changed.
     Context {
@@ -124,6 +127,45 @@ pub enum Event {
         /// Policy id after the switch.
         to: String,
     },
+    /// A model's quality counters for one counted word (additive; replay
+    /// ignores it). One record per model per word.
+    ModelScore {
+        /// Model kind name, e.g. `gru_action`.
+        kind: String,
+        /// Word the score belongs to.
+        word_id: u64,
+        /// App category of the word.
+        category: StatCategory,
+        /// The model's rendering equalled the ground truth.
+        correct: bool,
+        /// Keystrokes of the word whose display decision equalled the truth.
+        display_hits: u16,
+        /// Keystrokes of the word with a display decision.
+        display_total: u16,
+        /// Display changes between consecutive keystrokes of the word.
+        flips: u16,
+        /// The record amends an earlier score of the same word.
+        amend: bool,
+        /// The model was the active one (its output reached the user).
+        #[serde(default)]
+        served: bool,
+    },
+    /// The user reset a model to its bundled default; its quality counters
+    /// restart from zero (additive; replay ignores it).
+    ModelReset {
+        /// Model kind name, e.g. `linear_action`.
+        kind: String,
+    },
+    /// The host re-read the wall clock (e.g. after the Mac woke from
+    /// sleep, when the uptime clock of `t` stood still). Re-anchors
+    /// wall-clock consumers at this record's `t` (additive; replay ignores
+    /// it).
+    Clock {
+        /// Wall clock now, Unix milliseconds (supplied by the host).
+        wall_unix_ms: u64,
+        /// Local time offset from UTC now, minutes (host-supplied).
+        utc_offset_min: i32,
+    },
 }
 
 /// Subject of a decision or label. Ids are per session, assigned by the
@@ -188,4 +230,59 @@ pub enum LabelSource {
     Implicit,
     /// The user corrected with the hotkey.
     Correction,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn old_session_start_parses_with_zero_offset_and_model_score_round_trips() {
+        let old = r#"{"v":1,"seq":0,"t":1.0,"session":"s","type":"session_start","wall_unix_ms":5,"app_version":"a","config_json":"{}","policy_id":"p"}"#;
+        let r: Record = serde_json::from_str(old).unwrap();
+        assert!(matches!(
+            r.event,
+            Event::SessionStart {
+                utc_offset_min: 0,
+                ..
+            }
+        ));
+        let ms = Event::ModelScore {
+            kind: "gru_action".into(),
+            word_id: 7,
+            category: StatCategory::Terminal,
+            correct: true,
+            display_hits: 3,
+            display_total: 4,
+            flips: 1,
+            amend: false,
+            served: true,
+        };
+        let json = serde_json::to_string(&ms).unwrap();
+        assert!(
+            json.contains(r#""type":"model_score""#) && json.contains(r#""category":"terminal""#)
+        );
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ms);
+        let reset = Event::ModelReset {
+            kind: "linear_action".into(),
+        };
+        let json = serde_json::to_string(&reset).unwrap();
+        assert_eq!(json, r#"{"type":"model_reset","kind":"linear_action"}"#);
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), reset);
+    }
+
+    #[test]
+    fn clock_round_trips() {
+        let c = Event::Clock {
+            wall_unix_ms: 5,
+            utc_offset_min: -300,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"clock","wall_unix_ms":5,"utc_offset_min":-300}"#
+        );
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), c);
+    }
 }

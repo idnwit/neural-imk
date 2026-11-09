@@ -11,7 +11,7 @@ Cmd+Space is swallowed by the system before it reaches the IME. A global event t
 
 - Default: press and release left Shift alone within `shift_tap_secs` (0.3 s), with no `keyDown` in between.
 - The IME declares `recognizedEvents(_:)` = `[.keyDown, .flagsChanged]` to receive modifier events.
-- Fallback: Ctrl+Space via `keyDown`, enabled by `EngineConfig::ctrl_space` (default `true`).
+- Fallback: Ctrl+Space via `keyDown`, enabled by `EngineConfig::ctrl_space` (default `true` then; `false` since [0014](0014-transform-hook-pipeline.md)).
 - Detection is a Rust state machine (`HotkeyDetector`) driven by `KeyEvent::timestamp`; Swift does not handle it.
 - A hotkey right after a commit only changes the mode for the next word and produces a correction label; it does not rewrite committed text.
 

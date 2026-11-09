@@ -55,11 +55,18 @@ Some labels are Vietnamese in the app; their English meaning is given in parenth
 | `Học online: GRU ✓` | "Online learning". One toggle per model; `nimk_set_online_training`, saved by the engine in `settings/models` ([ADR 0013](adr/0013-shadow-training-and-model-stats.md)) |
 | `Khôi phục model gốc` | "Restore original model": `nimk_reset_model` deletes the active model's user checkpoint and reloads the bundled one; applies `NimkOut`, shows an overlay |
 | `Reload config` | `Core.reloadConfig()` rereads `<Application Support>/<bundle id>/config.toml` (a missing file is fine), calls `nimk_set_config`, and shows an overlay: `Đã nạp config` ("config loaded") or `Config: N giá trị bị bỏ` ("N values ignored") ([11](11-config.md)) |
+| `Mở NeuralIMK…` | "Open NeuralIMK": launches the companion app (`com.giangndm.NeuralIMK`) |
 | `Open data folder` | Opens the data dir `<Application Support>/<bundle id>` in Finder |
 | `Show diagnostics log` | Opens `<Library>/Logs/<bundle id>.log` |
 
 Choosing a model calls `nimk_set_model`, applies `NimkOut` (committing the word being typed), updates the status item, and shows an overlay with the model name.
 Models are described in [linear](models/linear.md) and [gru](models/gru.md). Stats hold counters only, never typed text ([05](05-storage-and-log.md)).
+
+## Companion app notifications
+
+The IME observes `com.giangndm.inputmethod.NeuralIMK.reloadConfig` (distributed) and calls `Core.reloadConfig()` when the companion app rewrites `config.toml`.
+It posts `com.giangndm.inputmethod.NeuralIMK.corrected` on every hotkey flip (manual overlay).
+For the first three flips (`UserDefaults` key `correctionHintCount`, `CorrectionHint`), the overlay reads `→ <word> · Double-Shift lần nữa để hoàn tác` ("press Double-Shift again to undo") instead of the VI/EN badge; the panel is sized to the text.
 
 ## Dashboard (after M4)
 

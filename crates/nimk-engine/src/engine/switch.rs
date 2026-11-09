@@ -53,7 +53,7 @@ impl Engine {
         if self.composer.is_empty() {
             self.shown = to;
         }
-        self.logger
+        self.hooks
             .log(t, Event::ManualSwitch { scope, word_id, to });
         let finals: Vec<_> = label
             .and_then(|(target, weight)| {

@@ -3918,6 +3918,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 name = "nimk-engine"
 version = "0.1.0"
 dependencies = [
+ "nimk-hook",
  "nimk-policy",
  "nimk-storage",
  "nimk-telex",
@@ -3936,7 +3937,18 @@ dependencies = [
  "nimk-engine",
  "nimk-storage",
  "nimk-types",
+ "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "nimk-hook"
+version = "0.1.0"
+dependencies = [
+ "nimk-storage",
+ "nimk-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3996,6 +4008,7 @@ name = "nimk-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

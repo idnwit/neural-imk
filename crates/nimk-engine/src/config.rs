@@ -13,7 +13,7 @@ pub const DEFAULT_TOML: &str = include_str!("../config/default.toml");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Threading {
-    /// Trainer and log writer on background threads (production).
+    /// Trainer and hooks (event log included) on background threads (production).
     Background,
     /// Everything on the caller's thread, deterministic (tests, replay).
     Inline,
@@ -493,7 +493,7 @@ impl EngineConfig {
             double_shift: true,
             double_shift_secs: 0.4,
             shift_tap_secs: 0.3,
-            ctrl_space: true,
+            ctrl_space: false,
             idle_commit_secs: 0.0,
             extra_letters: String::new(),
             extra_boundaries: String::new(),

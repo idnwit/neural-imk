@@ -1,0 +1,32 @@
+# Every commit of a pull request must be a Conventional Commit: release-plz
+# builds CHANGELOG.md and picks the next version from these subjects
+# (docs/08-coding-standard.md#commit-messages).
+name: Conventional commits
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Commits in this pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/check-commit-msg.sh --range "$BASE_SHA..$HEAD_SHA"
+      - name: Pull request title (used as the squash-merge subject)
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title"
+          ./scripts/check-commit-msg.sh "$RUNNER_TEMP/title"

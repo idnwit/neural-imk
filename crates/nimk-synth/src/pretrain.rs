@@ -106,6 +106,7 @@ fn session(id: &str) -> SessionInfo {
         id: id.to_owned(),
         wall_unix_ms: 0,
         app_version: APP_VERSION.to_owned(),
+        utc_offset_min: 0,
     }
 }
 

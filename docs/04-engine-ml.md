@@ -174,8 +174,9 @@ Counted per committed word with a final label:
 | Display accuracy | Keys whose display decision equals the final label, with each model applying `switch_margin` to its own simulated display |
 | Flips | Display changes between consecutive keys of a word |
 
-Stats persist in the blob `stats/<kind>` and reset with the model.
-API: `Engine::model_stats(kind)`; FFI `nimk_model_stats`, `nimk_set_online_training`, `nimk_online_training`. Stats are not logged as events.
+The trainer scores each word per measured model (`TrainerOut::Score`); the engine logs it as a `model_score` record and the `model_stats` hook (`nimk-hook`) counts it.
+The hook persists the counters in `hooks/model_stats/<kind>` (migrated once from the legacy `stats/<kind>`) and resets a model's counters on the `model_reset` record that `reset_model` logs.
+API: `Engine::model_stats(kind)` (read from the cached hook summary); FFI `nimk_model_stats`, `nimk_set_online_training`, `nimk_online_training`.
 
 ## Pretraining
 

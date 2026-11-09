@@ -112,6 +112,10 @@ final class Core {
     /// The caret moved without a key (mouse click): the engine leaves raw mode.
     func noteNavigation() { nimk_note_navigation(handle) }
 
+    /// The core re-reads the wall clock and UTC offset (after sleep, on
+    /// activation) so per-day usage stays on the right date.
+    func noteWallClock() { nimk_note_wall_clock(handle) }
+
     /// Current mode code (`NIMK_MODE_EN` / `NIMK_MODE_VI`).
     var mode: UInt8 { nimk_mode(handle) }
 

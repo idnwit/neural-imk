@@ -80,6 +80,9 @@ class InputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         composing = false
+        // The wall clock may have jumped (sleep, time zone) since the last
+        // key; usage dates re-anchor on the next record.
+        Core.shared.noteWallClock()
         if let client = sender as? IMKTextInput {
             // A newer activation (or a deactivation) within the window
             // replaces this one.
@@ -147,6 +150,9 @@ class InputController: IMKInputController {
         let reload = NSMenuItem(title: "Reload config", action: #selector(reloadConfig(_:)), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
+        let openApp = NSMenuItem(title: "Mở NeuralIMK…", action: #selector(openCompanion(_:)), keyEquivalent: "")
+        openApp.target = self
+        menu.addItem(openApp)
         let open = NSMenuItem(title: "Open data folder", action: #selector(openDataFolder(_:)), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
@@ -207,6 +213,13 @@ class InputController: IMKInputController {
         let rejected = Core.shared.reloadConfig()
         let caret = client().map { ContextProbe.caretRect($0) } ?? .zero
         Overlay.shared.showText(rejected == 0 ? "Đã nạp config" : "Config: \(rejected) giá trị bị bỏ", caret: caret)
+    }
+
+    @objc func openCompanion(_ sender: Any?) {
+        Core.shared.log("menu: open companion")
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.giangndm.NeuralIMK") {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        }
     }
 
     @objc func openDataFolder(_ sender: Any?) {
@@ -295,6 +308,21 @@ class InputController: IMKInputController {
         let mode = out.mode == UInt8(NIMK_MODE_UNCHANGED) ? nil : out.mode
         if let mode {
             ModeStatusItem.shared.show(mode: mode, auto: isAuto)
+        }
+        if out.overlay == UInt8(NIMK_OVERLAY_MANUAL) {
+            // The companion app counts hotkey flips as corrections.
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("com.giangndm.inputmethod.NeuralIMK.corrected"),
+                object: nil, userInfo: nil, deliverImmediately: true)
+            let defaults = UserDefaults.standard
+            let count = defaults.integer(forKey: "correctionHintCount")
+            if CorrectionHint.shouldShow(count: count),
+               let word = (out.marked ?? out.commit)?.trimmingCharacters(in: .whitespaces), !word.isEmpty {
+                defaults.set(CorrectionHint.next(count: count), forKey: "correctionHintCount")
+                Overlay.shared.showText("→ \(word) · Double-Shift lần nữa để hoàn tác",
+                                        caret: caret ?? ContextProbe.caretRect(client))
+                return  // replaces the VI/EN badge for this event
+            }
         }
         if out.overlay != UInt8(NIMK_OVERLAY_NONE) {
             showOverlay(mode: mode ?? Core.shared.mode,

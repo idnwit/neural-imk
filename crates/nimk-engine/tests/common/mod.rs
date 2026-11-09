@@ -130,6 +130,7 @@ pub fn session() -> nimk_engine::SessionInfo {
         id: "test-session".into(),
         wall_unix_ms: 1,
         app_version: "0.0.0".into(),
+        utc_offset_min: 0,
     }
 }
 

@@ -113,7 +113,7 @@ fn kinds(out: &[TrainerOut]) -> String {
         .map(|o| match o {
             TrainerOut::Update { n_samples, .. } => format!("u{n_samples}"),
             TrainerOut::Snapshot(_) => "s".to_owned(),
-            TrainerOut::Stats(..) => "t".to_owned(),
+            TrainerOut::Score { .. } => "t".to_owned(),
             TrainerOut::Diagnostic(_) => "d".to_owned(),
         })
         .collect::<Vec<_>>()
@@ -199,4 +199,75 @@ fn word_examples_are_one_update() {
     out.clear();
     c.on_examples(Vec::new(), true, None, &mut out);
     assert!(out.is_empty(), "empty word is a no-op");
+}
+
+/// The `Score` outputs of `out`, as `(word_id, correct, hits, total, flips, amend)`.
+fn scores(out: &[TrainerOut]) -> Vec<(u64, bool, u16, u16, u16, bool)> {
+    out.iter()
+        .filter_map(|o| match o {
+            TrainerOut::Score {
+                word_id,
+                correct,
+                display_hits,
+                display_total,
+                flips,
+                amend,
+                ..
+            } => Some((
+                *word_id,
+                *correct,
+                *display_hits,
+                *display_total,
+                *flips,
+                *amend,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn words_are_scored_and_late_corrections_rescore_them() {
+    let mut c = core();
+    let mut out = Vec::new();
+    for lang in [Lang::Vi, Lang::En, Lang::Vi] {
+        c.on_key(&KeyObs {
+            word_id: 4,
+            active_render: lang,
+            margin: 0.1,
+            obs: None,
+        });
+    }
+    let info = |label, amends| WordInfo {
+        word_id: 4,
+        label,
+        committed: Lang::Vi,
+        amends,
+        category: StatCategory::Ide,
+    };
+    c.on_examples(Vec::new(), false, Some(info(Lang::Vi, None)), &mut out);
+    assert_eq!(scores(&out), vec![(4, true, 2, 3, 2, false)]);
+    out.clear();
+    // The truth becomes En: wrong, one keystroke matched.
+    c.on_examples(
+        Vec::new(),
+        true,
+        Some(info(Lang::En, Some(Lang::Vi))),
+        &mut out,
+    );
+    assert_eq!(scores(&out), vec![(4, false, 1, 3, 2, true)]);
+    out.clear();
+    // Same truth again, or an unknown word: nothing.
+    c.on_examples(
+        Vec::new(),
+        true,
+        Some(info(Lang::En, Some(Lang::Vi))),
+        &mut out,
+    );
+    let unknown = WordInfo {
+        word_id: 99,
+        ..info(Lang::Vi, Some(Lang::En))
+    };
+    c.on_examples(Vec::new(), true, Some(unknown), &mut out);
+    assert!(scores(&out).is_empty());
 }

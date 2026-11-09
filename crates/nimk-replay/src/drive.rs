@@ -88,6 +88,7 @@ fn session_config(
         id: session.id.clone(),
         wall_unix_ms,
         app_version,
+        utc_offset_min: 0,
     };
     (cfg, info)
 }
@@ -128,6 +129,8 @@ fn feed(engine: &mut Engine, record: &Record, frozen: bool) {
         // The logged session switched models; replay evaluates the models
         // given on the CLI, so the switch itself is not reproduced.
         Event::ModelSwitch { .. } => {}
+        // Derived statistics; not replayed.
+        Event::ModelScore { .. } => {}
         _ => {}
     }
 }

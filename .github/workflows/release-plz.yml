@@ -1,0 +1,80 @@
+# Versioning and releases (release-plz.toml, docs/07-build-and-install.md).
+#
+# Every push to master:
+# - `release-pr` opens or updates the "release" PR: bumps the workspace
+#   version and updates CHANGELOG.md from the commits since the last tag.
+# - `release` tags `vX.Y.Z` and creates the GitHub release once that PR is
+#   merged (the version in Cargo.toml has no tag yet), then the DMG is built
+#   and attached to that release.
+#
+# A release created with GITHUB_TOKEN does not trigger other workflows, so
+# the DMG build is called from here instead of listening for `release`.
+name: Release-plz
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'giangndm' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@v0.5.148
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        if: ${{ steps.release-plz.outputs.releases_created == 'true' }}
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag="$(echo "$RELEASES" | jq -r '.[] | select(.package_name == "nimk-ffi") | .tag')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'giangndm' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5.148
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-dmg:
+    name: Build DMG
+    needs: release-plz-release
+    if: ${{ needs.release-plz-release.outputs.tag != '' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-dmg.yml
+    with:
+      tag: ${{ needs.release-plz-release.outputs.tag }}
+    secrets: inherit

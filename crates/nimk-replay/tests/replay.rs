@@ -42,6 +42,7 @@ fn write_session(storage: Arc<dyn Storage>, session: &str, script: &str, t0: f64
         id: session.to_owned(),
         wall_unix_ms: 1_794_111_700_000,
         app_version: "test".to_owned(),
+        utc_offset_min: 0,
     };
     let mut engine = Engine::new(cfg, storage, info);
     let mut t = t0;
@@ -278,6 +279,7 @@ fn model_switch_records_are_ignored() {
         id: "sw".to_owned(),
         wall_unix_ms: 1_794_111_700_000,
         app_version: "test".to_owned(),
+        utc_offset_min: 0,
     };
     let mut engine = Engine::new(cfg, Arc::clone(&storage), info);
     let mut t = 300.0;

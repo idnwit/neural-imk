@@ -8,11 +8,12 @@
 //! - `hotkey`: switch hotkey state machine (double Shift tap, Ctrl+Space).
 //! - `labeler`: turns commits and manual switches into [`nimk_types::Example`]s.
 //! - `trainer`: replay buffer + correction window; background or inline.
-//! - `logger`: serializes [`nimk_types::Record`]s to an `EventSink`.
+//! - `hookbus`: wraps events into [`nimk_types::Record`]s and runs the hooks
+//!   (the event log is one of them, `nimk_hook::EventLogHook`).
 //!
 //! Internal modules are independent of each other; only `engine` wires
 //! them together (enforced by arch-lint). Threads live only in `trainer`
-//! and `logger`. The trainer publishes `Arc<dyn ImeModel>` snapshots over a
+//! and `hookbus`. The trainer publishes `Arc<dyn ImeModel>` snapshots over a
 //! channel; the engine drains it with `try_recv` at word boundaries, so the
 //! hot path never locks.
 #![forbid(unsafe_code)]
@@ -20,9 +21,9 @@
 mod composer;
 mod config;
 mod engine;
+mod hookbus;
 mod hotkey;
 mod labeler;
-mod logger;
 mod trainer;
 
 pub use config::{
@@ -32,4 +33,4 @@ pub use config::{
 pub use engine::{CheckpointSource, Engine, EngineError, EngineOutput, Overlay, SessionInfo};
 pub use nimk_policy::ModelKind;
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};
-pub use trainer::{ModelStats, StatCategory};
+pub use nimk_types::{ModelStats, StatCategory};

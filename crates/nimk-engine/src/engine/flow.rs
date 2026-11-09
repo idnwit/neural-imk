@@ -1,17 +1,40 @@
 //! Per-key flow of [`Engine`]: observation, model call, mechanical
 //! application of the action, commits, labels and trainer outputs.
 
-use nimk_policy::{ModelKind, decide};
+use nimk_hook::HookMsg;
+use nimk_policy::{ModelInput, ModelKind, ModelTransform};
 use nimk_types::{
-    Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
-    RECENT_WINDOW, Target,
+    Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, ModelStats,
+    Observation, RECENT_WINDOW, StatCategory, Target, Transform,
 };
 
 use super::machine::{Class, Move, State, transition};
 use super::{Engine, EngineOutput, META_KEPT, Overlay, PendingWord, TelexFlags, WordMeta};
 use crate::composer::{Committed, boundary_of, printable_char};
 use crate::labeler::{FinalLabel, Step};
-use crate::trainer::{KeyObs, StatCategory, TrainerOut, WordInfo};
+use crate::trainer::{KeyObs, TrainerOut, WordInfo};
+
+/// Name of the hook publishing per-model counters.
+const MODEL_STATS: &str = "model_stats";
+
+/// Counters per [`ModelKind::index`] from the `model_stats` summary
+/// (`{"<kind>": ModelStats, ...}`); a missing or malformed entry reads as
+/// zero counters.
+fn parse_model_stats(json: &str) -> [ModelStats; 2] {
+    let mut stats = [ModelStats::default(); 2];
+    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str::<serde_json::Value>(json)
+    else {
+        return stats;
+    };
+    for kind in ModelKind::ALL {
+        if let (Some(v), Some(slot)) = (map.remove(kind.name()), stats.get_mut(kind.index()))
+            && let Ok(s) = serde_json::from_value(v)
+        {
+            *slot = s;
+        }
+    }
+    stats
+}
 
 /// Most model calls kept per word for training (a pathological word stops
 /// recording instead of growing without bound).
@@ -54,7 +77,7 @@ impl Engine {
         let step = transition(self.state(), self.classify(key));
         let mask = mask_of(step);
         let word_id = (!self.composer.is_empty() || mask.append).then(|| self.composer.word_id());
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Key {
                 key: key.clone(),
@@ -241,29 +264,13 @@ impl Engine {
         }
     }
 
-    /// Hysteresis: leave `base` only if `|p - 0.5| > margin`. Returns the
-    /// sanitized probability for the log (`None` if not finite) and the
-    /// chosen rendering.
-    fn hysteresis(&self, base: Lang, p: f32) -> (Option<f32>, Lang) {
-        if !p.is_finite() {
-            return (None, base);
-        }
-        let p = p.clamp(0.0, 1.0);
-        let chosen = if (p - 0.5).abs() > self.live.switch_margin {
-            Lang::from_p_vi(p)
-        } else {
-            base
-        };
-        (Some(p), chosen)
-    }
-
     /// Recomputes the Telex rendering and flags of the buffer.
     fn refresh_telex(&mut self) {
-        let tr = nimk_telex::transform(self.composer.raw());
-        self.composer.set_vi(&tr.text);
+        let st = nimk_telex::TelexTransform.apply(self.composer.raw());
+        self.composer.set_vi(&st.vi);
         self.telex = TelexFlags {
-            valid_vi: tr.valid_vi,
-            viable_vi: tr.viable_vi,
+            valid_vi: st.valid_vi,
+            viable_vi: st.viable_vi,
         };
     }
 
@@ -298,25 +305,15 @@ impl Engine {
                 None,
             ),
             None => {
-                let scores = self.model.score(&obs);
-                let edit = match structural {
-                    Some(edit) => edit,
-                    None => decide(&scores, mask).edit,
-                };
-                let base = self.shown;
-                let (p, held) = self.hysteresis(base, scores.p_vi);
-                let render = if self.locked {
-                    // A manual switch locks the rendering for the rest of the word.
-                    base
-                } else if edit == EditAction::Commit {
-                    // Hysteresis only steadies the display mid-word; the
-                    // committed text is the model's decision at the commit
-                    // step itself.
-                    p.map_or(base, Lang::from_p_vi)
-                } else {
-                    held
-                };
-                (Action { edit, render }, p)
+                let out = ModelTransform::new(&*self.model).apply(&ModelInput {
+                    obs: &obs,
+                    base: self.shown,
+                    locked: self.locked,
+                    margin: self.live.switch_margin,
+                    structural,
+                    prior: false,
+                });
+                (out.action, out.p_vi)
             }
         };
 
@@ -327,7 +324,7 @@ impl Engine {
             EditAction::Pop => before.saturating_sub(1),
             EditAction::Commit | EditAction::Pass => before,
         };
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Decision {
                 target: Target::Word(self.composer.word_id()),
@@ -455,10 +452,17 @@ impl Engine {
     pub(super) fn decide_prior(&mut self, focus_id: u64, t: f64, out: &mut EngineOutput) {
         self.shown = self.mode;
         let obs = self.observation(None, ActionMask::default(), t);
-        let scores = self.model.score(&obs);
-        let (p_vi, render) = self.hysteresis(self.mode, scores.p_vi);
+        let scored = ModelTransform::new(&*self.model).apply(&ModelInput {
+            obs: &obs,
+            base: self.mode,
+            locked: false,
+            margin: self.live.switch_margin,
+            structural: None,
+            prior: true,
+        });
+        let (p_vi, render) = (scored.p_vi, scored.action.render);
         let target = Target::Focus(focus_id);
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::Decision {
                 target,
@@ -523,7 +527,7 @@ impl Engine {
             return;
         };
         let text = p.text();
-        self.logger.log(
+        self.hooks.log(
             t,
             Event::WordCommit {
                 word_id: p.id,
@@ -582,7 +586,7 @@ impl Engine {
     /// Logs final labels and hands their examples to the trainer.
     pub(super) fn emit_labels(&mut self, t: f64, finals: Vec<FinalLabel>) {
         for f in finals {
-            self.logger.log(
+            self.hooks.log(
                 t,
                 Event::Label {
                     target: f.target,
@@ -614,31 +618,77 @@ impl Engine {
     }
 
     /// Picks up trainer outputs (word boundaries only, never mid-word).
+    /// Scores are logged before the hooks are drained, so in `Inline` mode
+    /// the `model_stats` summary is current when this returns.
     pub(super) fn drain_trainer(&mut self, t: f64) {
         let mut outs = Vec::new();
         self.trainer.drain(&mut outs);
         for o in outs {
-            match o {
-                TrainerOut::Update {
-                    policy_id,
-                    n_samples,
-                    loss,
-                } => {
-                    self.logger.log(
-                        t,
-                        Event::ModelUpdate {
-                            policy_id,
-                            n_samples,
-                            loss,
-                        },
-                    );
-                }
-                TrainerOut::Snapshot(model) => {
+            match self.log_trainer_out(t, o) {
+                Some(TrainerOut::Snapshot(model)) => {
                     self.model_id = std::sync::Arc::from(model.id());
                     self.model = model;
                 }
-                TrainerOut::Stats(kind, stats) => self.stats[kind.index()] = stats,
-                TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
+                Some(TrainerOut::Diagnostic(d)) => self.diagnostics.push(d),
+                Some(TrainerOut::Update { .. } | TrainerOut::Score { .. }) | None => {}
+            }
+        }
+        self.drain_hooks();
+    }
+
+    /// Logs a trainer output that is a record (`Update` as `model_update`,
+    /// `Score` as `model_score`) at event time `t`; hands back the others.
+    pub(super) fn log_trainer_out(&mut self, t: f64, o: TrainerOut) -> Option<TrainerOut> {
+        let event = match o {
+            TrainerOut::Update {
+                policy_id,
+                n_samples,
+                loss,
+            } => Event::ModelUpdate {
+                policy_id,
+                n_samples,
+                loss,
+            },
+            TrainerOut::Score {
+                kind,
+                word_id,
+                category,
+                correct,
+                display_hits,
+                display_total,
+                flips,
+                amend,
+                served,
+            } => Event::ModelScore {
+                kind: kind.name().into(),
+                word_id,
+                category,
+                correct,
+                display_hits,
+                display_total,
+                flips,
+                amend,
+                served,
+            },
+            other @ (TrainerOut::Snapshot(_) | TrainerOut::Diagnostic(_)) => return Some(other),
+        };
+        self.hooks.log(t, event);
+        None
+    }
+
+    /// Picks up hook messages: caches the latest summary per hook (the
+    /// `model_stats` one also parsed into the counters) and queues
+    /// diagnostics.
+    pub(super) fn drain_hooks(&mut self) {
+        for m in self.hooks.drain() {
+            match m {
+                HookMsg::Summary { hook, json } => {
+                    if hook == MODEL_STATS {
+                        self.stats = parse_model_stats(&json);
+                    }
+                    self.summaries.insert(hook, json);
+                }
+                HookMsg::Diagnostic(d) => self.diagnostics.push(d),
             }
         }
     }

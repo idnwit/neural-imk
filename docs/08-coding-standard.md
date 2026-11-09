@@ -1,6 +1,6 @@
 # Coding standard
 
-> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`
+> **Status:** stable · **Updated:** 2026-11-09 · **Code:** `Cargo.toml`, `clippy.toml`, `arch-lint.toml`, `Makefile`, `scripts/check-commit-msg.sh`
 
 `make check` (fmt, clippy, test, arch-lint) must pass before every commit.
 Tools enforce every rule below except those marked as conventions.
@@ -35,8 +35,9 @@ Use `match` or `if let` instead of `unwrap_or`: arch-lint rule AL013 flags every
 `arch-lint.toml` (arch-lint 0.11, `preset = "recommended"`, `fail_on = "warning"`) locks layers and the key path by `use` path.
 
 ```text
- ffi, replay, synth  -->  engine  -->  telex | policy  -->  types
+ ffi, replay, synth  -->  engine  -->  telex | policy | hook  -->  types
                              \-->  storage   (true leaf, no nimk deps)
+                                      hook  -->  storage
 ```
 
 Dependencies point down only. `Cargo.toml` also enforces this, since a crate without the dependency cannot `use` it.
@@ -45,10 +46,10 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 
 | Scope | Paths |
 | --- | --- |
-| `types`, `storage`, `telex`, `policy`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
+| `types`, `storage`, `telex`, `policy`, `hook`, `engine`, `ffi`, `replay`, `synth` | `crates/nimk-<name>/src/**` |
 | `pure` | `nimk-types`, `nimk-telex`, `nimk-policy` |
-| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-logger` | One engine module each (`eng-trainer` includes `trainer/**`) |
-| `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `logger.rs` |
+| `eng-composer`, `eng-hotkey`, `eng-labeler`, `eng-trainer`, `eng-hookbus` | One engine module each (`eng-trainer` includes `trainer/**`) |
+| `engine-no-threads` | Engine `src/**` except `trainer.rs`, `trainer/**`, `hookbus.rs` |
 | `non-ffi` | `crates/*/src/**` except `nimk-ffi` |
 
 `crates/*/examples/**` is excluded from arch-lint; clippy still checks it.
@@ -58,15 +59,17 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | Rule | Scope | Forbids | Protects |
 | --- | --- | --- | --- |
 | `types-is-bottom` | `types` | all other nimk crates | `nimk-types` is the bottom layer |
-| `leaf-storage` | `storage` | all other nimk crates | Storage handles bytes only |
+| `leaf-storage` | `storage` | all other nimk crates (incl. hook) | Storage handles bytes only |
 | `leaf-telex` | `telex` | every nimk crate except `types` | Telex depends only on `types` |
-| `leaf-policy` | `policy` | storage, telex, engine, ffi, synth, replay, `std::fs`, `std::thread` | Policy only maps `Observation` to action scores |
+| `leaf-policy` | `policy` | storage, telex, hook, engine, ffi, synth, replay, `std::fs`, `std::thread` | Policy only maps `Observation` to action scores |
+| `leaf-hook` | `hook` | engine, ffi, policy, telex, synth, replay, `std::fs/net/thread/time/env` | Hooks observe Records; I/O only through given handles; the host owns threads |
 | `engine-not-up` | `engine` | ffi, synth, replay, `std::fs` | Engine writes files only via `Storage` |
-| `ffi-thin` | `ffi` | policy, telex, synth, replay, `std::fs` | FFI only adapts the engine to C |
+| `ffi-thin` | `ffi` | policy, telex, hook, synth, replay, `std::fs` | FFI only adapts the engine to C |
 | `replay-not-ffi`, `synth-not-ffi` | `replay`, `synth` | `nimk_ffi` | They call the engine directly |
 | `pure-no-side-effects` | `pure` | `std::fs/io/net/thread/time/env`, `std::sync` (except `Arc`, `atomic`), `parking_lot` | No I/O, locks or clock in pure crates |
 | `engine-event-clock` | `engine` | `std::time`, `std::env` | Event timestamps are the only clock |
 | `hot-path-no-io` | `engine-no-threads` | `std::fs`, `std::net`, `std::thread`, `Mutex`, `RwLock`, `Condvar` | Key path has no I/O, locks or threads |
+| `engine-uses-transforms` | `engine` | `nimk_telex::transform`, `nimk_policy::decide` | Engine reaches Telex and the model only through `TelexTransform` / `ModelTransform` |
 | `eng-<module>-independent` (5 rules) | each engine module | `crate::` and `super::` paths of its siblings and `engine` | Only `engine.rs` wires modules together |
 | `no-c-exports-outside-ffi` | `non-ffi` | `#[no_mangle]`, `#[export_name]` | Only `nimk-ffi` exports C symbols |
 | `no-unwrap-expect` | repo | `unwrap`/`expect` outside tests | Backs up the clippy lints |
@@ -99,6 +102,34 @@ Dependencies point down only. `Cargo.toml` also enforces this, since a crate wit
 | Files only via `Storage` | `engine-not-up`, `leaf-policy`, `ffi-thin` |
 | API, event schema or default config changes update `docs/` in the same commit | Review |
 | An incompatible schema change bumps `SCHEMA_VERSION` | Review |
+
+## Commit messages
+
+Every commit subject is a [Conventional Commit](https://www.conventionalcommits.org/). release-plz reads the subjects to write `CHANGELOG.md` and to pick the next version ([07](07-build-and-install.md#automated-releases-release-plz--github-actions)).
+
+```text
+<type>(<scope>)!: <summary>
+
+feat(hook): add usage statistics per app
+fix(app): keep config.toml when it cannot be read
+docs: describe the release flow
+```
+
+| Part | Rule |
+| --- | --- |
+| `type` | `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert` |
+| `scope` | Optional, lowercase: a crate without the `nimk-` prefix (`engine`, `hook`, `ffi`, `policy`), or `app`, `ime`, `ci`, `release` |
+| `!` | Breaking change (also add a `BREAKING CHANGE:` footer) |
+| Version bump | `feat` bumps the minor version, `fix` and the others the patch, `!` the major (minor while below 1.0) |
+
+Git's own subjects (`Merge ...`, `Revert "..."`, `fixup!`, `squash!`) are accepted.
+
+| Check | Where |
+| --- | --- |
+| `.githooks/commit-msg` | Local; install once with `make hooks` |
+| `.github/workflows/commits.yml` | Every pull request: all its commits and its title (the squash-merge subject) |
+
+Both run `scripts/check-commit-msg.sh`.
 
 ## Tests
 

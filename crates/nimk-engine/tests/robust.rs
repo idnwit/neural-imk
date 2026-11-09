@@ -349,3 +349,36 @@ fn garbage_never_panics_with_linear_action() {
     let e = Engine::new(cfg, Arc::new(MemStorage::new()), session());
     garbage(e, 0xFEED, "linear_action");
 }
+
+#[test]
+fn note_wall_clock_logs_a_clock_record_at_the_last_event_time() {
+    let (mut e, storage) = const_engine(0.9, inline_cfg());
+    e.on_context(&ctx("com.apple.TextEdit", 1, 5.0));
+    let mut t = 5.0;
+    type_str(&mut e, "abc ", &mut t);
+    e.note_wall_clock(1_794_218_400_000, 420);
+    e.shutdown().unwrap();
+    let recs: Vec<nimk_types::Record> = log_bytes(&storage)
+        .iter()
+        .map(|b| serde_json::from_slice(b).unwrap())
+        .collect();
+    let clock = recs
+        .iter()
+        .find(|r| matches!(r.event, Event::Clock { .. }))
+        .expect("clock record");
+    assert_eq!(
+        clock.event,
+        Event::Clock {
+            wall_unix_ms: 1_794_218_400_000,
+            utc_offset_min: 420,
+        }
+    );
+    // Logged at the last input time, never a clock the engine read.
+    assert!((clock.t - t).abs() < 1.0, "t = {}", clock.t);
+    let prev = recs
+        .iter()
+        .take_while(|r| r.seq < clock.seq)
+        .map(|r| r.t)
+        .fold(0.0_f64, f64::max);
+    assert!(clock.t >= prev);
+}

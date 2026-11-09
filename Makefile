@@ -1,4 +1,4 @@
-.PHONY: swift-test check fmt lint test arch header models app install
+.PHONY: swift-test check fmt lint test arch header models app install dmg hooks
 
 check: fmt lint test arch
 
@@ -23,6 +23,8 @@ swift-test:
 	target/swift-test/idlecommit
 	swiftc macos/NeuralIMK/StatsText.swift macos/tests/statstext/main.swift -o target/swift-test/statstext
 	target/swift-test/statstext
+	swiftc macos/Shared/*.swift macos/tests/app/main.swift -o target/swift-test/app
+	target/swift-test/app
 
 header:
 	cbindgen --config crates/nimk-ffi/cbindgen.toml --crate nimk-ffi --output target/nimk_ffi.h
@@ -55,3 +57,10 @@ app:
 
 install: app
 	./scripts/install.sh
+
+dmg:
+	./scripts/package-dmg.sh
+
+# Git hooks in .githooks/ (commit-msg: Conventional Commits).
+hooks:
+	git config core.hooksPath .githooks
