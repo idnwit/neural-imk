@@ -42,7 +42,7 @@ impl Rng {
 /// macOS virtual keycode (`kVK_ANSI_*`) and whether Shift is needed for `c`
 /// on a US keyboard. Unknown characters map to `kVK_ANSI_Grave` (50).
 pub(crate) fn key_for(c: char) -> (u16, bool) {
-    let shift = c.is_ascii_uppercase() || "!?\"()_".contains(c);
+    let shift = c.is_ascii_uppercase() || "!?\"()_~".contains(c);
     let code = match c.to_ascii_lowercase() {
         'a' => 0x00,
         's' => 0x01,
@@ -70,6 +70,7 @@ pub(crate) fn key_for(c: char) -> (u16, bool) {
         '9' | '(' => 0x19,
         '7' => 0x1A,
         '-' | '_' => 0x1B,
+        '~' => 0x32,
         '8' => 0x1C,
         '0' | ')' => 0x1D,
         'o' => 0x1F,

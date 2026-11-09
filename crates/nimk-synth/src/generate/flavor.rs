@@ -1,7 +1,7 @@
 //! App-flavoured lines: shell command lines and code/comment lines typed
 //! with punctuation keys, for terminal and IDE sessions.
 
-use nimk_types::{EditAction, Lang};
+use nimk_types::Lang;
 
 use super::{Flavor, MixProfile, ScriptWord, Writer};
 use crate::Corpus;
@@ -17,8 +17,51 @@ impl Writer {
         self.boundary('\r');
     }
 
-    /// `git commit -m ./src/main`-shaped line.
+    /// A shell or coding-assistant input line. Triggers (`/ @ !`) only start
+    /// raw mode when nothing is marked (ADR 0012), so slash commands and
+    /// mentions at the line start are raw while the same characters after a
+    /// word and a space are not.
     fn command_line(&mut self, mix: &MixProfile, corpus: &Corpus) {
+        let r = self.rng.unit();
+        if r < 0.15 && !corpus.slashes.is_empty() {
+            // `/help`, optionally followed by chat words.
+            let c = self.choose_str(&corpus.slashes);
+            self.type_text(&format!("/{c}"), mix.p_typo);
+            if self.rng.chance(0.4) {
+                self.boundary(' ');
+                let len = 2 + self.rng.below(4);
+                let room = self.limit.saturating_sub(self.words.len());
+                self.sentence(mix, corpus, len.min(room), false);
+            }
+        } else if r < 0.27 {
+            // `@src/lib.rs` mention, then words.
+            let d = self.choose_str(&corpus.dirs);
+            let f = self.choose_str(&corpus.files);
+            self.type_text(&format!("@{d}/{f}"), mix.p_typo);
+            self.boundary(' ');
+            let len = 2 + self.rng.below(5);
+            let room = self.limit.saturating_sub(self.words.len());
+            self.sentence(mix, corpus, len.min(room), false);
+        } else if r < 0.37 {
+            // `!ls -la`
+            let c = self.choose_str(&corpus.cmds);
+            self.type_text(&format!("!{c}"), mix.p_typo);
+            if self.rng.chance(0.5) {
+                self.boundary(' ');
+                let f = self.choose_str(&corpus.flags);
+                self.type_text(&f, mix.p_typo);
+            }
+        } else if r < 0.47 {
+            // `cd ~/Docs`
+            let d = self.choose_str(&corpus.dirs);
+            self.type_text(&format!("cd ~/{d}"), mix.p_typo);
+        } else {
+            self.shell_command(mix, corpus);
+        }
+    }
+
+    /// `git commit -m ./src/main`-shaped line.
+    fn shell_command(&mut self, mix: &MixProfile, corpus: &Corpus) {
         let mut parts: Vec<String> = Vec::new();
         parts.extend(self.choose(&corpus.cmds));
         if self.rng.chance(0.8) {
@@ -79,6 +122,12 @@ impl Writer {
             .map_or_else(|| "x".to_owned(), |(_, w)| w)
     }
 
+    /// Like [`Self::choose`], empty when the list is.
+    fn choose_str(&mut self, list: &[String]) -> String {
+        let i = self.rng.below(list.len().max(1));
+        list.get(i).map_or_else(String::new, Clone::clone)
+    }
+
     fn choose(&mut self, list: &[String]) -> Option<String> {
         if list.is_empty() {
             return None;
@@ -107,22 +156,21 @@ impl Writer {
         if raw.is_empty() || self.words.len() >= self.limit {
             return;
         }
+        // Letters typed in raw (command) mode are passed through: no word.
+        let is_word = !self.track.is_raw();
         self.type_word(&raw, Lang::En, p_typo);
-        self.words.push(ScriptWord {
-            word_id: self.words.len() as u64,
-            lang: Lang::En,
-            text: raw.clone(),
-            raw,
-        });
+        if is_word {
+            self.words.push(ScriptWord {
+                word_id: self.words.len() as u64,
+                lang: Lang::En,
+                text: raw.clone(),
+                raw,
+            });
+        }
     }
 
-    /// A boundary key: `Commit` when it ends a word, `Pass` otherwise.
+    /// A boundary key; its edit comes from the state machine.
     pub(super) fn boundary(&mut self, c: char) {
-        let edit = if self.buf_open {
-            EditAction::Commit
-        } else {
-            EditAction::Pass
-        };
-        self.key(c, 0, edit);
+        self.key(c, 0);
     }
 }

@@ -4,25 +4,15 @@ use std::io;
 
 use nimk_engine::EngineConfig;
 use nimk_storage::{EventSink, Storage};
-use nimk_types::{
-    AppContext, Event, KeyEvent, KeyKind, LabelSource, Record, SCHEMA_VERSION, Target,
-};
+use nimk_types::{AppContext, Event, KeyEvent, LabelSource, Record, SCHEMA_VERSION, Target};
 
 use crate::Script;
+use crate::track::{Class, Step, Tracker, classify};
 
 /// `policy_id` written in synthetic `SessionStart` records.
 const SYNTHETIC_POLICY_ID: &str = "synthetic";
 /// `app_version` written in synthetic `SessionStart` records.
 pub(crate) const APP_VERSION: &str = "nimk-synth";
-
-/// Whether the engine's composer treats `key` as a word letter (mirrors
-/// `nimk_engine` key classification for the keys scripts contain).
-fn is_letter(key: &KeyEvent) -> bool {
-    let mut chars = key.chars.chars();
-    key.kind == KeyKind::KeyDown
-        && !key.mods.is_shortcut()
-        && matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_alphabetic())
-}
 
 /// One key of a script with the word bookkeeping the engine would do.
 #[derive(Debug, Clone, Copy)]
@@ -34,36 +24,42 @@ pub(crate) struct WalkedKey<'a> {
     pub(crate) word_id: Option<u64>,
     /// Index of the word this boundary key ends (commits), if any.
     pub(crate) ends_word: Option<usize>,
+    /// The ending key left the word pending (a boundary character stays
+    /// marked); the engine commits it on the next key.
+    pub(crate) pending: bool,
 }
 
 /// Walks `keys`, assigning word ids the way the engine does (0, 1, 2... per
 /// committed non-empty word).
 pub(crate) fn walk(keys: &[KeyEvent]) -> impl Iterator<Item = WalkedKey<'_>> {
     let mut next = 0usize;
-    let mut in_word = false;
+    let mut tracker = Tracker::new();
     keys.iter().map(move |key| {
-        if is_letter(key) {
-            in_word = true;
-            WalkedKey {
+        let class = classify(key);
+        let step = class.map_or(Step::Pass, |c| tracker.step(c));
+        match step {
+            Step::Append | Step::Pop => WalkedKey {
                 key,
                 word_id: Some(next as u64),
                 ends_word: None,
+                pending: false,
+            },
+            Step::EndWord => {
+                let ended = next;
+                next += 1;
+                WalkedKey {
+                    key,
+                    word_id: Some(ended as u64),
+                    ends_word: Some(ended),
+                    pending: matches!(class, Some(Class::Boundary(_))),
+                }
             }
-        } else if in_word {
-            in_word = false;
-            let ended = next;
-            next += 1;
-            WalkedKey {
-                key,
-                word_id: Some(ended as u64),
-                ends_word: Some(ended),
-            }
-        } else {
-            WalkedKey {
+            Step::Pass => WalkedKey {
                 key,
                 word_id: None,
                 ends_word: None,
-            }
+                pending: false,
+            },
         }
     })
 }
@@ -101,9 +97,23 @@ impl SessionWriter<'_> {
     }
 }
 
+impl SessionWriter<'_> {
+    fn write_label(&mut self, t: f64, word: &crate::ScriptWord) -> io::Result<()> {
+        self.write(
+            t,
+            Event::Label {
+                target: Target::Word(word.word_id),
+                label: word.lang,
+                weight: 1.0,
+                source: LabelSource::Correction,
+            },
+        )
+    }
+}
+
 /// Writes scripts as an ordinary event log (`SessionStart`, one synthetic
 /// `Context`, `Key`s, and a `Label { source: Correction, weight: 1.0 }` per
-/// word right after the boundary key that ends it) so `nimk-replay` can
+/// word right after the key that commits it) so `nimk-replay` can
 /// benchmark policies on it. One event sink per script, named after
 /// [`Script::session`].
 ///
@@ -147,6 +157,9 @@ fn write_script(script: &Script, storage: &dyn Storage, config_json: &str) -> io
             caret: ctx.caret,
         },
     )?;
+    // A label follows its word's commit. A word left pending by a boundary
+    // character is committed by the next key, so its label waits for it.
+    let mut held: Option<&crate::ScriptWord> = None;
     for k in walk(&script.keys) {
         let t = k.key.timestamp;
         w.write(
@@ -156,6 +169,9 @@ fn write_script(script: &Script, storage: &dyn Storage, config_json: &str) -> io
                 word_id: k.word_id,
             },
         )?;
+        if let Some(word) = held.take() {
+            w.write_label(t, word)?;
+        }
         if let Some(i) = k.ends_word {
             let word = script.words.get(i).ok_or_else(|| {
                 io::Error::new(
@@ -163,16 +179,16 @@ fn write_script(script: &Script, storage: &dyn Storage, config_json: &str) -> io
                     format!("{}: keys spell more than {i} words", script.session),
                 )
             })?;
-            w.write(
-                t,
-                Event::Label {
-                    target: Target::Word(word.word_id),
-                    label: word.lang,
-                    weight: 1.0,
-                    source: LabelSource::Correction,
-                },
-            )?;
+            if k.pending {
+                held = Some(word);
+            } else {
+                w.write_label(t, word)?;
+            }
         }
+    }
+    if let Some(word) = held {
+        let t = script.keys.last().map_or(t0, |k| k.timestamp);
+        w.write_label(t, word)?;
     }
     w.sink.flush()
 }
@@ -243,19 +259,25 @@ mod tests {
                 .count();
             assert_eq!(keys, script.keys.len());
             let labels: Vec<(u64, Lang)> = records
-                .windows(2)
-                .filter_map(|w| match (&w[0].event, &w[1].event) {
-                    (
-                        Event::Key {
-                            word_id: Some(k), ..
-                        },
-                        Event::Label {
-                            target: Target::Word(id),
-                            label,
-                            weight,
-                            source: LabelSource::Correction,
-                        },
-                    ) if k == id && *weight == 1.0 => Some((*id, *label)),
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| match &r.event {
+                    Event::Label {
+                        target: Target::Word(id),
+                        label,
+                        weight,
+                        source: LabelSource::Correction,
+                    } if *weight == 1.0 => {
+                        // The label follows a key of its own word.
+                        assert!(
+                            records[..i].iter().any(|p| matches!(
+                                p.event,
+                                Event::Key { word_id: Some(k), .. } if k == *id
+                            )),
+                            "label {id} before its word"
+                        );
+                        Some((*id, *label))
+                    }
                     _ => None,
                 })
                 .collect();

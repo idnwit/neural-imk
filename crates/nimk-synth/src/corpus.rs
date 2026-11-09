@@ -30,6 +30,10 @@ pub struct Corpus {
     pub flags: Vec<String>,
     /// Path components (`src`, `usr`).
     pub dirs: Vec<String>,
+    /// Slash-command names typed after `/` (`help`, `clear`).
+    pub slashes: Vec<String>,
+    /// File names with extension (`lib.rs`).
+    pub files: Vec<String>,
 }
 
 const VI: &str = include_str!("../data/vi.txt");
@@ -60,6 +64,8 @@ impl Corpus {
             subs: tagged(COMMANDS, "s:"),
             flags: tagged(COMMANDS, "f:"),
             dirs: tagged(COMMANDS, "d:"),
+            slashes: tagged(COMMANDS, "r:"),
+            files: tagged(COMMANDS, "x:"),
         }
     }
 
@@ -77,6 +83,8 @@ impl Corpus {
             subs: Vec::new(),
             flags: Vec::new(),
             dirs: Vec::new(),
+            slashes: Vec::new(),
+            files: Vec::new(),
         }
     }
 }
@@ -206,6 +214,6 @@ mod tests {
         }
         assert!(c.cmds.len() >= 10 && c.subs.len() >= 10);
         assert!(c.flags.iter().all(|f| f.starts_with('-')));
-        assert!(c.dirs.len() >= 5);
+        assert!(c.dirs.len() >= 5 && c.slashes.len() >= 5 && c.files.len() >= 5);
     }
 }

@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p nimk-synth --example right_context -- [--sessions 200] [--words 500]
-//!     [--seed 42] [--epochs 3] [--runs 2]
+//!     [--seed 42] [--epochs 3] [--runs 2] [--legacy 1]
 //! ```
 //!
 //! Data: `generate(SynthConfig { seed, sessions, words, ..default })`, the
@@ -781,6 +781,14 @@ fn args() -> Result<Args, String> {
     let mut a = Args {
         synth: SynthConfig {
             sessions: 200,
+            // Chat sessions only: the example's word segmentation predates
+            // raw command text (ADR 0012). `--legacy` restores the profile
+            // the Bayes rows were derived for.
+            mix: MixProfile {
+                p_terminal: 0.0,
+                p_ide: 0.0,
+                ..MixProfile::default()
+            },
             ..SynthConfig::default()
         },
         epochs: 3,
@@ -791,6 +799,7 @@ fn args() -> Result<Args, String> {
         let v = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
         let bad = |_| format!("bad value for {flag}: {v}");
         match flag.as_str() {
+            "--legacy" => a.synth.mix = MixProfile::legacy(),
             "--sessions" => a.synth.sessions = v.parse().map_err(bad)?,
             "--words" => a.synth.words_per_session = v.parse().map_err(bad)?,
             "--seed" => a.synth.seed = v.parse().map_err(bad)?,
