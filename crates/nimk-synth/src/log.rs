@@ -8,7 +8,7 @@ use nimk_types::{
     AppContext, Event, KeyEvent, KeyKind, LabelSource, Record, SCHEMA_VERSION, Target,
 };
 
-use crate::{SYNTHETIC_BUNDLE_ID, Script};
+use crate::Script;
 
 /// `policy_id` written in synthetic `SessionStart` records.
 const SYNTHETIC_POLICY_ID: &str = "synthetic";
@@ -69,9 +69,9 @@ pub(crate) fn walk(keys: &[KeyEvent]) -> impl Iterator<Item = WalkedKey<'_>> {
 }
 
 /// Synthetic app context for script number `field_id`.
-pub(crate) fn synthetic_context(field_id: u64, timestamp: f64) -> AppContext {
+pub(crate) fn synthetic_context(bundle_id: &str, field_id: u64, timestamp: f64) -> AppContext {
     AppContext {
-        bundle_id: SYNTHETIC_BUNDLE_ID.to_owned(),
+        bundle_id: bundle_id.to_owned(),
         field_id,
         caret: None,
         timestamp,
@@ -138,7 +138,7 @@ fn write_script(script: &Script, storage: &dyn Storage, config_json: &str) -> io
             policy_id: SYNTHETIC_POLICY_ID.to_owned(),
         },
     )?;
-    let ctx = synthetic_context(0, t0);
+    let ctx = synthetic_context(&script.bundle_id, 0, t0);
     w.write(
         t0,
         Event::Context {
@@ -235,7 +235,7 @@ mod tests {
             }
             assert!(matches!(
                 &records[1].event,
-                Event::Context { bundle_id, field_id: 0, caret: None } if bundle_id == SYNTHETIC_BUNDLE_ID
+                Event::Context { bundle_id, field_id: 0, caret: None } if *bundle_id == script.bundle_id
             ));
             let keys = records
                 .iter()

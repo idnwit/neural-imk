@@ -59,7 +59,7 @@ pub fn probe_word(
 
     let (mut engine, mem) = eval_engine(&cfg, storage)?;
     let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
-    engine.on_context(&synthetic_context(0, t0));
+    engine.on_context(&synthetic_context(&script.bundle_id, 0, t0));
     for key in &script.keys {
         engine.on_key(key);
     }

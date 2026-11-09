@@ -1,0 +1,109 @@
+# Fixed phrases typed in runs. One per line, tokens separated by spaces:
+# `e:word` is English, `v:syllable` is Vietnamese (new-style tone placement).
+# A phrase is only started when its first token's language matches the
+# current run language. Hand-written for this project.
+e:pull e:request
+e:merge e:request
+e:dark e:theme
+e:light e:theme
+e:in e:the
+e:of e:the
+e:on e:the
+e:to e:the
+e:at e:the
+e:to e:do
+e:to e:be
+e:check e:in
+e:check e:out
+e:sign e:in
+e:log e:in
+e:log e:out
+e:up e:to e:date
+e:so e:that
+e:as e:well
+e:for e:example
+e:in e:order e:to
+e:a e:lot e:of
+e:by e:the e:way
+e:how e:to
+e:code e:review
+e:bug e:fix
+e:hot e:fix
+e:open e:source
+e:side e:effect
+e:real e:time
+e:back e:end
+e:front e:end
+e:work e:flow
+e:use e:case
+e:thank e:you
+e:no e:way
+e:it e:is
+e:is e:it
+e:i e:think
+e:ok e:so
+e:take e:a e:look
+e:set e:up
+e:roll e:back
+e:rebase e:onto
+e:force e:push
+e:dry e:run
+e:merge e:conflict
+e:feature e:flag
+e:unit e:test
+e:build e:failed
+e:type e:check
+e:deploy v:lên
+e:deploy v:xong
+e:merge v:vào
+e:push v:lên
+e:pull v:về
+e:commit e:code
+e:review v:giúp
+e:check v:lại
+e:test v:thử
+e:fix v:lỗi
+e:build v:lại
+e:revert v:lại
+e:update v:lên
+e:run v:thử
+e:bug v:này
+e:code v:này
+e:app v:này
+e:model v:này
+e:file v:này
+v:thêm e:feature
+v:sửa e:bug
+v:chạy e:test
+v:gõ e:telex
+v:xem e:log
+v:mở e:pull e:request
+v:tạo e:branch
+v:viết e:test
+v:lỗi e:build
+v:cập v:nhật e:version
+v:không v:được
+v:cái v:này
+v:của v:tôi
+v:có v:thể
+v:như v:vậy
+v:bây v:giờ
+v:ngày v:mai
+v:cảm v:ơn
+v:xin v:chào
+v:tại v:sao
+v:đang v:làm
+v:làm v:sao
+v:ở v:đây
+v:rất v:nhiều
+v:một v:chút
+v:không v:biết
+v:có v:lẽ
+v:nếu v:không
+v:để v:mình
+v:thế v:nào
+v:được v:rồi
+v:chưa v:xong
+v:mình v:nghĩ
+v:cho v:mình
+v:với v:lại
