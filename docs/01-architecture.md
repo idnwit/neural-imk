@@ -65,7 +65,7 @@ The hotkey runs before the model and never enters `Observation`. The model only 
 
 ## Crates and layers
 
-The workspace `crates/*` has 8 crates (edition 2024). Dependencies only point downward.
+The workspace `crates/*` has 9 crates (edition 2024). Dependencies only point downward.
 
 ```text
  +--------------+  +--------------+  +--------------+      +-------------------------+
@@ -80,17 +80,19 @@ The workspace `crates/*` has 8 crates (edition 2024). Dependencies only point do
                  +-----------------+
                  |   nimk-engine   |
                  +-----------------+
-                   |       |      \
-                   v       v       v
-        +------------+ +-------------+ +----------------+
-        | nimk-telex | | nimk-policy | |  nimk-storage  |
-        +------------+ |  (burn)     | |  (true leaf,   |
-                   |   +-------------+ |  no nimk deps) |
-                   v       v           +----------------+
-                 +-----------------+
-                 |   nimk-types    |
-                 +-----------------+
+              /      |       |      \
+             v       v       v       v
+  +------------+ +-------------+ +-----------+ +----------------+
+  | nimk-telex | | nimk-policy | | nimk-hook | |  nimk-storage  |
+  +------------+ |  (burn)     | +-----------+ |  (true leaf,   |
+        |        +-------------+     |         |  no nimk deps) |
+        v              v             v         +----------------+
+        +-------------------------------+
+        |          nimk-types           |
+        +-------------------------------+
 ```
+
+`nimk-hook` also reads and writes blobs through `nimk-storage`'s `BlobStore`. The engine reaches Telex and the model through the `Transform` trait (`TelexTransform`, `ModelTransform`; [ADR 0014](adr/0014-transform-hook-pipeline.md)).
 
 A layer may skip the one below it (`nimk-synth` uses `nimk-policy` directly) but never depends upward.
 
@@ -99,6 +101,7 @@ A layer may skip the one below it (`nimk-synth` uses `nimk-policy` directly) but
 | `nimk-types` | lib | `Lang`, `KeyEvent`, `AppContext`, action contract (`Observation`, `Action`, `ActionMask`, `Example`), event schema |
 | `nimk-storage` | lib | `Storage`, `EventSink`, `EventSource`, `BlobStore` and their implementations; bytes only |
 | `nimk-telex` | lib | `transform`, `encode`, `is_valid_syllable` ([10](10-telex.md)) |
+| `nimk-hook` | lib | `Hook`, `HookCx`; built-in hooks `event_log`, `model_stats`, `usage`; depends on `types` and `storage` only ([ADR 0014](adr/0014-transform-hook-pipeline.md)) |
 | `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `LinearAction`, `GruAction` (backend `burn`); see [linear](models/linear.md), [gru](models/gru.md) |
 | `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, hookbus |
 | `nimk-ffi` | staticlib | C ABI for Swift; the only crate with `extern "C"` and `unsafe` |

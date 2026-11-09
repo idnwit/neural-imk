@@ -356,7 +356,12 @@ fn implicit_labels_after_window_carry_implicit_weight() {
 
 #[test]
 fn ctrl_space_is_consumed_and_switches() {
-    let (mut e, _s) = const_engine(0.9, inline_cfg());
+    // Ctrl+Space is off by default; this test opts in.
+    let cfg = EngineConfig {
+        ctrl_space: true,
+        ..inline_cfg()
+    };
+    let (mut e, _s) = const_engine(0.9, cfg);
     let mut t = 0.0;
     type_str(&mut e, "ab", &mut t);
     let o = e.on_key(&code_key(keycode::SPACE, " ", Modifiers::CONTROL, 1.0));

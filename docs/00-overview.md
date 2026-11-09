@@ -9,7 +9,7 @@ NeuralIMK is a single macOS input method. A neural model picks Vietnamese (Telex
 | # | Goal | Docs |
 | --- | --- | --- |
 | 1 | One IMK input source; VI/EN is an internal mode; Telex is the only typing method | [02](02-keyboard-io.md), [ADR 0001](adr/0001-single-imk-input-source.md) |
-| 2 | Switch hotkey handled inside the IME: double Shift flips the word, Ctrl+Space as fallback | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
+| 2 | Switch hotkey handled inside the IME: double Shift flips the word, optional Ctrl+Space (off by default) | [02](02-keyboard-io.md), [ADR 0008](adr/0008-double-shift-retro-correction.md) |
 | 3 | Context is only `bundle_id` and the relative caret position | [03](03-context-io.md) |
 | 4 | Swappable action models (`LinearAction`, `GruAction`), pretrained on synthetic data, learning online | [04](04-engine-ml.md), [models](models/linear.md), [ADR 0007](adr/0007-neural-action-model.md) |
 | 5 | Log every event for offline replay and model comparison | [05](05-storage-and-log.md) |
@@ -52,6 +52,6 @@ NeuralIMK is a single macOS input method. A neural model picks Vietnamese (Telex
 | `raw` | Raw keys of the current word, e.g. `tieengs` |
 | marked text | Text being composed and underlined, not yet committed |
 | pending word | A finished word still marked; double Shift flips its rendering |
-| manual switch | Double Shift or Ctrl+Space; the source of reliable labels |
+| manual switch | Double Shift (or optional Ctrl+Space); the source of reliable labels |
 | `Observation` / `Action` | Model input and output per key; `Action` is `edit` plus `render` |
 | `p_vi` | Probability that Vietnamese is wanted; the render output |

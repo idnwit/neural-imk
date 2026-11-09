@@ -49,7 +49,7 @@ Test `every_field_is_in_default_toml` checks that every `EngineConfig` field is 
 | `double_shift` | bool | | true | yes | Accept a double Shift tap |
 | `double_shift_secs` | float | 0.05 to 2 | 0.4 | yes | Max time between the two releases |
 | `shift_tap_secs` | float | 0.05 to 1 | 0.3 | yes | Max Shift down-to-up time for a tap |
-| `ctrl_space` | bool | | true | yes | Also accept Ctrl+Space |
+| `ctrl_space` | bool | | false | yes | Also accept Ctrl+Space (off by default: it collides with the macOS input-source shortcut and IDE autocomplete) |
 | `idle_commit_secs` | float | 0, or 0.3 to 10 | 1.5 | yes | Idle seconds before Swift commits the marked text; 0 = off |
 | `extra_letters` | string | no control or whitespace chars | `""` | yes | Characters treated as letters (e.g. `"_"`) |
 | `extra_boundaries` | string | no control chars | `""` | yes | Characters treated as boundaries although alphabetic |

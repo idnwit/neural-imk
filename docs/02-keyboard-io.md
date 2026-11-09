@@ -57,7 +57,7 @@ Telex is `nimk-telex` ([10](10-telex.md)). It is a feature source, not a hard ru
 
 ## Hotkey
 
-The default hotkey is two quick Shift taps, with Ctrl+Space as a fallback for apps that swallow `flagsChanged`.
+The default hotkey is two quick Shift taps. Ctrl+Space is an optional fallback for apps that swallow `flagsChanged`; it is off by default (`ctrl_space = true` enables it) because it collides with the macOS input-source shortcut and IDE autocomplete.
 Cmd+Space is not used because the system takes it before the IME ([ADR 0008](adr/0008-double-shift-retro-correction.md); [ADR 0011](adr/0011-pending-word-commit.md) replaced its retro-correction).
 
 `recognizedEvents(_:)` must return `[.keyDown, .flagsChanged]` so the IME sees modifier events. Detection is in Rust and uses `KeyEvent::timestamp`.
@@ -86,7 +86,7 @@ Any other key or modifier between the first press and the second release cancels
 | Tap length | `shift_tap_secs` | `0.3` |
 | Gap between releases | `double_shift_secs` | `0.4` |
 | Double Shift on | `double_shift` | `true` |
-| Ctrl+Space on | `ctrl_space` | `true` (independent of `double_shift`) |
+| Ctrl+Space on | `ctrl_space` | `false` (independent of `double_shift`) |
 | Hotkeys act and implicit labels | `hotkeys` | `true`; replay sets `false` and injects labels instead |
 
 `consumed` rules:
@@ -94,7 +94,7 @@ Any other key or modifier between the first press and the second release cancels
 - A lone Shift tap while Cmd, Ctrl or Option is held is never a tap.
 - A hotkey hit returns `consumed = true`. Other `flagsChanged` events return `false` so the app keeps its modifier state.
 - A `flagsChanged` that repeats the previous modifier state (VS Code and Electron send each twice) is ignored for tap detection, returns `false`, and still logs a `key` record.
-- Ctrl+Space (no Cmd or Option) returns `consumed = true`.
+- With `ctrl_space = true`, Ctrl+Space (no Cmd or Option) returns `consumed = true`; with the default `false` it reaches the app.
 - With `hotkeys = false`, hotkeys are still recognized and swallowed, but switch no mode and make no label, so word ids match the source log.
 
 ## State machine

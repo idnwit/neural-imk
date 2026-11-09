@@ -15,7 +15,7 @@ Then open System Settings > Keyboard > Input Sources > Edit, click "+", add Neur
 ## How to use
 
 - Type Telex as usual. The model picks Vietnamese or English for each word.
-- Wrong rendering? Tap Shift twice. The current or last word flips, and the model learns from the correction. Ctrl+Space also works.
+- Wrong rendering? Tap Shift twice. The current or last word flips, and the model learns from the correction. Ctrl+Space is optional and off by default; set `ctrl_space = true` in `config.toml` ([docs/11-config.md](docs/11-config.md)) to enable it.
 - The menu bar item shows the mode. Its menu lets you pick the model, toggle online learning per model ("Học online" = learn online), restore the original model ("Khôi phục model gốc"), reload the config, and open the data folder.
 - Keys after `/`, `@` or `!` at the start of a word go straight to the app (raw command mode).
 

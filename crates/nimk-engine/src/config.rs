@@ -493,7 +493,7 @@ impl EngineConfig {
             double_shift: true,
             double_shift_secs: 0.4,
             shift_tap_secs: 0.3,
-            ctrl_space: true,
+            ctrl_space: false,
             idle_commit_secs: 0.0,
             extra_letters: String::new(),
             extra_boundaries: String::new(),

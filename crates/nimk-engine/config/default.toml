@@ -43,8 +43,9 @@ double_shift = true
 double_shift_secs = 0.4
 # Max seconds between a Shift down and up to count as a tap. [0.05, 1]
 shift_tap_secs = 0.3
-# Also accept Ctrl+Space as the switch hotkey.
-ctrl_space = true
+# Also accept Ctrl+Space as the switch hotkey. Off by default: it collides with
+# the macOS input-source shortcut and IDE autocomplete.
+ctrl_space = false
 
 # ---- commit / boundary ----
 # Seconds without a key after which the host commits the composing or pending
