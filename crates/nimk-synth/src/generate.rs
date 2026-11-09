@@ -1,8 +1,9 @@
 //! Code-switching sentence generator producing `KeyEvent` scripts.
 
-use nimk_types::{Action, EditAction, KeyEvent, KeyKind, Lang, Modifiers, keycode};
+use nimk_types::{Action, KeyEvent, KeyKind, Lang, Modifiers, keycode};
 
 use crate::keymap::{Rng, key_for};
+use crate::track::{Step, Tracker, classify};
 use crate::{Corpus, SYNTHETIC_BUNDLE_ID};
 
 /// Sentence length range (words), inclusive.
@@ -226,7 +227,7 @@ pub fn script_of(words: &[(Lang, &str, &str)]) -> Script {
         words: Vec::new(),
         targets: Vec::new(),
         last_lang: Lang::Vi,
-        buf_open: false,
+        track: Tracker::new(),
         state: Lang::Vi,
         limit: usize::MAX,
     };
@@ -238,7 +239,7 @@ pub fn script_of(words: &[(Lang, &str, &str)]) -> Script {
             text: text.to_owned(),
             raw: raw.to_owned(),
         });
-        w.key(' ', 0, EditAction::Commit);
+        w.key(' ', 0);
     }
     Script {
         session: "synth-script".to_owned(),
@@ -262,7 +263,7 @@ fn session(cfg: &SynthConfig, corpus: &Corpus, n: usize) -> Script {
         words: Vec::with_capacity(cfg.words_per_session),
         targets: Vec::new(),
         last_lang: Lang::Vi,
-        buf_open: false,
+        track: Tracker::new(),
         state: Lang::Vi,
         limit: cfg.words_per_session,
     };
@@ -288,6 +289,12 @@ fn session(cfg: &SynthConfig, corpus: &Corpus, n: usize) -> Script {
     }
     let has_words =
         !(corpus.vi.is_empty() && corpus.en.is_empty() && corpus.en_ambiguous.is_empty());
+    // Line flavours need their vocabulary; without it a session is chat.
+    let flavor = if corpus.cmds.is_empty() || corpus.en.is_empty() {
+        Flavor::Chat
+    } else {
+        flavor
+    };
     while has_words && w.words.len() < cfg.words_per_session {
         let remaining = cfg.words_per_session - w.words.len();
         let span = SENTENCE_WORDS.1 - SENTENCE_WORDS.0 + 1;
@@ -329,8 +336,8 @@ struct Writer {
     targets: Vec<Action>,
     /// Language of the most recent word (sticky render for `Pass`).
     last_lang: Lang,
-    /// Whether the engine's word buffer is non-empty after the last key.
-    buf_open: bool,
+    /// The engine's state machine (ADR 0012), advanced by every key.
+    track: Tracker,
     /// Current run language (run model).
     state: Lang,
     /// Words per session; line flavours stop emitting words at this count.
@@ -437,10 +444,10 @@ impl Writer {
         });
         if i + 1 < len {
             if comma_ok && self.rng.chance(P_COMMA) {
-                self.key(',', 0, EditAction::Commit);
-                self.key(' ', 0, EditAction::Pass);
+                self.key(',', 0);
+                self.key(' ', 0);
             } else {
-                self.key(' ', 0, EditAction::Commit);
+                self.key(' ', 0);
             }
             if mix.p_shortcut > 0.0 && self.rng.chance(mix.p_shortcut) {
                 self.shortcut();
@@ -459,9 +466,9 @@ impl Writer {
         } else {
             '!'
         };
-        self.key(punct, 0, EditAction::Commit);
+        self.key(punct, 0);
         let paragraph = last || self.rng.chance(P_PARAGRAPH_END);
-        self.key(if paragraph { '\r' } else { ' ' }, 0, EditAction::Pass);
+        self.key(if paragraph { '\r' } else { ' ' }, 0);
         // Thinking pause before the next sentence.
         self.t += self.interval * 3.0 * self.rng.unit();
     }
@@ -525,14 +532,16 @@ impl Writer {
 
     /// Types a word's letters as `Append`, with optional typo + Backspace.
     fn type_word(&mut self, raw: &str, lang: Lang, p_typo: f32) {
-        self.last_lang = lang;
+        if !self.track.is_raw() {
+            self.last_lang = lang;
+        }
         for c in raw.chars() {
-            if p_typo > 0.0 && self.rng.chance(p_typo) {
+            if p_typo > 0.0 && !self.track.is_raw() && self.rng.chance(p_typo) {
                 let wrong = self.wrong_letter(c);
-                self.key(wrong, 0, EditAction::Append);
+                self.key(wrong, 0);
                 self.backspace();
             }
-            self.key(c, 0, EditAction::Append);
+            self.key(c, 0);
         }
     }
 
@@ -552,43 +561,40 @@ impl Writer {
             keycode::BACKSPACE,
             "\u{7f}".to_owned(),
             Modifiers::default(),
-            EditAction::Pop,
         );
     }
 
     /// A Cmd+key app shortcut (never edits the buffer).
     fn shortcut(&mut self) {
         let c = char::from(b"cvazx"[self.rng.below(5)]);
-        self.key(c, Modifiers::COMMAND, EditAction::Pass);
+        self.key(c, Modifiers::COMMAND);
     }
 
     fn advance(&mut self) {
         self.t += self.interval * (0.5 + self.rng.unit());
     }
 
-    /// Emits one `KeyDown` for `c` with extra modifier bits.
-    fn key(&mut self, c: char, extra_mods: u32, edit: EditAction) {
+    /// Emits one `KeyDown` for `c` with extra modifier bits. The target
+    /// edit comes from the engine state machine.
+    fn key(&mut self, c: char, extra_mods: u32) {
         self.advance();
         let (keycode, shift) = key_for(c);
         let bits = extra_mods | if shift { Modifiers::SHIFT } else { 0 };
-        self.push(keycode, c.to_string(), Modifiers(bits), edit);
+        self.push(keycode, c.to_string(), Modifiers(bits));
     }
 
-    fn push(&mut self, keycode: u16, chars: String, mods: Modifiers, edit: EditAction) {
-        match edit {
-            EditAction::Append => self.buf_open = true,
-            EditAction::Pop => {}
-            _ => self.buf_open = false,
-        }
-        self.keys.push(KeyEvent {
+    fn push(&mut self, keycode: u16, chars: String, mods: Modifiers) {
+        let event = KeyEvent {
             kind: KeyKind::KeyDown,
             keycode,
             chars,
             mods,
             timestamp: self.t,
-        });
+        };
+        let step: Step = classify(&event).map_or(Step::Pass, |c| self.track.step(c));
+        self.keys.push(event);
         self.targets.push(Action {
-            edit,
+            edit: step.edit(),
             render: self.last_lang,
         });
     }

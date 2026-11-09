@@ -24,6 +24,7 @@ mod keymap;
 mod log;
 mod pretrain;
 mod probe;
+mod track;
 
 pub use corpus::Corpus;
 pub use eval_report::{EvalReport, POS_BUCKETS};

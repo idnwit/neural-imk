@@ -102,3 +102,7 @@ cargo run --release -p nimk-synth --example right_context -- --runs 0
 ```
 
 Mỗi lần train khoảng 40 s; toàn bộ 8 lần khoảng 6 phút.
+
+## Chạy lại trên profile thực tế (2026-11-09)
+
+Cùng ví dụ, `MixProfile::default()` (run, cụm, Zipf; chỉ session chat), 200 x 500 từ, 2 seed GRU. Ambiguous: `word` 0.981 / 0.984, `left` 0.978 / 0.979, `left+right` 0.980 / 0.977, `right` 0.979 / 0.977; collision khoảng 0.88 ở mọi biến thể. Ngữ cảnh phải vẫn không cải thiện (chênh trong nhiễu giữa seed, 0.2–0.5 điểm), kể cả khi code-switch đã thành cụm: GRU 3 epoch không khai thác được cụm tốt như cận Bayes của giả định `q` nhỏ ở trên. Các hàng Bayes in ra dựa trên mô hình generator cũ và không còn đúng; `--legacy 1` chạy lại profile cũ. Kết luận không đổi: chưa làm UX 2 từ dựa trên số đo synthetic.

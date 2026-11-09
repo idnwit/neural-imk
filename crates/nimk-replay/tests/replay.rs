@@ -224,7 +224,7 @@ fn missing_dir_is_an_error() {
 #[test]
 fn replays_synthetic_log() {
     let cfg = nimk_synth::SynthConfig {
-        seed: 2, // the tiny test model sometimes splits a word mid-way on some seeds (e.g. 1, 6)
+        seed: 2,
         sessions: 2,
         words_per_session: 40,
         ..nimk_synth::SynthConfig::default()
@@ -238,13 +238,8 @@ fn replays_synthetic_log() {
     assert_eq!(report.meta.sessions, 2);
     let c = &report.models[0].overall.counts;
     let words: u64 = scripts.iter().map(|s| s.words.len() as u64).sum();
-    // Words typed after a command trigger (`/src/home`) are raw (ADR 0012):
-    // the engine never composes them, so they carry no word record.
-    assert!(
-        c.words <= words && c.words + 8 >= words,
-        "{} of {words}",
-        c.words
-    );
+    // Raw command text (ADR 0012) has no word record and no script word.
+    assert_eq!(c.words, words);
     assert_eq!(c.labelled_words, c.words);
     // Synthetic logs carry no decisions, so there is nothing to compare.
     assert_eq!(report.models[0].overall.edit_accuracy, None);

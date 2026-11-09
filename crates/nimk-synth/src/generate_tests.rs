@@ -13,6 +13,18 @@ fn small_cfg(seed: u64) -> SynthConfig {
     }
 }
 
+/// Like [`small_cfg`] with chat sessions only (plain words and sentences).
+fn chat_cfg(seed: u64) -> SynthConfig {
+    SynthConfig {
+        mix: MixProfile {
+            p_terminal: 0.0,
+            p_ide: 0.0,
+            ..MixProfile::default()
+        },
+        ..small_cfg(seed)
+    }
+}
+
 #[test]
 fn same_seed_same_output() {
     let corpus = Corpus::builtin();
@@ -38,7 +50,7 @@ fn word_ids_and_counts() {
 
 #[test]
 fn keys_spell_the_words_between_boundaries() {
-    for s in generate(&small_cfg(2), &Corpus::builtin()) {
+    for s in generate(&chat_cfg(2), &Corpus::builtin()) {
         let mut raws = Vec::new();
         let mut cur = String::new();
         for k in &s.keys {
@@ -59,7 +71,7 @@ fn keys_spell_the_words_between_boundaries() {
 
 #[test]
 fn key_events_are_plausible() {
-    for s in generate(&small_cfg(3), &Corpus::builtin()) {
+    for s in generate(&chat_cfg(3), &Corpus::builtin()) {
         let mut prev = f64::MIN;
         for k in &s.keys {
             assert!(k.timestamp > prev);
@@ -400,4 +412,50 @@ fn flavoured_targets_agree_with_the_engine_word_walk() {
             assert_eq!(t.edit, expect, "{} {:?}", s.bundle_id, k.key.chars);
         }
     }
+}
+
+#[test]
+fn command_text_after_a_trigger_is_raw_and_unlabelled() {
+    let cfg = SynthConfig {
+        sessions: 80,
+        words_per_session: 150,
+        mix: MixProfile {
+            p_terminal: 1.0,
+            p_ide: 0.0,
+            ..MixProfile::default()
+        },
+        ..SynthConfig::default()
+    };
+    let (mut raw_letters, mut raw_spans, mut typed_words) = (0usize, 0usize, 0usize);
+    for s in generate(&cfg, &Corpus::builtin()) {
+        assert_eq!(s.bundle_id, "synthetic.terminal");
+        let mut letters_append = String::new();
+        let mut after_trigger = false;
+        for (k, t) in s.keys.iter().zip(&s.targets) {
+            let c = k.chars.chars().next().unwrap_or(' ');
+            if c.is_ascii_alphabetic() {
+                if t.edit == EditAction::Append {
+                    letters_append.push(c);
+                } else {
+                    assert_eq!(t.edit, EditAction::Pass, "raw letters are passed");
+                    raw_letters += 1;
+                    if after_trigger {
+                        raw_spans += 1;
+                        after_trigger = false;
+                    }
+                }
+            } else {
+                after_trigger = matches!(c, '/' | '@' | '!') && t.edit == EditAction::Pass;
+            }
+        }
+        // Only composed letters spell the labelled words.
+        let spelled: String = s.words.iter().flat_map(|w| w.raw.chars()).collect();
+        assert_eq!(letters_append, spelled);
+        typed_words += s.words.len();
+    }
+    assert!(
+        raw_letters > 100 && raw_spans > 20,
+        "{raw_letters} {raw_spans}"
+    );
+    assert_eq!(typed_words, 80 * 150);
 }

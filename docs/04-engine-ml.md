@@ -321,11 +321,11 @@ Generator cũ đổi từng từ độc lập và rút từ đều từ danh sá
 | Run | Xích hai trạng thái VI/EN trên từng từ, xuyên qua ranh giới câu; độ dài run phân phối hình học với trung bình `mean_vi_run` 5.0 và `mean_en_run` 1.5. `p_vi_sentence` chỉ chọn trạng thái đầu session |
 | Cụm cố định | `data/phrases.txt` (~110 cụm, token `e:`/`v:`): EN (`pull request`, `in the`, `to do`), pha (`deploy lên`, `merge vào`, `thêm feature`) và VI (`không được`, `cảm ơn`). Với xác suất `p_phrase` 0.15 mỗi đơn vị bắt đầu một cụm có token đầu cùng ngôn ngữ run hiện tại; cụm bị cắt theo số từ còn lại của câu |
 | Tần suất | `data/en_freq.txt`, `data/vi_freq.txt` xếp theo hạng; với xác suất `p_freq` 0.5 từ được rút theo Zipf (trọng số 1/hạng) thay vì đều. Mọi từ trong danh sách tần suất phải nằm trong `en`/`en_ambiguous`/`vi`; hai danh sách kia vẫn rời nhau và giữ kiểm tra thành viên chặt |
-| Flavour | Mỗi session thuộc một app giả: chat (`synthetic.chat`, 60%), terminal (`synthetic.terminal`, 30%), IDE (`synthetic.ide`, 10%). Terminal xen dòng lệnh (`git commit -m ./src/main`, từ `data/commands.txt`) giữa các câu chat; IDE xen comment (`// ` rồi câu VI/EN) và biểu thức định danh (`a_b(c);`, `self.a.b(c, d)`). Ký hiệu gõ bằng phím riêng: phím kết từ có buffer thì `Commit`, buffer rỗng thì `Pass`. `Script::bundle_id` đi vào `Context` nên model dùng được feature app |
+| Flavour | Mỗi session thuộc một app giả: chat (`synthetic.chat`, 60%), terminal (`synthetic.terminal`, 30%), IDE (`synthetic.ide`, 10%). Terminal xen dòng lệnh (`git commit -m ./src/main`, từ `data/commands.txt`) giữa các câu chat; IDE xen comment (`// ` rồi câu VI/EN) và biểu thức định danh (`a_b(c);`, `self.a.b(c, d)`). Ký hiệu gõ bằng phím riêng; nhãn edit của mọi phím do bản sao của máy trạng thái ADR 0012 (`src/track.rs`) quyết định, cũng là thứ `write_log` dùng để gán word id, nên script, nhãn và engine thật khớp từng từ. Chữ gõ sau trigger `/ @ !` từ `Idle` (đầu dòng: `/help`, `@src/lib.rs`, `!ls`) là `Raw`: nhãn `Pass`, không sinh `ScriptWord`. Trigger sau một từ và dấu cách chỉ là ranh giới thứ hai (về `Idle`, không vào `Raw`), nên `git status /src` vẫn có từ `src`. `write_log` đặt `Label` sau phím commit từ (từ pending được commit ở phím kế tiếp) vì `inject_label` commit từ pending. `Script::bundle_id` đi vào `Context` nên model dùng được feature app |
 
 Hiệu chỉnh theo log thật ([real-log-stats](research/real-log-stats.md), 1319 từ, còn nhỏ và sớm): thật 70.2% VI, run VI 4.4 / EN 1.9 từ, 68.8% từ liền kề cùng ngôn ngữ, từ EN va chạm với Telex hợp lệ chiếm 20% từ EN (6.0% mọi từ), raw trùng rendering 31.5%. Profile mới (100 session x 500 từ, seed 42): 68.9% VI, run 4.5 / 2.0, liền kề cùng ngôn ngữ 69.5%, va chạm 19.2% từ EN (6.0% mọi từ), raw trùng rendering 27.2%. Profile cũ: run EN 3.3, va chạm 15.9% mọi từ, liền kề 75.9%. Các số này sẽ đổi khi log thật nhiều lên; chạy lại `crates/nimk-synth/examples/log_collisions.rs` và cập nhật `MixProfile::realistic`.
 
-Model đã đóng gói chưa được huấn luyện lại trên profile này; số ở "Kết quả đo" bên dưới vẫn là của profile cũ.
+Model đóng gói được pretrain lại trên profile này (2026-11-09); các bảng "Kết quả đo" cũ bên dưới là của profile cũ nên không so trực tiếp với dòng mới.
 
 `SynthConfig` mặc định: `seed` 42, 100 session x 500 từ, `key_interval_secs` 0.12.
 `EvalReport` gồm độ chính xác edit, render tại commit (kể cả quyết định mới trước hysteresis), riêng từ mập mờ và từ EN mập mờ, histogram `p_vi` tại commit, độ chính xác theo vị trí phím, và tỉ lệ text khớp.
@@ -366,6 +366,17 @@ Thăm dò `theme` sau ngữ cảnh (CLI in `probe ...`; `p_vi` là đầu ra tr�
 | "Tôi muốn" + `theem` (kỳ vọng thêm) | 0.986, VI | 0.790, VI |
 
 `LinearAction` chưa tách được `theme` theo ngữ cảnh (đặc trưng tuyến tính ít dùng từ trước); `GruAction` tách đúng. Đây là lý do GRU vẫn được giữ để so sánh.
+
+Sau ADR 0012 và generator thực tế (2026-11-09), cùng cấu hình 200 x 500 x 2, `seed` 42. Edit giờ do máy trạng thái quyết định nên eval chỉ đo rendering (edit accuracy 1.000 hiển nhiên); dữ liệu khác (run, cụm, Zipf, flavour) nên không so tuyệt đối với bảng trên: tập giữ lại mới có cùng số từ mập mờ (6813) nhưng nhiều va chạm tự nhiên hơn.
+
+| Model | render@commit | amb | amb EN | match | lát biến thể: render / amb | mid-word acc | flips/từ (`switch_margin` 0.02) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `LinearAction` | 0.977 | 0.977 | 0.877 | 0.984 | 0.976 / 0.971 | 0.863 | 0.415 |
+| `GruAction` | 0.981 | 0.977 | 0.834 | 0.985 | 0.976 / 0.968 | 0.918 | 0.239 |
+
+Trước đó (profile cũ, sau ADR 0011): GRU 0.974 / 0.968, Linear 0.965 / 0.961. Mid-word acc là độ chính xác của rendering hiển thị sau mỗi phím trong từ; GRU ít lật hơn và đúng hơn Linear giữa từ. Thăm dò `theme`: GRU "Tôi muốn" p_vi 0.771 ra VI, "change the dark" p_vi 0.442 ra EN (đúng, nhưng sát ngưỡng hơn trước: 0.671 / 0.057); Linear 0.649 / 0.644 đều ra VI, vẫn không tách theo ngữ cảnh. Với profile thực tế, lỗi EN mập mờ tăng (GRU 0.834 so với 0.940) vì từ EN ngắn (`in`, `to`, `no`) nay xuất hiện nhiều và nằm cạnh run VI.
+
+Ngữ cảnh phải trên profile thực tế (chat, `right_context` chạy lại): GRU `left` ambiguous 0.978 / 0.979 (2 seed), `left+right` 0.980 / 0.977, tức vẫn không tăng; collision 0.88 ở mọi biến thể. Các hàng Bayes của ví dụ đó dựa trên mô hình generator cũ nên không còn đúng.
 
 Độ chính xác edit đạt 1.000 ở mọi cấu hình đã tuning; các lỗi còn lại là phím giống hệt nhau ở hai ngôn ngữ (`in`, `ten`, `an`, `hang`, `me`, `no`).
 Online learning hầu như không cải thiện trên log synthetic (97.3% so với 97.4% frozen cho GRU) vì nhãn synthetic cùng phân phối với pretrain; lợi ích thật chỉ đo được trên log thật.
