@@ -353,6 +353,62 @@ pub unsafe extern "C" fn nimk_take_diagnostics(core: *mut NimkCore) -> *const c_
     }
 }
 
+/// Applies the user's TOML override (`config.toml` text, or null for none)
+/// on top of the embedded defaults and reconfigures the live engine.
+/// Rejected values keep their default and are reported through
+/// `nimk_take_diagnostics`; returns how many were rejected. Model, seed and
+/// trainer settings apply at the next start. A null core returns 0.
+///
+/// # Safety
+/// `core`: null or live from `nimk_new`. `config_toml`: null or a
+/// NUL-terminated string valid for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_set_config(core: *mut NimkCore, config_toml: *const c_char) -> u32 {
+    // SAFETY: null or live and exclusively used per contract.
+    let Some(core) = (unsafe { core.as_mut() }) else {
+        return 0;
+    };
+    // SAFETY: null or NUL-terminated and valid for this call (contract).
+    let text = unsafe { read_cstr(config_toml) }.map(std::borrow::Cow::into_owned);
+    match catch_unwind(AssertUnwindSafe(|| core.set_config(text.as_deref()))) {
+        Ok(rejected) => rejected,
+        Err(payload) => {
+            record_panic(core, "nimk_set_config", &*payload);
+            0
+        }
+    }
+}
+
+/// Seconds of silence after which the host should call
+/// `nimk_commit_pending` while text is marked; 0 = never. Depends on the
+/// focused app's category, so read it after each key. 0 for a null core.
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_idle_commit_secs(core: *const NimkCore) -> f64 {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return 0.0;
+    };
+    catch_unwind(AssertUnwindSafe(|| core.engine.idle_commit_secs())).map_or(0.0, |secs| secs)
+}
+
+/// The caret moved without a key (mouse click): raw mode ends. Null is a no-op.
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_note_navigation(core: *mut NimkCore) {
+    // SAFETY: null or live and exclusively used per contract.
+    let Some(core) = (unsafe { core.as_mut() }) else {
+        return;
+    };
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| core.engine.note_navigation())) {
+        record_panic(core, "nimk_note_navigation", &*payload);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{CStr, CString};
@@ -645,6 +701,35 @@ mod tests {
                 assert!(nimk_take_diagnostics(core).is_null());
             }
             nimk_free(core);
+        }
+    }
+
+    #[test]
+    fn config_idle_and_navigation_calls() {
+        // SAFETY: null cores are allowed.
+        unsafe {
+            assert_eq!(nimk_set_config(ptr::null_mut(), c"x = 1".as_ptr()), 0);
+            assert_eq!(nimk_idle_commit_secs(ptr::null()), 0.0);
+            nimk_note_navigation(ptr::null_mut());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let core = new_core(&dir);
+        // SAFETY: live core and valid strings.
+        unsafe {
+            assert!((nimk_idle_commit_secs(core) - 1.5).abs() < 1e-9);
+            let rejected =
+                nimk_set_config(core, c"idle_commit_secs = 3.0\nswitch_margin = 9".as_ptr());
+            assert_eq!(rejected, 1);
+            assert!((nimk_idle_commit_secs(core) - 3.0).abs() < 1e-9);
+            let diag = CStr::from_ptr(nimk_take_diagnostics(core))
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert!(diag.contains("switch_margin"), "{diag}");
+            assert_eq!(nimk_set_config(core, ptr::null()), 0);
+            assert!((nimk_idle_commit_secs(core) - 1.5).abs() < 1e-9);
+            nimk_note_navigation(core);
+            assert!(nimk_shutdown(core));
         }
     }
 }

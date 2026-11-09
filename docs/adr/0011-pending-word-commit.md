@@ -1,6 +1,6 @@
 # 0011. Từ pending: commit khi bắt đầu từ kế tiếp
 
-> **Trạng thái:** accepted · **Ngày:** 2026-11-08 · **Supersedes:** phần sửa ngược bằng `replacementRange` của [0008](0008-double-shift-retro-correction.md)
+> **Trạng thái:** accepted, partially superseded by [0012](0012-unified-boundary-commit.md) (phần ranh giới) · **Ngày:** 2026-11-08 · **Supersedes:** phần sửa ngược bằng `replacementRange` của [0008](0008-double-shift-retro-correction.md)
 
 ## Bối cảnh
 

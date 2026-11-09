@@ -10,6 +10,9 @@ class InputController: IMKInputController {
     /// word, so the context is refreshed.
     private var composing = false
 
+    /// Commits marked text after a silence (`idle_commit_secs`, ADR 0012).
+    private let idleCommit = IdleCommit()
+
     /// Settles the context of rapid activations; shared because Electron
     /// activates two different clients per click.
     private static let contextDebounce = Debouncer()
@@ -54,6 +57,7 @@ class InputController: IMKInputController {
         if event.type == .flagsChanged, let marked = out.marked {
             Self.refreshMarked(marked, client: client)
         }
+        armIdleCommit(client)
         return out.consumed
     }
 
@@ -88,12 +92,15 @@ class InputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         Self.contextDebounce.cancel()
+        idleCommit.cancel()
         commitPending(sender)
         super.deactivateServer(sender)
     }
 
     override func commitComposition(_ sender: Any!) {
         commitPending(sender)
+        // IMK calls this on a mouse click: the caret moved without a key.
+        Core.shared.noteNavigation()
     }
 
     override func menu() -> NSMenu! {
@@ -129,6 +136,9 @@ class InputController: IMKInputController {
         reset.target = self
         menu.addItem(reset)
         menu.addItem(.separator())
+        let reload = NSMenuItem(title: "Reload config", action: #selector(reloadConfig(_:)), keyEquivalent: "")
+        reload.target = self
+        menu.addItem(reload)
         let open = NSMenuItem(title: "Open data folder", action: #selector(openDataFolder(_:)), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
@@ -172,6 +182,13 @@ class InputController: IMKInputController {
         ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
         let caret = client().map { ContextProbe.caretRect($0) } ?? .zero
         Overlay.shared.showText("Đã khôi phục \(Core.modelName(Core.shared.model))", caret: caret)
+    }
+
+    @objc func reloadConfig(_ sender: Any?) {
+        Core.shared.log("menu: reload config")
+        let rejected = Core.shared.reloadConfig()
+        let caret = client().map { ContextProbe.caretRect($0) } ?? .zero
+        Overlay.shared.showText(rejected == 0 ? "Đã nạp config" : "Config: \(rejected) giá trị bị bỏ", caret: caret)
     }
 
     @objc func openDataFolder(_ sender: Any?) {
@@ -224,7 +241,19 @@ class InputController: IMKInputController {
         apply(out, client: client, caret: caret)
     }
 
+    /// (Re)starts the idle-commit timer after a key: it fires only while text
+    /// is marked and the active app's `idle_commit_secs` is above zero.
+    private func armIdleCommit(_ client: IMKTextInput) {
+        idleCommit.update(secs: Core.shared.idleCommitSecs, marked: composing) { [weak self] in
+            guard let self else { return }
+            let out = Core.shared.commitPending(timestamp: ProcessInfo.processInfo.systemUptime)
+            self.apply(out, client: client)
+            self.composing = false
+        }
+    }
+
     private func commitPending(_ sender: Any!) {
+        idleCommit.cancel()
         let out = Core.shared.commitPending(timestamp: ProcessInfo.processInfo.systemUptime)
         if let client = sender as? IMKTextInput {
             apply(out, client: client)

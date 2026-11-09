@@ -47,6 +47,17 @@ impl NimkCore {
         }
     }
 
+    /// Applies the user's TOML override over the embedded defaults; returns
+    /// how many values were rejected (each is reported as a diagnostic).
+    pub(crate) fn set_config(&mut self, user: Option<&str>) -> u32 {
+        let layers: Vec<&str> = user.into_iter().collect();
+        let (cfg, diags) = EngineConfig::from_toml_layers(&layers);
+        let n = u32::try_from(diags.len()).map_or(u32::MAX, |n| n);
+        self.own_diags.extend(diags.iter().map(ToString::to_string));
+        self.engine.reconfigure(cfg);
+        n
+    }
+
     /// Joins FFI and engine diagnostics with `\n`; null when there are none.
     /// The pointer stays valid until the next call of this method.
     pub(crate) fn take_diagnostics(&mut self) -> *const c_char {

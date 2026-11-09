@@ -1,9 +1,9 @@
 # Keyboard I/O qua IMK
 
-> **Trạng thái:** draft · **Cập nhật:** 2026-11-08 · **Code:** `crates/nimk-engine/src/{composer,hotkey,engine}.rs`, `crates/nimk-engine/src/engine/{flow,switch}.rs`, `macos/NeuralIMK/*.swift`
+> **Trạng thái:** draft · **Cập nhật:** 2026-11-09 · **Code:** `crates/nimk-engine/src/{composer,hotkey,engine}.rs`, `crates/nimk-engine/src/engine/{flow,machine,switch}.rs`, `macos/NeuralIMK/*.swift`
 
-IME giữ từ đang gõ dưới dạng marked text; khi model kết thúc từ, từ vẫn là marked text ("pending") cho tới khi người dùng bắt đầu từ kế tiếp.
-Nháy Shift hai lần lật rendering của từ pending ngay trong marked text, nên không cần `replacementRange` ([ADR 0011](adr/0011-pending-word-commit.md)).
+IME chạy một máy 4 trạng thái (`Idle`, `Composing`, `Pending`, `Raw`); từ đang gõ là marked text, và từ vừa kết thúc ("pending") giữ đúng một ký tự ranh giới cho tới phím kế tiếp ([ADR 0012](adr/0012-unified-boundary-commit.md)).
+Nháy Shift hai lần lật rendering của từ đang gõ hoặc pending ngay trong marked text, nên không cần `replacementRange` ([ADR 0011](adr/0011-pending-word-commit.md)).
 
 ## Luồng một phím
 
@@ -42,24 +42,24 @@ pub struct EngineOutput {
 
 ## Composer và action
 
-Composer chỉ là buffer ngu: model chọn `EditAction` cho mỗi phím, engine áp cơ học.
+Composer chỉ là buffer ngu: phím quyết định `EditAction` (máy trạng thái bên dưới), model chọn rendering cho mỗi phím, engine áp cơ học.
 Buffer giữ `raw` của từ, bản `vi = telex(raw)` (công cụ, là feature) và `en = raw`; tối đa 64 phím (`MAX_RAW`).
 
 | `EditAction` | Engine làm gì | Marked / commit |
 | --- | --- | --- |
 | `Append` | Thêm ký tự của phím vào `raw`, tính lại `vi` và cờ `valid_vi`/`viable_vi`, nuốt phím | `marked` = bản đang hiển thị |
 | `Pop` | Bỏ phím cuối; buffer rỗng thì reset từ | `marked` = bản mới, hoặc `""` |
-| `Commit` | Kết thúc từ: từ thành pending (bản đang hiển thị); space và dấu câu nối vào ranh giới pending, phím khác commit ngay và đi tiếp tới app | `marked` = từ + ranh giới, `consumed = true`; hoặc `commit = Some(text)`, `consumed = false` |
+| `Commit` | Kết thúc từ: ký tự không phải chữ thành ranh giới của từ pending (bản đang hiển thị); phím commit (Return, Tab, phím tắt...) commit ngay và đi tiếp tới app | `marked` = từ + ranh giới, `consumed = true`; hoặc `commit = Some(text)`, `consumed = false` |
 | `Pass` | Trả phím cho app, buffer giữ nguyên | `marked` chỉ đổi khi rendering đổi |
 
-`ActionMask` chỉ chặn action vô nghĩa về vật lý ([ADR 0007](adr/0007-neural-action-model.md)).
+`ActionMask` của quan sát giờ chỉ còn đúng một quyền, suy ra từ bảng chuyển trạng thái ([ADR 0012](adr/0012-unified-boundary-commit.md)); model chọn `p_vi` chứ không chọn edit.
 
-| Quyền | Điều kiện |
+| Quyền | Khi nào |
 | --- | --- |
-| `append` | Phím sinh đúng một ký tự in được, không có ⌘/⌃/⌥, buffer chưa đầy; buffer rỗng thì phải là chữ cái |
-| `pop` | Buffer không rỗng |
-| `commit` | Buffer không rỗng |
-| `Pass` | Luôn hợp lệ; phím không phải chữ khi buffer rỗng chỉ có `Pass`, nên engine bỏ qua model, không ghi `decision`; action bị chặn rơi về `Pass` (hoặc action hợp lệ có điểm cao nhất, xem `decide`) |
+| `append` | Chữ cái (kể cả khi `Idle` hay `Pending`, lúc đó mở từ mới); buffer chưa đầy |
+| `pop` | Backspace khi `Composing` |
+| `commit` | Ký tự không phải chữ, phím commit, phím tắt, hoặc chữ cái khi buffer đầy, khi `Composing` |
+| (không quyền) | `Idle` + phím khác chữ, và mọi phím `Raw`: engine bỏ qua model, không ghi `decision`, chỉ ghi `key` |
 
 Phím ranh giới được ghi vào `word_commit.boundary` theo `boundary_of`: `space`, `return`, `tab`, `punct`, `navigation` (mũi tên, Escape), `shortcut` (có ⌘/⌃/⌥), `external` (click chuột, mất focus, `commit_pending`).
 `FlagsChanged` không bao giờ vào model hay cửa sổ `recent`; chỉ hotkey nhìn thấy nó.
@@ -133,40 +133,73 @@ Hành vi `consumed` đã chốt:
 - Ctrl+Space (không ⌘/⌥) trả `consumed = true`.
 - Với `hotkeys = false`, hotkey vẫn được nhận và nuốt (không đổi mode, không sinh nhãn) để word id khớp log gốc.
 
-## Từ pending
+## Máy trạng thái
 
-Từ model kết thúc không được chèn vào app ngay: nó cùng ranh giới ở lại marked text và chỉ commit thật khi người dùng bắt đầu từ kế tiếp ([ADR 0011](adr/0011-pending-word-commit.md)).
+Bảng chuyển trạng thái trong `engine/machine.rs` là nguồn sự thật duy nhất; mọi phím chỉ làm đúng một việc theo (trạng thái, lớp phím) ([ADR 0012](adr/0012-unified-boundary-commit.md)).
 
 ```text
-              letter (model: Append)
-   +------+ ------------------------> +-----------+
-   | Idle |                           | Composing | <--+  letter / Backspace (Pop)
-   +------+ <-----------+             +-----------+ ---+
-      ^  ^              |                  |  |
-      |  | commit       |  model Commit on |  | Backspace removes the last
-      |  | (see table)  |  space/punct     v  | boundary char (word restored)
-      |  |              |            +-----------+
-      |  +--------------+----------- |  Pending  | <--+  space / punct (boundary grows)
-      |        commit pending         +-----------+ ---+  double Shift (flip + Correction)
-      |                                    |
-      +------------------------------------+
-        letter: commit, then Append the letter -> Composing
+   +------+ letter  +-----------+ non-language char +---------+
+   | Idle | ------> | Composing | ----------------> | Pending |
+   +------+         +-----------+ <---------------- +---------+
+      |  ^            |  ^   Backspace (drops the boundary) |  |
+      |  |  commit key|  +-- letter / Backspace (self loop) |  |
+      |  +------------+                                     |  |
+      |  +--------------------------------------------------+  |
+      |    commit key, or a 2nd non-language char: commit it,  |
+      |    the key goes on to the app, back to Idle            |
+      |           letter: commit, then a new Composing --------+
+      | trigger (/ @ !)
+      v
+   +-----+ any other key passes through (self loop)
+   | Raw | ---> Idle on a terminator (space, Return, Tab, Esc, arrows, chord)
+   +-----+
 ```
 
-Pending nằm giữa "đã kết thúc" và "đã chèn": mọi phím không bắt đầu từ mới đều hoặc kéo dài pending, hoặc commit nó rồi đi tiếp.
+Chỉ `Composing` và `Pending` giữ marked text; `Raw` không buffer gì và `Idle` thì trống.
 
-| Sự kiện khi có từ pending | Kết quả |
+| Trạng thái | Chữ cái | Ký tự không phải chữ | Trigger (`/ @ !`) | Backspace | Phím commit / phím tắt | Nháy Shift hai lần |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Idle` | `Composing` (model chọn rendering) | Đi thẳng, không gọi model | Vào `Raw`, trigger đi thẳng | Đi thẳng | Đi thẳng | Đổi sticky mode (trước khi gõ: nhãn prior) |
+| `Composing` | Thêm vào từ (model chọn rendering từng phím) | `Pending` giữ đúng 1 ký tự (marked text = rendering + ký tự) | Như ký tự không phải chữ (`và/hoặc`) | Bỏ 1 phím; rỗng thì `Idle` | Commit quyết định mới của model, phím tới app, `Idle` | Lật từ và khoá (`in_word`) |
+| `Pending` | Commit từ + ranh giới, chữ cái mở từ mới | Commit, ký tự thứ hai đi thẳng tới app (không marked), `Idle`, kể cả khi là trigger | Như bên trái | Bỏ ranh giới, về `Composing` | Commit, phím tới app, `Idle` | Lật từ pending, nhãn `Correction`, sticky mode |
+| `Raw` | Đi thẳng | Đi thẳng (trừ `command_end_chars`) | Đi thẳng | Đi thẳng, ở lại `Raw` | Phím trong `command_end_keycodes` hoặc phím tắt: đi thẳng, về `Idle` | Chỉ đổi sticky mode, không nhãn |
+
+Mọi lần commit theo thứ tự `insertText` rồi phím tới app (`consumed = false`), nên Return, Tab hay Cmd-C vẫn tác dụng sau khi từ đã vào app.
+Các đường commit khác: `commitComposition` (click chuột, kèm `nimk_note_navigation` thoát `Raw`), `deactivateServer`, đổi focus, đổi hoặc reset model, shutdown, và timer rảnh (`idle_commit_secs`, mặc định 1.5 s, theo nhóm app; Swift gọi `nimk_commit_pending`).
+
+Ví dụ:
+
+| Gõ | Kết quả |
 | --- | --- |
-| Chữ cái | `commit` = từ + ranh giới, rồi chữ cái bắt đầu từ mới (luồng model bình thường) |
-| Space, `. , ? ! : ; ' " ( )`, `…`, dấu nháy cong | Nối vào ranh giới (tối đa 16), vẫn lật được ("has. " thành "há. "); không gọi model |
-| Backspace | Bỏ ký tự ranh giới cuối; hết ranh giới thì từ trở lại thành từ đang gõ (raw, id và rendering hiện tại giữ nguyên) |
-| Return, Tab, mũi tên, Escape, phím có ⌘/⌃/⌥ | Commit pending ngay, phím tới app |
-| Ký tự in được khác (`@ # $ %`, chữ số...) | Commit pending, phím tới app, không gọi model |
-| `commitComposition`, `deactivateServer`, đổi focus, đổi hoặc reset model, shutdown | Commit pending |
-| Nháy Shift hai lần | Lật rendering trong marked text, ghi nhãn `Correction`, đặt sticky mode |
+| `has.` | marked text `has.`; nháy Shift thành `há.` |
+| `Hello, world` | `,` giữ `Hello,` pending; space commit `Hello,` và đi thẳng tới app; `world` là từ mới |
+| `ls -la⏎` | space giữ `ls ` pending; `-` commit `ls ` và đi thẳng; `la` đang gõ; Return commit `la` rồi tới app |
+| `user_name` | `_` giữ `user_` pending; `n` commit `user_`, `name` là từ mới |
+| `cd ~/Docs` | `~` commit `cd ` và đi thẳng; `/` từ `Idle` vào `Raw`, `Docs` đi thẳng |
+| `http://x.com` | `:` giữ `http:`; `/` đầu commit `http:` và đi thẳng; `/` sau vào `Raw`, phần còn lại đi thẳng |
+| `/help⏎`, `@src/main.rs`, `!ls -la` | `Raw` tới terminator: `/help` tới Return, `@src/main.rs` hết dòng, `!ls` tới space (rồi `-` đi thẳng, `la` là từ) |
+| `/ ` | vào `Raw` rồi space thoát ngay, không tác dụng gì |
+| `và/hoặc` | `/` giữa từ chỉ là ranh giới |
 
-Khi không có gì pending hay đang gõ, phím không phải chữ cái đi thẳng tới app mà không gọi model; chỉ ghi record `key`.
 Ghi `word_commit` và nhãn của từ diễn ra lúc commit thật, nên Backspace quay lại từ không để lại dấu vết trong log và không đổi word id.
+
+## UX theo loại app
+
+Một quy tắc cho mọi app; chỉ `idle_commit_secs` đổi theo nhóm (`[[app_category]]`, [11](../11-config.md)).
+
+| Loại app | Mặc định rảnh | Tình huống | Kết quả |
+| --- | --- | --- | --- |
+| Terminal (iTerm2, Terminal, WezTerm, Ghostty, kitty, Alacritty, Warp) | 1.0 s | `ls -la⏎` | `ls ` commit khi gõ `-`, `la` commit ở Return rồi Return tới shell |
+| | | Tab hoàn thành | Từ đang gõ commit trước, rồi Tab tới shell nên shell hoàn thành đúng chuỗi đã chèn |
+| | | Ctrl-C | Phím tắt: commit từ đang gõ rồi Ctrl-C tới app |
+| | | ↑ (lịch sử) | Mũi tên: commit rồi tới shell; `/`, `@`, `!` đầu lệnh vào `Raw` nên đường dẫn và `!!` không bị Telex |
+| IDE (VS Code, Cursor, Zed, Xcode, JetBrains) | 1.0 s | Định danh `user_name` | `user_` commit khi gõ `n`, `name` là từ mới; không còn marked text dài qua dấu gạch dưới |
+| | | `foo.bar(` | `foo.` pending; `b` commit `foo.`; `bar(` pending; ký tự kế commit `bar(` |
+| | | Popup hoàn thành: Enter hoặc Tab | Commit từ đang gõ trước, phím tới IDE nên popup chọn đúng mục |
+| | | Shift-Enter, ⌘-Enter | Cũng commit rồi tới app |
+| Trình duyệt (Chrome, Safari, Edge, Firefox) | 0.8 s | Thanh URL, ô tìm kiếm có gợi ý | Gợi ý tự điền trễ tối đa 1 ký tự (ranh giới đang pending) hoặc `idle_commit_secs`; Return điều hướng sau khi đã commit |
+| | | `https://...` | `Raw` sau `//`, không Telex |
+| Soạn thảo (Notes, TextEdit) | 2.0 s | Văn xuôi | Cửa sổ sửa đầy đủ: nháy Shift sửa được từ đang gõ và từ pending trước khi commit; timer dài hơn cho phép sửa sau khi ngừng gõ ngắn |
 
 ## Ngữ nghĩa hotkey
 
@@ -178,6 +211,7 @@ Kết quả luôn thành sticky mode, và mỗi lần ghi một record `manual_s
 | Đang gõ dở một từ | `in_word` | Lật rendering của từ, khoá rendering đến hết từ (`marked` đổi) | Từ hiện tại = rendering mới, `correction` weight 1.0, cho mọi bước của từ |
 | Từ pending | `after_commit` | Lật rendering của từ pending trong marked text; bấm lặp lại bật tắt qua lại | Lúc commit thật: `correction` weight 1.0 theo rendering cuối; không lật thì nhãn ngầm như cũ |
 | Không có từ pending, đã commit từ kể từ khi focus | `after_commit` | Chỉ đổi sticky mode | Không |
+| `Raw` (đang gõ lệnh sau `/ @ !`) | `after_commit` (không có `word_id`) | Chỉ đổi sticky mode | Không |
 | Chưa commit từ nào kể từ khi focus | `before_typing` | Đổi sticky mode (prior) | Prior của focus = sai, `correction` weight 1.0 |
 
 Chỉ từ pending (từ vừa kết thúc, chưa chèn) sửa được; từ đã chèn vào app không bị đụng tới.
@@ -197,11 +231,12 @@ Mỗi callback IMK gọi đúng một hàm Engine qua C ABI; không callback nà
 
 | Callback (`InputController.swift`) | Gọi | Mục đích |
 | --- | --- | --- |
-| Khởi động process (`Core`) | `nimk_new` → `Engine::new(cfg, storage, session)` | Không bao giờ lỗi; snapshot hỏng hay sink lỗi thì fallback và báo qua `Engine::take_diagnostics` |
+| Khởi động process (`Core`) | `nimk_new` → `Engine::new(cfg, storage, session)`, rồi `nimk_set_config` với văn bản `config.toml` của người dùng ([11](11-config.md)) | Không bao giờ lỗi; snapshot hỏng hay sink lỗi thì fallback và báo qua `Engine::take_diagnostics` |
 | `activateServer(_:)` | `nimk_context` → `Engine::on_context`, trễ 120 ms (debounce) | App hoặc ô nhập (`field_id`) đổi → focus id mới, model chọn prior; kích hoạt mới hoặc `deactivateServer` huỷ lần chờ; phím tới trước thì gửi ngay; caret rỗng thì dò lại sau 80 ms |
 | `handle(_:client:)` | `nimk_context` (nếu đang chờ debounce, hoặc phím chữ mở đầu từ khi không có marked text), rồi `nimk_key` → `Engine::on_key` | Xử lý một phím; `event.characters` chỉ đọc với `keyDown` |
 | `deactivateServer(_:)` | `nimk_commit_pending` → `Engine::commit_pending` | Không mất preedit hay từ pending khi mất focus |
-| `commitComposition(_:)` | `nimk_commit_pending` → `Engine::commit_pending` | Click chuột, IMK yêu cầu commit |
+| `commitComposition(_:)` | `nimk_commit_pending` → `Engine::commit_pending`, rồi `nimk_note_navigation` | Click chuột, IMK yêu cầu commit; thoát `Raw` |
+| Sau mỗi phím (`IdleCommit.swift`) | `nimk_idle_commit_secs` | Timer rảnh: `idle_commit_secs` không phím khi còn marked text thì gọi `nimk_commit_pending`; mỗi phím đặt lại, commit và deactivate huỷ |
 | `recognizedEvents(_:)` | — | Trả `[.keyDown, .flagsChanged]` |
 | `menu()` | `nimk_mode`, `nimk_policy_id` | Menu IME ([06](06-gui.md)) |
 | SIGTERM | `nimk_shutdown` | Flush log, lưu snapshot |
@@ -215,6 +250,7 @@ File Swift (`macos/NeuralIMK/`):
 | `Context.swift` | Đọc con trỏ và cửa sổ, cache 1 s ([03](03-context-io.md)) |
 | `InputController.swift` | `@objc(InputController) class InputController: IMKInputController`; chuyển event, áp `EngineOutput`, menu |
 | `Debouncer.swift` | Trễ và gộp việc gửi context khi kích hoạt liên tiếp (test: `make swift-test`) |
+| `IdleCommit.swift` | Timer commit khi rảnh, dựng trên `Debouncer` (test: `make swift-test`) |
 | `Overlay.swift` | Overlay và status item |
 | `NeuralIMK-Bridging.h` | Import `nimk_ffi.h` cho `swiftc -import-objc-header` |
 

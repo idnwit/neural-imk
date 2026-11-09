@@ -25,7 +25,7 @@ mod labeler;
 mod logger;
 mod trainer;
 
-pub use config::{EngineConfig, Threading};
+pub use config::{AppCategory, CategoryParams, DEFAULT_TOML, Diagnostic, EngineConfig, Threading};
 pub use engine::{CheckpointSource, Engine, EngineError, EngineOutput, Overlay, SessionInfo};
 pub use nimk_policy::ModelKind;
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};

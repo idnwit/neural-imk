@@ -217,7 +217,7 @@ Nhờ vậy cùng log + cùng config cho ra cùng quyết định khi replay.
 
 ## Hợp đồng C ABI
 
-`nimk-ffi` xuất 13 hàm; header sinh bằng `make header` (cbindgen) ra `target/nimk_ffi.h`, bản dưới đây suy ra từ `exports.rs` và `abi.rs`.
+`nimk-ffi` xuất 16 hàm; header sinh bằng `make header` (cbindgen) ra `target/nimk_ffi.h`, bản dưới đây suy ra từ `exports.rs` và `abi.rs`.
 
 ```c
 // minh hoạ từ exports.rs; header thật do cbindgen sinh
@@ -234,8 +234,12 @@ uint8_t     nimk_checkpoint_source(const NimkCore *core, uint8_t kind);
 uint8_t     nimk_mode(const NimkCore *core);
 const char *nimk_policy_id(NimkCore *core);
 const char *nimk_take_diagnostics(NimkCore *core);
+uint32_t    nimk_set_config(NimkCore *core, const char *config_toml);
+double      nimk_idle_commit_secs(const NimkCore *core);
+void        nimk_note_navigation(NimkCore *core);
 ```
 
+`nimk_set_config` nhận văn bản `config.toml` của người dùng (hoặc null), ghép lên mặc định nhúng và trả số giá trị bị bỏ (chi tiết ở `nimk_take_diagnostics`, [11](11-config.md)); `nimk_idle_commit_secs` cho timer rảnh của Swift (0 = tắt, đổi theo nhóm app của focus); `nimk_note_navigation` báo con trỏ đổi do chuột (thoát `Raw`). Hợp đồng `NimkOut` không đổi: `commit` luôn được áp trước, rồi phím tới app khi `consumed = false` ([ADR 0012](adr/0012-unified-boundary-commit.md)).
 `NIMK_MODEL_LINEAR` = 0 và `NIMK_MODEL_GRU` = 1 là mã `kind`; `nimk_set_model` trả `false` (và để `out` ở dạng pass-through) khi `kind` lạ hoặc core null.
 `nimk_checkpoint_source` trả `NIMK_CHECKPOINT_NONE` (0), `NIMK_CHECKPOINT_BUNDLED` (1) hoặc `NIMK_CHECKPOINT_USER` (2); `nimk_reset_model` xoá checkpoint của người dùng và nạp lại model gốc.
 

@@ -136,7 +136,7 @@ fn teach_render_and_mask_fallback() {
     assert_eq!(o.marked.as_deref(), Some("as"));
     let o = e.teach(&char_key('s', 1.2), append(Lang::Vi), 1.0, 1.0);
     assert_eq!(o.marked.as_deref(), Some("as"), "ass -> as");
-    // Append on Cmd+A is masked: Pass, and the example records Pass.
+    // Cmd+A while composing is a commit, whatever the target says.
     let o = e.teach(
         &code_key(0, "a", Modifiers::COMMAND, 1.3),
         append(Lang::Vi),
@@ -146,7 +146,7 @@ fn teach_render_and_mask_fallback() {
     assert!(!o.consumed);
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 4);
-    assert_eq!(seen[3].target.edit, EditAction::Pass);
+    assert_eq!(seen[3].target.edit, EditAction::Commit);
     assert_eq!(seen[1].target.render, Lang::En);
 }
 

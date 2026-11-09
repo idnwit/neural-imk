@@ -73,6 +73,9 @@ echo "==> bundled models"
 mkdir -p "$APP/Contents/Resources/models"
 cp -R "$MODELS/." "$APP/Contents/Resources/models/"
 
+# Reference copy only: the engine embeds its defaults (docs/11-config.md).
+cp crates/nimk-engine/config/default.toml "$APP/Contents/Resources/default-config.toml"
+
 cp "$SRC/Info.plist" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 

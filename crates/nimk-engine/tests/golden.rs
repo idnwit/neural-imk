@@ -77,7 +77,7 @@ fn english_stays_english_and_moves_the_sticky_mode() {
     let mut t = 0.0;
     let mut outs = type_str(&mut e, "has string, test ", &mut t);
     outs.push(e.commit_pending(t + 1.0));
-    assert_eq!(commits(&outs), vec!["has ", "string, ", "test "]);
+    assert_eq!(commits(&outs), vec!["has ", "string,", "test "]);
     assert_eq!(e.mode(), Lang::En);
     // The mode moves when the model ends the word (the space), not later.
     let first = outs.iter().find(|o| o.mode.is_some()).unwrap();
@@ -155,17 +155,24 @@ fn mask_falls_back_to_pass() {
     // keys without a printable char cannot, and fall back to Pass.
     let (mut e, _s, _) = scripted_engine(always(0), inline_cfg());
     let o = e.on_key(&code_key(0, "a", Modifiers::COMMAND, 1.0));
-    assert!(!o.consumed && o.marked.is_none(), "Append masked for Cmd+A");
+    assert!(
+        !o.consumed && o.marked.is_none(),
+        "Cmd+A with nothing composing passes"
+    );
     let o = e.on_key(&code_key(keycode::BACKSPACE, "\u{7f}", 0, 1.1));
     assert!(!o.consumed, "Append masked for Backspace");
     let o = e.on_key(&code_key(keycode::LEFT, "\u{F702}", 0, 1.2));
     assert!(!o.consumed);
     let o = e.on_key(&char_key('a', 1.3));
     assert!(o.consumed);
-    // Append is masked for Option+b: the best legal edit wins (Pop here,
-    // since every legal score ties at 0 and Pop comes first).
+    // A chord commits the word (the model cannot append it) and then passes.
     let o = e.on_key(&code_key(0, "b", Modifiers::OPTION, 1.4));
-    assert_eq!(o.marked.as_deref(), Some(""), "Option+key cannot append");
+    assert_eq!(
+        o.commit.as_deref(),
+        Some("a"),
+        "Option+key commits the word"
+    );
+    assert!(!o.consumed);
 
     // Pop and Commit wanted on an empty buffer: Pass.
     for edit in [1, 2] {
@@ -176,25 +183,19 @@ fn mask_falls_back_to_pass() {
 }
 
 #[test]
-fn pass_keeps_the_buffer() {
-    // Letters append, but 'x' is passed to the app mid-word.
-    let script: std::sync::Arc<ScoreFn> = std::sync::Arc::new(|o: &Observation| {
-        let pass = o.key.as_ref().is_some_and(|k| k.chars == "x");
-        let mut e = [0.0; 4];
-        e[if pass { 3 } else { 0 }] = 1.0;
-        ActionScores { edit: e, p_vi: 0.1 }
-    });
-    let (mut e, _s, _) = scripted_engine(script, inline_cfg());
+fn the_edit_is_structural_whatever_the_model_scores() {
+    // A model that always says Pass still appends letters, pops on Backspace
+    // and commits on a boundary: only the rendering is the model's.
+    let (mut e, _s, _) = scripted_engine(always(3), inline_cfg());
     let mut t = 0.0;
-    let outs = type_str(&mut e, "axb", &mut t);
-    assert!(outs[0].consumed);
-    assert!(!outs[1].consumed, "Pass returns the key");
-    assert!(outs[2].consumed);
-    assert_eq!(
-        outs[2].marked.as_deref(),
-        Some("ab"),
-        "buffer unchanged by Pass"
-    );
+    let outs = type_str(&mut e, "abc", &mut t);
+    assert!(outs.iter().all(|o| o.consumed));
+    assert_eq!(outs[2].marked.as_deref(), Some("abc"));
+    let o = e.on_key(&code_key(keycode::BACKSPACE, "\u{7f}", 0, 1.0));
+    assert_eq!(o.marked.as_deref(), Some("ab"));
+    let o = e.on_key(&char_key(' ', 1.1));
+    assert!(o.consumed && o.commit.is_none());
+    assert_eq!(o.marked.as_deref(), Some("ab "));
 }
 
 fn cfg_margin(m: f32) -> EngineConfig {
@@ -253,7 +254,10 @@ fn non_finite_scores_do_not_break_the_engine() {
     });
     let (mut e, storage, _) = scripted_engine(script, inline_cfg());
     let o = e.on_key(&char_key('a', 1.0));
-    assert!(!o.consumed, "NaN edit scores fall back to Pass");
+    // The edit is structural (a letter appends); only the rendering comes
+    // from the model, and a NaN score falls back to the shown rendering.
+    assert!(o.consumed);
+    assert_eq!(o.marked.as_deref(), Some("a"));
     assert!(
         events(&storage)
             .iter()
@@ -420,8 +424,8 @@ fn word_ids_do_not_depend_on_render() {
     };
     let vi = run(0.95);
     assert_eq!(vi, run(0.05));
-    // The last word ("." is a boundary) is still pending.
-    assert_eq!(vi.len(), 5);
+    // Every word is committed: the last one by the "." (a second boundary).
+    assert_eq!(vi.len(), 6);
 }
 
 #[test]
@@ -454,7 +458,7 @@ fn observation_carries_the_context() {
     assert_eq!(last_word_key.raw, "tieeng");
     assert_eq!(last_word_key.vi, "tiêng");
     assert!(last_word_key.viable_vi);
-    assert!(last_word_key.mask.append && last_word_key.mask.pop && last_word_key.mask.commit);
+    assert!(last_word_key.mask.append && !last_word_key.mask.pop && !last_word_key.mask.commit);
     assert_eq!(last_word_key.recent.len(), 6);
     let space = &obs[8];
     assert_eq!(space.raw, "tieengs");

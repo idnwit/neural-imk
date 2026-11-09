@@ -19,6 +19,8 @@ swift-test:
 	mkdir -p target/swift-test
 	swiftc macos/NeuralIMK/Debouncer.swift macos/tests/debouncer/main.swift -o target/swift-test/debouncer
 	target/swift-test/debouncer
+	swiftc macos/NeuralIMK/Debouncer.swift macos/NeuralIMK/IdleCommit.swift macos/tests/idlecommit/main.swift -o target/swift-test/idlecommit
+	target/swift-test/idlecommit
 
 header:
 	cbindgen --config crates/nimk-ffi/cbindgen.toml --crate nimk-ffi --output target/nimk_ffi.h

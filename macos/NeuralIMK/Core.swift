@@ -35,6 +35,8 @@ final class Core {
     let dataDir: URL
     /// Diagnostics file: `<Library>/Logs/<bundle id>.log`.
     let logURL: URL
+    /// Optional user override: `<Application Support>/<bundle id>/config.toml`.
+    let configURL: URL
     /// Read-only pretrained models shipped in `Contents/Resources/models`.
     let bundledModelsDir: URL?
     private let osLog: Logger
@@ -58,6 +60,7 @@ final class Core {
         logURL = Core.systemDir(.libraryDirectory)
             .appendingPathComponent("Logs", isDirectory: true)
             .appendingPathComponent("\(id).log")
+        configURL = dataDir.appendingPathComponent("config.toml")
         try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let res = Bundle.main.resourceURL {
@@ -79,9 +82,35 @@ final class Core {
             ? "nimk_new failed: engine unavailable, passing every key through"
             : "started \(version), data dir \(dataDir.path)")
         drainDiagnostics()
+        _ = reloadConfig()
     }
 
     var isLive: Bool { handle != nil }
+
+    /// Re-reads the user override (a missing file is fine) and applies it
+    /// over the engine's embedded defaults. Returns the number of rejected
+    /// values (each is explained in the diagnostics log).
+    @discardableResult
+    func reloadConfig() -> Int {
+        let text = try? String(contentsOf: configURL, encoding: .utf8)
+        let rejected: UInt32
+        if let text {
+            rejected = text.withCString { nimk_set_config(handle, $0) }
+        } else {
+            rejected = nimk_set_config(handle, nil)
+        }
+        log(text == nil ? "config: no \(configURL.lastPathComponent), defaults in force"
+                        : "config: loaded \(configURL.path), \(rejected) value(s) rejected")
+        drainDiagnostics()
+        return Int(rejected)
+    }
+
+    /// Seconds of silence after which marked text is committed (0 = off);
+    /// follows the focused app's category.
+    var idleCommitSecs: Double { nimk_idle_commit_secs(handle) }
+
+    /// The caret moved without a key (mouse click): the engine leaves raw mode.
+    func noteNavigation() { nimk_note_navigation(handle) }
 
     /// Current mode code (`NIMK_MODE_EN` / `NIMK_MODE_VI`).
     var mode: UInt8 { nimk_mode(handle) }
