@@ -126,6 +126,24 @@ final class Core {
     /// Where a model would load from: `NIMK_CHECKPOINT_NONE` / `_BUNDLED` / `_USER`.
     func checkpointSource(_ kind: UInt8) -> UInt8 { nimk_checkpoint_source(handle, kind) }
 
+    /// Whether online training of a model is on.
+    func onlineTraining(_ kind: UInt8) -> Bool { nimk_online_training(handle, kind) }
+
+    /// Turns online training of a model on or off (persisted by the engine).
+    func setOnlineTraining(_ kind: UInt8, _ on: Bool) {
+        let ok = nimk_set_online_training(handle, kind, on)
+        drainDiagnostics()
+        log("online training \(Core.modelName(kind)) = \(on): \(ok ? "ok" : "rejected")")
+    }
+
+    /// One-line quality summary of a model for the menu.
+    func qualityText(_ kind: UInt8) -> String {
+        var s = NimkModelStats()
+        guard nimk_model_stats(handle, kind, &s) else { return "chưa có dữ liệu" }
+        return StatsText.quality(wordsRecent: UInt64(s.words_recent), correctedRecent: UInt64(s.corrected_recent),
+                                 wordsTotal: s.words_total, correctedTotal: s.corrected_total)
+    }
+
     /// Drops what the active model learned and reloads the bundled one; the
     /// output commits any word being composed.
     func resetModel(timestamp: Double) -> CoreOutput {

@@ -22,7 +22,8 @@ mod handle;
 
 pub use abi::{
     NIMK_KIND_FLAGS_CHANGED, NIMK_KIND_KEY_DOWN, NIMK_MODE_EN, NIMK_MODE_UNCHANGED, NIMK_MODE_VI,
-    NIMK_OVERLAY_AUTO, NIMK_OVERLAY_MANUAL, NIMK_OVERLAY_NONE, NimkCtx, NimkKey, NimkOut,
+    NIMK_OVERLAY_AUTO, NIMK_OVERLAY_MANUAL, NIMK_OVERLAY_NONE, NimkCtx, NimkKey, NimkModelStats,
+    NimkOut,
 };
 pub use exports::{
     nimk_commit_pending, nimk_context, nimk_free, nimk_idle_commit_secs, nimk_key, nimk_mode,

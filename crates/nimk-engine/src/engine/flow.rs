@@ -1,17 +1,17 @@
 //! Per-key flow of [`Engine`]: observation, model call, mechanical
 //! application of the action, commits, labels and trainer outputs.
 
-use nimk_policy::decide;
+use nimk_policy::{ModelKind, decide};
 use nimk_types::{
     Action, ActionMask, Boundary, EditAction, Event, Example, KeyEvent, KeyKind, Lang, Observation,
     RECENT_WINDOW, Target,
 };
 
 use super::machine::{Class, Move, State, transition};
-use super::{Engine, EngineOutput, Overlay, PendingWord, TelexFlags};
+use super::{Engine, EngineOutput, META_KEPT, Overlay, PendingWord, TelexFlags, WordMeta};
 use crate::composer::{Committed, boundary_of, printable_char};
 use crate::labeler::{FinalLabel, Step};
-use crate::trainer::TrainerOut;
+use crate::trainer::{KeyObs, StatCategory, TrainerOut, WordInfo};
 
 /// Most model calls kept per word for training (a pathological word stops
 /// recording instead of growing without bound).
@@ -352,13 +352,23 @@ impl Engine {
                 }
             }
             None => {
-                if (!was_empty || action.edit == EditAction::Append)
-                    && self.word_steps.len() < MAX_STEPS
-                {
-                    self.word_steps.push(Step {
-                        obs,
-                        edit: action.edit,
+                if !was_empty || action.edit == EditAction::Append {
+                    // Statistics only: shadow models score this observation
+                    // on the trainer side; the active model's decision is
+                    // reused, never recomputed.
+                    let shadow = self.shadow_on().then(|| Box::new(obs.clone()));
+                    self.trainer.submit_key(KeyObs {
+                        word_id: self.composer.word_id(),
+                        active_render: action.render,
+                        margin: self.live.switch_margin,
+                        obs: shadow,
                     });
+                    if self.word_steps.len() < MAX_STEPS {
+                        self.word_steps.push(Step {
+                            obs,
+                            edit: action.edit,
+                        });
+                    }
                 }
             }
         }
@@ -411,6 +421,14 @@ impl Engine {
             self.shown = self.mode;
         }
         self.note_key(key);
+    }
+
+    /// Whether a shadow model is measured: another loaded model with online
+    /// training on.
+    fn shadow_on(&self) -> bool {
+        ModelKind::ALL.iter().any(|k| {
+            *k != self.cfg.policy && self.loaded[k.index()] && self.cfg.models.online_training(*k)
+        })
     }
 
     /// Housekeeping on every input event: event clock, implicit label
@@ -531,6 +549,17 @@ impl Engine {
         self.prev_langs.insert(0, p.lang);
         self.prev_langs.truncate(3);
         self.committed_since_focus = true;
+        let category = match &self.focus {
+            Some(f) => self
+                .cfg
+                .category_name(&f.ctx.bundle_id)
+                .map_or(StatCategory::Other, StatCategory::from_name),
+            None => StatCategory::Other,
+        };
+        if self.word_meta.len() >= META_KEPT {
+            self.word_meta.pop_front();
+        }
+        self.word_meta.push_back(WordMeta { id: p.id, category });
         self.drain_trainer(t);
     }
 
@@ -545,7 +574,7 @@ impl Engine {
     pub(super) fn flush_taught(&mut self) {
         if !self.taught.is_empty() {
             let batch = std::mem::take(&mut self.taught);
-            self.trainer.submit(batch, false);
+            self.trainer.submit(batch, false, None);
         }
     }
 
@@ -563,7 +592,22 @@ impl Engine {
             );
             // Re-train around a correction only when it contradicts what
             // was rendered; a confirming label is an ordinary update.
-            self.trainer.submit(f.examples, f.corrected);
+            let info = match f.target {
+                Target::Word(id) => {
+                    self.word_meta
+                        .iter()
+                        .rev()
+                        .find(|m| m.id == id)
+                        .map(|m| WordInfo {
+                            word_id: id,
+                            label: f.label,
+                            corrected: f.corrected,
+                            category: m.category,
+                        })
+                }
+                Target::Focus(_) => None,
+            };
+            self.trainer.submit(f.examples, f.corrected, info);
         }
     }
 
@@ -591,6 +635,7 @@ impl Engine {
                     self.model_id = std::sync::Arc::from(model.id());
                     self.model = model;
                 }
+                TrainerOut::Stats(kind, stats) => self.stats[kind.index()] = stats,
                 TrainerOut::Diagnostic(d) => self.diagnostics.push(d),
             }
         }

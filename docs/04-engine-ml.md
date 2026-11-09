@@ -288,6 +288,16 @@ Quy tắc học online:
 4. Batch có `edit_weight == 0` chỉ cập nhật đầu render: `GruAction` dùng SGD `GRU_ONLINE_LR`, `LinearAction` nhân bước với `LINEAR_ONLINE_SCALE`.
 5. Với `hotkeys = false` (replay, pretrain) không sinh nhãn ngầm; nhãn đến từ `Engine::inject_label`.
 
+## Shadow training and model stats
+
+See [ADR 0013](adr/0013-shadow-training-and-model-stats.md). The trainer holds a core for every model kind; each label's Examples go to every core with `online_training` on, and only the active core publishes snapshots. Frozen models (`online_training = false`) are not updated, saved or measured (the active one is always measured).
+
+Definitions, counted per committed word with a final label for the active model and every enabled shadow:
+
+- "% corrected" = corrected words / words. Active: the user corrected the word. Shadow: its own fresh decision at the commit step (same Observation, its latest weights) differs from the final label, i.e. it would have been corrected. Reported for the last 500 words and for the lifetime, and corrected-by-app-category (terminal, ide, browser, editor, other) for the lifetime.
+- Display accuracy = keystrokes whose display decision equals the final label / keystrokes, with each model applying `switch_margin` hysteresis to its own simulated display state (the active model's is the real one). Flips = display changes between consecutive keystrokes of a word.
+- Shadow scoring runs on the trainer side from Observations the engine pushes per keystroke; the hot path never calls a shadow model. Persisted in the blob `stats/<kind>`; reset with the model. `Engine::model_stats(kind)`; FFI `nimk_model_stats`, `nimk_set_online_training`, `nimk_online_training` (`NimkModelStats` in the generated header). Not logged as events.
+
 ## Pretrain synthetic
 
 Model khởi đầu được pretrain bằng behaviour cloning trên dữ liệu gõ synthetic, để không bắt đầu từ con số 0 ([ADR 0006](adr/0006-synthetic-pretraining.md), [ADR 0007](adr/0007-neural-action-model.md)).

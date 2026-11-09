@@ -10,8 +10,8 @@ use std::ptr;
 
 use crate::abi::{
     NIMK_CHECKPOINT_BUNDLED, NIMK_CHECKPOINT_NONE, NIMK_CHECKPOINT_USER, NIMK_MODE_EN,
-    NIMK_MODEL_LINEAR, NimkCtx, NimkKey, NimkOut, ctx_from_c, key_from_c, mode_code, model_code,
-    model_from_code, read_cstr,
+    NIMK_MODEL_LINEAR, NimkCtx, NimkKey, NimkModelStats, NimkOut, ctx_from_c, key_from_c,
+    mode_code, model_code, model_from_code, read_cstr,
 };
 use nimk_engine::CheckpointSource;
 
@@ -294,6 +294,73 @@ pub unsafe extern "C" fn nimk_checkpoint_source(core: *const NimkCore, kind: u8)
         Ok(code) => code,
         Err(_) => NIMK_CHECKPOINT_NONE,
     }
+}
+
+/// Fills `out` with the counters of model `kind` (see [`NimkModelStats`]).
+/// Returns `false` (and leaves `out` untouched) for a null core or `out` or
+/// an unknown kind.
+///
+/// # Safety
+/// `core`: null or live from `nimk_new`. `out`: null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_model_stats(
+    core: *const NimkCore,
+    kind: u8,
+    out: *mut NimkModelStats,
+) -> bool {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let (Some(core), Some(out)) = (unsafe { core.as_ref() }, unsafe { out.as_mut() }) else {
+        return false;
+    };
+    let stats = catch_unwind(AssertUnwindSafe(|| {
+        model_from_code(kind).map(|k| core.engine.model_stats(k))
+    }));
+    match stats {
+        Ok(Some(s)) => {
+            *out = s.into();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Turns online training of model `kind` on or off (a frozen model is not
+/// updated, saved or shadow-measured) and remembers the choice. Returns
+/// `false` for a null core or an unknown kind.
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_set_online_training(core: *mut NimkCore, kind: u8, on: bool) -> bool {
+    // SAFETY: null or live per contract, exclusive for this call.
+    let Some(core) = (unsafe { core.as_mut() }) else {
+        return false;
+    };
+    let Some(kind) = model_from_code(kind) else {
+        return false;
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        core.engine.set_online_training(kind, on)
+    }))
+    .is_ok()
+}
+
+/// Whether online training of model `kind` is on (`false` for a null core
+/// or an unknown kind).
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_online_training(core: *const NimkCore, kind: u8) -> bool {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return false;
+    };
+    // Shared access only, so a panic cannot be recorded; it reads as "off".
+    catch_unwind(AssertUnwindSafe(|| {
+        model_from_code(kind).is_some_and(|k| core.engine.online_training(k))
+    }))
+    .is_ok_and(|on| on)
 }
 
 /// Current mode: `NIMK_MODE_EN` or `NIMK_MODE_VI` (`EN` for a null core).
@@ -581,7 +648,8 @@ mod tests {
             assert_eq!(CStr::from_ptr(out.commit).to_str().unwrap(), "a");
             assert_eq!(nimk_model(core), other);
             assert_eq!(nimk_checkpoint_source(core, default), NIMK_CHECKPOINT_USER);
-            assert_eq!(nimk_checkpoint_source(core, other), NIMK_CHECKPOINT_NONE);
+            // The other model trained in the background as a shadow.
+            assert_eq!(nimk_checkpoint_source(core, other), NIMK_CHECKPOINT_USER);
             assert_eq!(nimk_checkpoint_source(core, 9), NIMK_CHECKPOINT_NONE);
             // Unknown kind: passed through, nothing changes.
             let mut out = garbage_out();
@@ -594,6 +662,38 @@ mod tests {
         // SAFETY: live core.
         unsafe {
             assert_eq!(nimk_model(core), other, "choice persisted");
+            nimk_free(core);
+        }
+    }
+
+    #[test]
+    fn model_stats_and_online_training_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = new_core(&dir);
+        let (default, other) = default_and_other();
+        let mut stats = NimkModelStats::default();
+        // SAFETY: live core and pointers.
+        unsafe {
+            assert!(nimk_online_training(core, default));
+            assert!(nimk_online_training(core, other));
+            assert!(nimk_model_stats(core, default, &mut stats));
+            assert_eq!(stats, NimkModelStats::default());
+            assert!(!nimk_model_stats(core, 9, &mut stats));
+            assert!(!nimk_model_stats(core, default, ptr::null_mut()));
+            assert!(!nimk_model_stats(ptr::null(), default, &mut stats));
+            assert!(!nimk_online_training(core, 9));
+            assert!(!nimk_set_online_training(core, 9, false));
+            assert!(!nimk_set_online_training(ptr::null_mut(), other, false));
+            assert!(nimk_set_online_training(core, other, false));
+            assert!(!nimk_online_training(core, other));
+            assert!(nimk_online_training(core, default));
+            assert!(nimk_shutdown(core));
+        }
+        let core = new_core(&dir);
+        // SAFETY: live core.
+        unsafe {
+            assert!(!nimk_online_training(core, other), "toggle persisted");
+            assert!(nimk_online_training(core, default));
             nimk_free(core);
         }
     }

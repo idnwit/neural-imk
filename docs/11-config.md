@@ -57,6 +57,15 @@ Test `every_field_is_in_default_toml` bảo đảm mọi trường của `Engine
 | `command_end_chars` | chuỗi | | `" "` | có | Ký tự kết thúc `Raw` (vẫn tới app) |
 | `command_end_keycodes` | mảng số | mỗi số 0 đến 127 | Return, Enter số, Tab, Escape, Home/End/PageUp/PageDown, mũi tên, Delete tới | có | Phím kết thúc `Raw` (phím tắt cũng kết thúc) |
 
+### Per-model options (`[models.<kind>]`)
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `models.gru_action.online_training` | bool | true | Train this model online, also while it is not active (shadow training, [ADR 0013](adr/0013-shadow-training-and-model-stats.md)); false freezes it |
+| `models.linear_action.online_training` | bool | true | Same for the linear model |
+
+Layers merge per model and per key; an unknown model or key, or a value of the wrong type, is dropped with a diagnostic. The IME menu toggle is saved in the blob `settings/models` and overrides these values at start.
+
 ## Ghi đè theo nhóm app
 
 `[[app_category]]` gồm `name`, `bundle_ids` (mục kết thúc bằng `*` khớp theo tiền tố) và bảng `[app_category.params]`.

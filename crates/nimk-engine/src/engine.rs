@@ -27,7 +27,10 @@ use crate::config::LiveParams;
 use crate::hotkey::{HotkeyDetector, HotkeyParams};
 use crate::labeler::{Labeler, LabelerParams, Step};
 use crate::logger::{Logger, NullSink};
-use crate::trainer::{Core, SaveTarget, Trainer, TrainerOut, TrainerParams};
+use crate::trainer::{
+    Core, ModelStats, SaveTarget, StatCategory, StatsTracker, Trainer, TrainerOut, TrainerParams,
+    stats_key,
+};
 use crate::{EngineConfig, Threading};
 
 /// Why the overlay is shown.
@@ -105,13 +108,61 @@ fn load_learner(
     learner
 }
 
-/// Starts a trainer around `learner`, saving to the key of `kind`.
-fn new_trainer(
-    cfg: &EngineConfig,
+/// Loads every model kind (the trainer holds them all, ADR 0013).
+fn load_all(
+    storage: &dyn Storage,
+    seed: u64,
+    diagnostics: &mut Vec<String>,
+) -> Vec<(ModelKind, Box<dyn ImeLearner>)> {
+    ModelKind::ALL
+        .iter()
+        .map(|k| (*k, load_learner(storage, *k, seed, diagnostics)))
+        .collect()
+}
+
+/// Reads the statistics blob of `kind`; absent is silent, unusable gives
+/// empty counters and a note.
+fn load_stats(
+    storage: &dyn Storage,
     kind: ModelKind,
-    storage: Arc<dyn Storage>,
-    learner: Box<dyn ImeLearner>,
-) -> Trainer {
+    diagnostics: &mut Vec<String>,
+) -> StatsTracker {
+    let key = stats_key(kind);
+    match storage.blobs().get(&key) {
+        Ok(None) => StatsTracker::default(),
+        Ok(Some(bytes)) => match StatsTracker::from_bytes(&bytes) {
+            Ok(tracker) => tracker,
+            Err(e) => {
+                diagnostics.push(format!("{key} unusable ({e}); counting from zero"));
+                StatsTracker::default()
+            }
+        },
+        Err(e) => {
+            diagnostics.push(format!("cannot read {key} ({e}); counting from zero"));
+            StatsTracker::default()
+        }
+    }
+}
+
+/// A started trainer and what the engine caches from it.
+struct Started {
+    trainer: Trainer,
+    /// Snapshot of the active model.
+    model: Arc<dyn ImeModel>,
+    stats: [ModelStats; 2],
+    loaded: [bool; 2],
+}
+
+/// Starts a trainer around `learners`, `active` serving predictions. Each
+/// learner saves to the key of its kind and trains online per
+/// `cfg.models`. `active` must be among `learners`.
+fn start_trainer(
+    cfg: &EngineConfig,
+    active: ModelKind,
+    storage: &Arc<dyn Storage>,
+    learners: Vec<(ModelKind, Box<dyn ImeLearner>)>,
+    diagnostics: &mut Vec<String>,
+) -> Started {
     let params = TrainerParams {
         correction_window: cfg.correction_window,
         correction_steps: cfg.correction_steps,
@@ -120,15 +171,46 @@ fn new_trainer(
         replay_batch: cfg.replay_batch,
         seed: cfg.seed,
     };
-    let save = SaveTarget {
-        storage,
-        key: snapshot_key(kind),
+    let mut model = None;
+    let mut stats = [ModelStats::default(); 2];
+    let mut loaded = [false; 2];
+    let mut cores = Vec::with_capacity(learners.len());
+    for (kind, learner) in learners {
+        if kind == active {
+            model = Some(learner.snapshot());
+        }
+        let save = SaveTarget {
+            storage: Arc::clone(storage),
+            key: snapshot_key(kind),
+        };
+        let core = Core::new(kind, learner, params, save)
+            .with_flags(cfg.models.online_training(kind), kind == active)
+            .with_stats(load_stats(storage.as_ref(), kind, diagnostics));
+        stats[kind.index()] = core.stats_summary();
+        loaded[kind.index()] = true;
+        cores.push(core);
+    }
+    let model = match model {
+        Some(m) => m,
+        None => build_action(active, cfg.seed).snapshot(),
     };
-    Trainer::new(
-        Core::new(learner, params, save),
-        cfg.threading == Threading::Background,
-    )
+    Started {
+        trainer: Trainer::new(cores, cfg.threading == Threading::Background),
+        model,
+        stats,
+        loaded,
+    }
 }
+
+/// A word being committed, remembered until its label arrives.
+#[derive(Debug, Clone, Copy)]
+struct WordMeta {
+    id: u64,
+    category: StatCategory,
+}
+
+/// Most committed words whose category is remembered for their labels.
+const META_KEPT: usize = 512;
 
 /// Telex flags of the current raw buffer (features, not rules).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -186,6 +268,13 @@ pub struct Engine {
     model: Arc<dyn ImeModel>,
     model_id: Arc<str>,
     trainer: Trainer,
+    /// Cached counters per model kind (`ModelKind::index`), updated when
+    /// trainer outputs are drained.
+    stats: [ModelStats; 2],
+    /// Which kinds the trainer holds.
+    loaded: [bool; 2],
+    /// Categories of committed words awaiting their label.
+    word_meta: VecDeque<WordMeta>,
     logger: Logger,
     labeler: Labeler,
     hotkey: HotkeyDetector,
@@ -238,15 +327,17 @@ impl Engine {
         if let Some(kind) = model::read_setting(storage.as_ref(), &mut diagnostics) {
             cfg.policy = kind;
         }
-        let learner = load_learner(storage.as_ref(), cfg.policy, cfg.seed, &mut diagnostics);
-        let mut engine = Self::with_model(cfg, storage, session, learner);
+        model::read_models_setting(storage.as_ref(), &mut cfg.models, &mut diagnostics);
+        let learners = load_all(storage.as_ref(), cfg.seed, &mut diagnostics);
+        let mut engine = Self::with_models(cfg, storage, session, learners);
         diagnostics.append(&mut engine.diagnostics);
         engine.diagnostics = diagnostics;
         engine
     }
 
     /// Creates an engine around a given learner without loading snapshots
-    /// (benchmarks, synthetic pre-training, tests).
+    /// (benchmarks, synthetic pre-training, tests). It is the only model;
+    /// there is no shadow.
     #[must_use]
     pub fn with_model(
         cfg: EngineConfig,
@@ -254,7 +345,24 @@ impl Engine {
         session: SessionInfo,
         learner: Box<dyn ImeLearner>,
     ) -> Self {
+        let kind = cfg.policy;
+        Self::with_models(cfg, storage, session, vec![(kind, learner)])
+    }
+
+    /// Creates an engine around the given learners (one per kind); the one
+    /// of `cfg.policy` serves, the others are shadows when their online
+    /// training is on. A missing `cfg.policy` learner is built fresh.
+    #[must_use]
+    pub fn with_models(
+        cfg: EngineConfig,
+        storage: Arc<dyn Storage>,
+        session: SessionInfo,
+        mut learners: Vec<(ModelKind, Box<dyn ImeLearner>)>,
+    ) -> Self {
         let mut diagnostics = Vec::new();
+        if !learners.iter().any(|(k, _)| *k == cfg.policy) {
+            learners.push((cfg.policy, build_action(cfg.policy, cfg.seed)));
+        }
         let background = cfg.threading == Threading::Background;
         let sink: Box<dyn EventSink> = match storage.event_sink(&session.id) {
             Ok(sink) => sink,
@@ -267,9 +375,13 @@ impl Engine {
         };
         let logger = Logger::new(session.id.clone(), sink, background);
 
-        let model = learner.snapshot();
+        let Started {
+            trainer,
+            model,
+            stats,
+            loaded,
+        } = start_trainer(&cfg, cfg.policy, &storage, learners, &mut diagnostics);
         let model_id: Arc<str> = Arc::from(model.id());
-        let trainer = new_trainer(&cfg, cfg.policy, Arc::clone(&storage), learner);
         let labeler = Labeler::new(LabelerParams {
             implicit: cfg.hotkeys,
             correction_words: cfg.correction_words,
@@ -298,6 +410,9 @@ impl Engine {
             model,
             model_id,
             trainer,
+            stats,
+            loaded,
+            word_meta: VecDeque::with_capacity(16),
             logger,
             labeler,
             hotkey,
@@ -456,11 +571,17 @@ impl Engine {
     /// the trainer settings, which apply at the next start) with those of
     /// `cfg`, for the focused app.
     pub fn reconfigure(&mut self, cfg: EngineConfig) {
-        let keep = (self.cfg.policy, self.cfg.seed, self.cfg.threading);
+        let keep = (
+            self.cfg.policy,
+            self.cfg.seed,
+            self.cfg.threading,
+            self.cfg.models,
+        );
         self.cfg = EngineConfig {
             policy: keep.0,
             seed: keep.1,
             threading: keep.2,
+            models: keep.3,
             ..cfg
         };
         let bundle = match &self.focus {

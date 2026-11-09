@@ -50,7 +50,9 @@ fn checkpoints_are_separate_and_restored() {
         e.switch_model(ModelKind::GruAction, t + 1.0);
         assert_eq!(e.model_kind(), ModelKind::GruAction);
         assert!(e.has_checkpoint(ModelKind::LinearAction));
-        assert!(!e.has_checkpoint(ModelKind::GruAction));
+        // The inactive GRU learned from the corrections in the background
+        // (shadow training, ADR 0013), so it has its own checkpoint already.
+        assert!(e.has_checkpoint(ModelKind::GruAction));
         assert!(e.policy_id().starts_with("gru_action"));
         let saved_a = blob(&storage, LIN).unwrap();
         assert!(e.take_diagnostics().is_empty());

@@ -21,6 +21,8 @@ swift-test:
 	target/swift-test/debouncer
 	swiftc macos/NeuralIMK/Debouncer.swift macos/NeuralIMK/IdleCommit.swift macos/tests/idlecommit/main.swift -o target/swift-test/idlecommit
 	target/swift-test/idlecommit
+	swiftc macos/NeuralIMK/StatsText.swift macos/tests/statstext/main.swift -o target/swift-test/statstext
+	target/swift-test/statstext
 
 header:
 	cbindgen --config crates/nimk-ffi/cbindgen.toml --crate nimk-ffi --output target/nimk_ffi.h
