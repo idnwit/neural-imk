@@ -5,8 +5,28 @@ enum Strings {
     static let statistics = "Thống kê"
     static let settings = "Cài đặt"
     static let log = "Nhật ký"
+    static let caretLab = "Thử sửa từ"
     static let view = "Xem"
     static let refresh = "Làm mới"
+
+    // Caret-flip simulator (ADR 0015)
+    static let labIntro = "Sửa một từ đã gõ xong: đưa con trỏ vào từ sai rồi bấm Shift hai lần. Từ đổi giữa tiếng Việt và tiếng Anh ngay tại chỗ, con trỏ giữ nguyên. Hai ô dưới đây dùng bộ gõ thật, nên cần chọn NeuralIMK làm bộ gõ."
+    static let labEditorTitle = "Ô soạn thảo (như VS Code, Zed, TextEdit)"
+    static let labEditorSteps = [
+        "Gõ một câu có từ bị đổi nhầm, ví dụ gõ \"chajy test laij\" (test thành \"tét\").",
+        "Bấm vào giữa \"tét\", hoặc ngay sau nó, hoặc bôi đen nó.",
+        "Bấm Shift hai lần: \"tét\" thành \"test\". Bấm lần nữa để đổi lại.",
+    ]
+    static let labTerminalTitle = "Terminal giả lập (như Claude Code, Codex trong terminal)"
+    static let labTerminalSteps = [
+        "Bấm vào ô đen rồi gõ một dòng, ví dụ \"fix test nayf\".",
+        "Dùng ← → để đưa con trỏ vào từ sai (không bấm chuột: chuột làm bộ gõ mất dấu dòng).",
+        "Bấm Shift hai lần: bộ gõ xoá từ bằng DEL rồi gõ lại, như trong terminal thật.",
+    ]
+    static let labTrace = "Terminal nhận được (mới nhất ở trên):"
+    static let labTerminalNote = "Bộ gõ chỉ theo được dòng gõ từ lần Enter gần nhất; sau ↑ ↓ Tab Esc hay click chuột, bấm Enter để bắt đầu lại."
+    static let labTerminalPlaceholder = "bấm vào đây rồi gõ"
+    static let labClear = "Xoá"
 
     // Install state
     static let installState = "Bộ gõ"

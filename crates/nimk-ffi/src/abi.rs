@@ -39,6 +39,11 @@ pub const NIMK_CHECKPOINT_BUNDLED: u8 = 1;
 /// `nimk_checkpoint_source`: a checkpoint saved by this installation.
 pub const NIMK_CHECKPOINT_USER: u8 = 2;
 
+/// `nimk_retro_policy` bit: caret flip in clients that expose their text.
+pub const NIMK_RETRO_TEXT: u8 = 1;
+/// `nimk_retro_policy` bit: caret flip through the terminal line tracker.
+pub const NIMK_RETRO_TERMINAL: u8 = 2;
+
 /// Maps a C model code to the engine's [`ModelKind`].
 pub(crate) const fn model_from_code(code: u8) -> Option<ModelKind> {
     match code {

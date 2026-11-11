@@ -2,13 +2,14 @@ import SwiftUI
 
 /// Sidebar sections; the raw value is the Cmd+<n> shortcut.
 enum AppSection: Int, CaseIterable {
-    case overview = 1, statistics, settings, log
+    case overview = 1, statistics, settings, caretLab = 5, log = 4
 
     var title: String {
         switch self {
         case .overview: return Strings.overview
         case .statistics: return Strings.statistics
         case .settings: return Strings.settings
+        case .caretLab: return Strings.caretLab
         case .log: return Strings.log
         }
     }
@@ -18,6 +19,7 @@ enum AppSection: Int, CaseIterable {
         case .overview: return "house"
         case .statistics: return "chart.bar"
         case .settings: return "gearshape"
+        case .caretLab: return "text.cursor"
         case .log: return "doc.plaintext"
         }
     }
@@ -53,6 +55,7 @@ struct RootView: View {
         case .overview: OverviewView()
         case .statistics: StatisticsView()
         case .settings: SettingsView()
+        case .caretLab: CaretLabView()
         case .log: LogView()
         }
     }

@@ -10,9 +10,11 @@
 mod flow;
 mod machine;
 mod model;
+mod retro;
 mod switch;
 
 pub use model::{CheckpointSource, tuned_key};
+pub use retro::{RetroFlip, RetroPolicy};
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -273,6 +275,11 @@ pub struct Engine {
     recent: VecDeque<KeyEvent>,
     /// The word the model ended and the user has not moved past yet.
     pending: Option<PendingWord>,
+    /// Words committed for real, oldest first, for caret flips (ADR 0015).
+    history: VecDeque<retro::HistWord>,
+    /// The last hotkey press only switched the sticky mode and nothing has
+    /// happened since: a caret flip may still undo it.
+    undo_switch: Option<retro::UndoSwitch>,
     /// Parameters in force for the focused app (category overrides applied).
     live: LiveParams,
     /// Raw mode: a command is being typed and keys pass straight to the app
@@ -406,6 +413,8 @@ impl Engine {
             taught: Vec::new(),
             recent: VecDeque::with_capacity(nimk_types::RECENT_WINDOW + 1),
             pending: None,
+            history: VecDeque::with_capacity(retro::HISTORY_KEPT),
+            undo_switch: None,
             live,
             raw: false,
             focus: None,
@@ -617,7 +626,9 @@ impl Engine {
             let t = self.last_t;
             self.finalize_pending(t, &mut EngineOutput::default());
         }
-        match self.labeler.finalize(target, label, weight, source) {
+        // `refinalize`: a caret flip (ADR 0015) corrects a word whose
+        // implicit label was already logged.
+        match self.labeler.refinalize(target, label, weight, source) {
             Some(fl) => {
                 let t = self.last_t;
                 self.emit_labels(t, vec![fl]);
@@ -679,6 +690,7 @@ impl Engine {
     /// Fails if flushing or saving fails.
     pub fn shutdown(mut self) -> Result<(), EngineError> {
         let t = self.last_t;
+        self.settle_switch(t);
         // The host already committed any marked text; this only settles the
         // pending word's label.
         self.commit_word(

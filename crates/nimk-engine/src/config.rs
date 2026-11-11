@@ -94,6 +94,10 @@ pub struct CategoryParams {
     pub command_end_chars: Option<String>,
     /// See [`EngineConfig::command_end_keycodes`].
     pub command_end_keycodes: Option<Vec<u16>>,
+    /// See [`EngineConfig::retro_flip`].
+    pub retro_flip: Option<bool>,
+    /// See [`EngineConfig::retro_flip_terminal`].
+    pub retro_flip_terminal: Option<bool>,
 }
 
 /// A group of apps sharing parameter overrides.
@@ -199,6 +203,12 @@ pub struct EngineConfig {
     pub command_end_chars: String,
     /// Keycodes that end raw mode (Return, Tab, Escape, navigation).
     pub command_end_keycodes: Vec<u16>,
+    /// Caret flip in clients that expose their text (ADR 0015): the hotkey
+    /// with no pending word switches the word at the caret in place.
+    pub retro_flip: bool,
+    /// Caret flip in clients that expose no text (terminals), through the
+    /// host's line tracker and control bytes (ADR 0015).
+    pub retro_flip_terminal: bool,
     /// Per-model options. The IME menu's saved choices (blob
     /// `settings/models`) override these at start.
     #[serde(default)]
@@ -223,6 +233,8 @@ pub(crate) struct LiveParams {
     pub(crate) command_triggers: Vec<String>,
     pub(crate) command_end_chars: String,
     pub(crate) command_end_keycodes: Vec<u16>,
+    pub(crate) retro_flip: bool,
+    pub(crate) retro_flip_terminal: bool,
 }
 
 impl LiveParams {
@@ -282,6 +294,8 @@ impl EngineConfig {
             command_triggers: self.command_triggers.clone(),
             command_end_chars: self.command_end_chars.clone(),
             command_end_keycodes: self.command_end_keycodes.clone(),
+            retro_flip: self.retro_flip,
+            retro_flip_terminal: self.retro_flip_terminal,
         }
     }
 
@@ -501,6 +515,8 @@ impl EngineConfig {
             command_triggers: Vec::new(),
             command_end_chars: String::new(),
             command_end_keycodes: Vec::new(),
+            retro_flip: false,
+            retro_flip_terminal: false,
             models: ModelsConfig::default(),
             app_category: Vec::new(),
         }
@@ -530,7 +546,9 @@ fn apply_params(live: &mut LiveParams, p: &CategoryParams) {
         commit_keycodes,
         command_triggers,
         command_end_chars,
-        command_end_keycodes
+        command_end_keycodes,
+        retro_flip,
+        retro_flip_terminal
     );
 }
 
@@ -548,6 +566,8 @@ fn params_sets(p: &CategoryParams, key: &str) -> bool {
         "command_triggers" => p.command_triggers.is_some(),
         "command_end_chars" => p.command_end_chars.is_some(),
         "command_end_keycodes" => p.command_end_keycodes.is_some(),
+        "retro_flip" => p.retro_flip.is_some(),
+        "retro_flip_terminal" => p.retro_flip_terminal.is_some(),
         _ => false,
     }
 }
@@ -850,7 +870,7 @@ mod tests {
         assert!((cfg.switch_margin - 0.1).abs() < f32::EPSILON);
         assert_eq!(cfg.idle_commit_secs, 0.0);
         assert!((cfg.double_shift_secs - 0.4).abs() < 1e-9);
-        assert_eq!(cfg.app_category.len(), 4);
+        assert_eq!(cfg.app_category.len(), 5);
     }
 
     #[test]

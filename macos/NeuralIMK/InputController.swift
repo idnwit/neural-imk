@@ -13,6 +13,10 @@ class InputController: IMKInputController {
     /// Commits marked text after a silence (`idle_commit_secs`, ADR 0012).
     private let idleCommit = IdleCommit()
 
+    /// The client's input line as far as the IME can follow it, for caret
+    /// flips in terminals (ADR 0015).
+    private var line = TerminalLine()
+
     /// Settles the context of rapid activations; shared because Electron
     /// activates two different clients per click.
     private static let contextDebounce = Debouncer()
@@ -47,13 +51,24 @@ class InputController: IMKInputController {
             sendContext(client)
         }
 
+        let wasComposing = composing
         let out = Core.shared.key(
             kind: kind,
             keycode: event.keyCode,
             modifiers: UInt32(truncatingIfNeeded: event.modifierFlags.rawValue),
             chars: chars,
             timestamp: event.timestamp)
+        // A hotkey press with no word composing or pending: try to flip the
+        // word at the caret instead (ADR 0015).
+        if out.overlay == UInt8(NIMK_OVERLAY_MANUAL), !wasComposing, out.commit == nil,
+           (out.marked ?? "").isEmpty,
+           CaretFlipper.run(client: client, line: &line, timestamp: event.timestamp) {
+            return out.consumed
+        }
         apply(out, client: client)
+        if event.type == .keyDown, !out.consumed {
+            line.key(keycode: event.keyCode, modifiers: event.modifierFlags.rawValue, chars: chars)
+        }
         if event.type == .flagsChanged, let marked = out.marked {
             Self.refreshMarked(marked, client: client)
         }
@@ -80,6 +95,7 @@ class InputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         composing = false
+        line.reset()
         // The wall clock may have jumped (sleep, time zone) since the last
         // key; usage dates re-anchor on the next record.
         Core.shared.noteWallClock()
@@ -104,6 +120,7 @@ class InputController: IMKInputController {
         commitPending(sender)
         // IMK calls this on a mouse click: the caret moved without a key.
         Core.shared.noteNavigation()
+        line.invalidate()
     }
 
     override func menu() -> NSMenu! {
@@ -334,6 +351,7 @@ class InputController: IMKInputController {
     private func apply(_ out: CoreOutput, client: IMKTextInput, caret: NSRect? = nil) {
         if let commit = out.commit {
             client.insertText(commit, replacementRange: Self.notFound)
+            line.insert(commit)
             composing = false
         }
         if let marked = out.marked {

@@ -31,7 +31,8 @@ pub use config::{
     ModelsConfig, Threading,
 };
 pub use engine::{
-    CheckpointSource, Engine, EngineError, EngineOutput, Overlay, SessionInfo, tuned_key,
+    CheckpointSource, Engine, EngineError, EngineOutput, Overlay, RetroFlip, RetroPolicy,
+    SessionInfo, tuned_key,
 };
 pub use nimk_policy::ModelKind;
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};
