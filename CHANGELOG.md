@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/idnwit/neural-imk/compare/v0.1.0...v0.1.1) - 2026-11-11
+
+### Added
+
+- caret flip, fix an earlier word in place (ADR 0015) ([#7](https://github.com/idnwit/neural-imk/pull/7))
+
 ## [0.1.0](https://github.com/giangndm/neural-imk/releases/tag/v0.1.0) - 2026-11-09
 
 ### Added
