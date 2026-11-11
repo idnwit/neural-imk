@@ -311,6 +311,11 @@ fn focus_prior_comes_from_the_model_and_hotkey_corrects_it() {
     let mut t = 1.0;
     let o = double_shift(&mut e, &mut t);
     assert_eq!(o.mode, Some(Lang::Vi));
+    assert!(
+        labels(&events(&storage)).is_empty(),
+        "held back: a caret flip may still undo the press (ADR 0015)"
+    );
+    e.on_key(&flags(55, 0, t + 0.1));
     let evs = events(&storage);
     assert!(evs.iter().any(|ev| matches!(
         ev,

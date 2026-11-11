@@ -74,6 +74,14 @@ command_end_chars = " "
 # PageUp/PageDown, arrows, forward Delete. A Cmd/Ctrl/Opt chord ends it too.
 command_end_keycodes = [36, 76, 48, 53, 115, 119, 116, 121, 123, 124, 125, 126, 117]
 
+# ---- caret flip (ADR 0015) ----
+# The hotkey with no pending word switches the word at the caret in place, in
+# apps that let the IME read their text (editors, IDEs, most text fields).
+retro_flip = true
+# The same in apps that expose no text (terminals), using a line tracked from
+# the keys and control bytes (DEL, arrow sequences). On per category below.
+retro_flip_terminal = false
+
 # ---- per-model options ----
 # Online training per model (shadow training, ADR 0013): when true the model
 # learns from every labelled word even while another model is active, and its
@@ -101,6 +109,7 @@ bundle_ids = [
 ]
 [app_category.params]
 idle_commit_secs = 1.0
+retro_flip_terminal = true
 
 [[app_category]]
 name = "ide"
@@ -130,3 +139,10 @@ name = "editor"
 bundle_ids = ["com.apple.Notes", "com.apple.TextEdit"]
 [app_category.params]
 idle_commit_secs = 2.0
+
+# The companion app: its caret-flip simulator has a terminal-like line.
+[[app_category]]
+name = "companion"
+bundle_ids = ["com.giangndm.NeuralIMK"]
+[app_category.params]
+retro_flip_terminal = true

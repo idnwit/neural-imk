@@ -6,7 +6,7 @@ use std::sync::Arc;
 use nimk_engine::{Engine, EngineConfig, SessionInfo, Threading};
 use nimk_policy::ModelKind;
 use nimk_storage::{BlobStore, EventSink, EventSource, MemStorage, Storage};
-use nimk_types::{AppContext, Boundary, Event, Record};
+use nimk_types::{AppContext, Boundary, Event, Record, SwitchScope};
 
 use crate::load::Session;
 
@@ -126,6 +126,12 @@ fn feed(engine: &mut Engine, record: &Record, frozen: bool) {
         } => {
             engine.commit_pending(record.t);
         }
+        // A caret flip (ADR 0015) undid the sticky-mode switch of the
+        // hotkey press before it; its label follows as a `Label` record.
+        Event::ManualSwitch {
+            scope: SwitchScope::Retro,
+            ..
+        } => engine.replay_retro(),
         // The logged session switched models; replay evaluates the models
         // given on the CLI, so the switch itself is not reproduced.
         Event::ModelSwitch { .. } => {}

@@ -30,7 +30,10 @@ pub use config::{
     AppCategory, CategoryParams, DEFAULT_TOML, Diagnostic, EngineConfig, ModelOptions,
     ModelsConfig, Threading,
 };
-pub use engine::{CheckpointSource, Engine, EngineError, EngineOutput, Overlay, SessionInfo};
+pub use engine::{
+    CheckpointSource, Engine, EngineError, EngineOutput, Overlay, RetroFlip, RetroPolicy,
+    SessionInfo,
+};
 pub use nimk_policy::ModelKind;
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};
 pub use nimk_types::{ModelStats, StatCategory};

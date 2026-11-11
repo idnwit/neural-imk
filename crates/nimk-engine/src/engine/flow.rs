@@ -432,6 +432,7 @@ impl Engine {
     /// timeouts and periodic snapshots.
     pub(super) fn tick(&mut self, t: f64) {
         self.last_t = t;
+        self.settle_switch(t);
         let mut finals = Vec::new();
         self.labeler.tick(t, &mut finals);
         self.emit_labels(t, finals);
@@ -539,6 +540,7 @@ impl Engine {
             },
         );
         out.commit = Some(text);
+        self.remember_word(&p);
         // Registered before the labels so an immediate correction finds it.
         let category = match &self.focus {
             Some(f) => self
