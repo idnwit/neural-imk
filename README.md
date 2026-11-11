@@ -4,7 +4,7 @@ NeuralIMK is a macOS input method that switches between Vietnamese (Telex) and E
 
 ## Quick start
 
-For users: download the DMG from [Releases](https://github.com/giangndm/neural-imk/releases), drag NeuralIMK to Applications, open it and follow the steps. Ctrl+Space is off by default.
+For users: download the DMG from [Releases](https://github.com/idnwit/neural-imk/releases), drag NeuralIMK to Applications, open it and follow the steps. Ctrl+Space is off by default.
 
 For developers:
 
