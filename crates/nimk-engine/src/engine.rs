@@ -12,7 +12,7 @@ mod machine;
 mod model;
 mod switch;
 
-pub use model::CheckpointSource;
+pub use model::{CheckpointSource, tuned_key};
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};

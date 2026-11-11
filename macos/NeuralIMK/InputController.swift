@@ -149,6 +149,24 @@ class InputController: IMKInputController {
         let reset = NSMenuItem(title: "Khôi phục model gốc", action: #selector(resetModel(_:)), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
+        // Fine-tune on the user's own log. The count comes from the last
+        // background count; opening the menu starts the next one.
+        let tuner = Tuner.shared
+        let pending = tuner.pending
+        let tune = NSMenuItem(
+            title: TuneText.buttonTitle(newWords: pending?.new_words, corrections: pending?.new_corrections ?? 0,
+                                        running: tuner.running),
+            action: #selector(tuneNow(_:)), keyEquivalent: "")
+        tune.target = self
+        tune.isEnabled = TuneText.canRun(newWords: pending?.new_words, running: tuner.running)
+        menu.addItem(tune)
+        let lastRun = NSMenuItem(
+            title: TuneText.lastRunLine(runs: pending?.runs ?? 0, lastUnixMs: pending?.last_unix_ms ?? 0,
+                                        nowUnixMs: UInt64(Date().timeIntervalSince1970 * 1000)),
+            action: nil, keyEquivalent: "")
+        lastRun.isEnabled = false
+        menu.addItem(lastRun)
+        tuner.refresh()
         menu.addItem(.separator())
         let reload = NSMenuItem(title: "Reload config", action: #selector(reloadConfig(_:)), keyEquivalent: "")
         reload.target = self
@@ -209,6 +227,23 @@ class InputController: IMKInputController {
         ModeStatusItem.shared.show(mode: Core.shared.mode, auto: false)
         let caret = client().map { ContextProbe.caretRect($0) } ?? .zero
         Overlay.shared.showText("Đã khôi phục \(Core.modelName(Core.shared.model))", caret: caret)
+    }
+
+    /// Menu button: fine-tune the active model on the data typed since the
+    /// last run. The heavy part runs in the background; typing goes on.
+    @objc func tuneNow(_ sender: Any?) {
+        Core.shared.log("menu: tune")
+        let client = self.client()
+        let caret = client.map { ContextProbe.caretRect($0) } ?? .zero
+        let started = Tuner.shared.start(prepared: { out in
+            if let client { self.apply(out, client: client) }
+        }, done: { text, out in
+            if let client = self.client() { self.apply(out, client: client) }
+            Overlay.shared.showText(text, caret: caret)
+        })
+        if started {
+            Overlay.shared.showText("Đang tinh chỉnh model… (vẫn gõ bình thường được)", caret: caret)
+        }
     }
 
     @objc func reloadConfig(_ sender: Any?) {

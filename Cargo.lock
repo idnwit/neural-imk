@@ -3935,7 +3935,10 @@ name = "nimk-ffi"
 version = "0.1.0"
 dependencies = [
  "nimk-engine",
+ "nimk-policy",
  "nimk-storage",
+ "nimk-synth",
+ "nimk-tune",
  "nimk-types",
  "serde_json",
  "tempfile",
@@ -3992,7 +3995,9 @@ dependencies = [
  "nimk-policy",
  "nimk-storage",
  "nimk-telex",
+ "nimk-tune",
  "nimk-types",
+ "serde",
  "serde_json",
 ]
 
@@ -4001,6 +4006,19 @@ name = "nimk-telex"
 version = "0.1.0"
 dependencies = [
  "nimk-types",
+]
+
+[[package]]
+name = "nimk-tune"
+version = "0.1.0"
+dependencies = [
+ "nimk-engine",
+ "nimk-policy",
+ "nimk-storage",
+ "nimk-telex",
+ "nimk-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

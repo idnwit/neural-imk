@@ -101,7 +101,7 @@ impl NimkCore {
 /// bundled defaults in `models_dir` when it is readable. Falls back to
 /// in-memory storage (nothing persisted) when `data_dir` is missing or
 /// cannot be opened; a missing `models_dir` only costs the pretrained start.
-fn open_storage(
+pub(crate) fn open_storage(
     data_dir: Option<&str>,
     models_dir: Option<&str>,
     diags: &mut Vec<String>,

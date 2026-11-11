@@ -17,7 +17,7 @@ parse_deps = false
 prefix = ""
 # `NimkCore` is not `#[repr(C)]`, so cbindgen emits it as an opaque
 # `typedef struct NimkCore NimkCore;`.
-include = ["NimkKey", "NimkCtx", "NimkOut", "NimkModelStats"]
+include = ["NimkKey", "NimkCtx", "NimkOut", "NimkModelStats", "NimkTunePending", "NimkTuneReport"]
 
 [enum]
 prefix_with_name = false

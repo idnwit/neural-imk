@@ -4,6 +4,8 @@
 
 | Date | Type | Note |
 | --- | --- | --- |
+| 2026-11-11 | decision | Fine-tune on the user's own log on demand (menu button with the count of new words), not on a schedule; new crate `nimk-tune` ([ADR 0016](adr/0016-on-demand-fine-tuning.md)) |
+| 2026-11-11 | finding | Fine-tuning the bundled GRU on the log raised held-out render@commit 92.8% to 96.4%; larger models, LSTM and a 48-token window did not add after it; per-word adapters on top of the live model made it worse ([finetune-from-log](research/finetune-from-log.md)) |
 | 2026-11-09 | decision | Shadow training and per-model stats: every loaded model learns from the same labels, with `models.<kind>.online_training` and `stats/<kind>` ([ADR 0013](adr/0013-shadow-training-and-model-stats.md)) |
 | 2026-11-09 | decision | Unified 4-state machine Idle/Composing/Pending/Raw ([ADR 0012](adr/0012-unified-boundary-commit.md)); edits come from keys, the model only picks the rendering; TOML config ([11](11-config.md)); idle commit timer in Swift |
 | 2026-11-09 | done | Generator follows the ADR 0012 machine (`nimk-synth/src/track.rs`); both models retrained on the realistic profile (render: GRU 0.981, Linear 0.977) |

@@ -30,7 +30,13 @@ pub use corpus::Corpus;
 pub use eval_report::{EvalReport, POS_BUCKETS};
 pub use generate::{MixProfile, Script, ScriptWord, SynthConfig, generate, script_of};
 pub use log::write_log;
-pub use pretrain::{PretrainOptions, PretrainReport, evaluate_snapshot, held_out, pretrain};
+pub use nimk_tune::{
+    LogScripts, ScriptMeta, TUNE_STATE_KEY, TuneOptions, TuneOutput, TunePending, TuneReport,
+    scripts_from_log, tune, tune_pending, tune_result_key,
+};
+pub use pretrain::{
+    PretrainOptions, PretrainReport, evaluate_snapshot, finetune, held_out, pretrain,
+};
 pub use probe::{ProbeResult, probe_word};
 
 /// Bundle id used for every synthetic `Context` event.

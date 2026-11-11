@@ -17,6 +17,13 @@ use super::{
 use crate::config::ModelsConfig;
 use crate::trainer::Trainer;
 
+/// Blob where a fine-tuning run leaves the tuned snapshot of `kind` for
+/// [`Engine::install_tuned`].
+#[must_use]
+pub fn tuned_key(kind: ModelKind) -> String {
+    format!("tune/{}/result", kind.name())
+}
+
 /// Blob holding the selected model, `{ "model": "linear_action" }`.
 const SETTINGS_KEY: &str = "settings/model";
 
@@ -181,6 +188,79 @@ impl Engine {
         }
         self.drain_hooks();
         out
+    }
+
+    /// Settles pending state and stops the trainer, which saves its models.
+    /// A throwaway trainer holds the slot until [`Engine::restart_trainer`].
+    fn settle_and_stop(&mut self, timestamp: f64, out: &mut EngineOutput) {
+        self.tick(timestamp);
+        self.commit_word(Boundary::External, timestamp, out);
+        self.flush_taught();
+        let mut finals = Vec::new();
+        self.labeler.flush(&mut finals);
+        self.emit_labels(timestamp, finals);
+        let scratch = Trainer::new(Vec::new(), false);
+        let old = std::mem::replace(&mut self.trainer, scratch);
+        self.finish_trainer(old, timestamp);
+    }
+
+    /// Saves what the models learned so far to their checkpoints now, so a
+    /// separate fine-tuning run reads the current weights. Commits a word
+    /// being composed (the returned output carries it).
+    pub fn checkpoint_models(&mut self, timestamp: f64) -> EngineOutput {
+        let mut out = EngineOutput::default();
+        self.settle_and_stop(timestamp, &mut out);
+        let kind = self.cfg.policy;
+        self.restart_trainer(kind);
+        self.last_snapshot_t = Some(timestamp);
+        self.drain_hooks();
+        out
+    }
+
+    /// Installs every tuned snapshot a fine-tuning run left in
+    /// [`tuned_key`] (whatever model is active now): each replaces its
+    /// kind's checkpoint, then the models reload. What a model learned
+    /// online since the run read its checkpoint is replaced. Returns `false`
+    /// (nothing changes) when no kind has a result. A diagnostic records
+    /// every outcome.
+    pub fn install_tuned(&mut self, timestamp: f64) -> (bool, EngineOutput) {
+        let mut out = EngineOutput::default();
+        let mut found = Vec::new();
+        for kind in ModelKind::ALL {
+            let tuned = tuned_key(kind);
+            match self.storage.blobs().get(&tuned) {
+                Ok(Some(bytes)) => found.push((kind, tuned, bytes)),
+                Ok(None) => {}
+                Err(e) => self
+                    .diagnostics
+                    .push(format!("install {tuned}: cannot read ({e})")),
+            }
+        }
+        if found.is_empty() {
+            return (false, out);
+        }
+        self.settle_and_stop(timestamp, &mut out);
+        let mut installed = false;
+        for (kind, tuned, bytes) in found {
+            let key = snapshot_key(kind);
+            let note = match self.storage.blobs().put(&key, &bytes) {
+                Ok(()) => {
+                    installed = true;
+                    if let Err(e) = self.storage.blobs().delete(&tuned) {
+                        self.diagnostics
+                            .push(format!("install {tuned}: cannot delete ({e})"));
+                    }
+                    format!("install {key}: tuned snapshot installed")
+                }
+                Err(e) => format!("install {key}: cannot write ({e}); old checkpoint kept"),
+            };
+            self.diagnostics.push(note);
+        }
+        let active = self.cfg.policy;
+        self.restart_trainer(active);
+        self.last_snapshot_t = Some(timestamp);
+        self.drain_hooks();
+        (installed, out)
     }
 
     /// Reloads every model from storage into a new trainer with `kind`

@@ -158,36 +158,7 @@ impl Default for SynthConfig {
     }
 }
 
-/// One word of a script.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScriptWord {
-    /// Word id the engine will assign (0, 1, 2... per session, one per
-    /// committed non-empty word).
-    pub word_id: u64,
-    /// Intended language.
-    pub lang: Lang,
-    /// Text the user intends to see (`tiếng` or `has`).
-    pub text: String,
-    /// Raw keys typed for it (`tieengs` or `has`).
-    pub raw: String,
-}
-
-/// One synthetic typing session.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Script {
-    /// Session id (`synth-<seed>-<n>`).
-    pub session: String,
-    /// Synthetic bundle id of the app flavour ([`SYNTHETIC_BUNDLE_ID`] when
-    /// the profile has no flavours).
-    pub bundle_id: String,
-    /// Every key in order, including word boundaries (space, punctuation).
-    /// Contains no hotkeys.
-    pub keys: Vec<KeyEvent>,
-    /// Words in order with their labels.
-    pub words: Vec<ScriptWord>,
-    /// Target [`Action`] for every key, same index as `keys`.
-    pub targets: Vec<Action>,
-}
+pub use nimk_tune::{Script, ScriptWord};
 
 /// Generates `cfg.sessions` scripts deterministically.
 ///

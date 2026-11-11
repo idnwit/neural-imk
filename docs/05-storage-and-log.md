@@ -72,6 +72,8 @@ The data dir is `<Application Support>/<bundle id>`, taken from `FileManager` an
     model/<kind>/latest           # learned snapshot, <kind> = linear_action | gru_action
     hooks/model_stats/<kind>      # per-model stats, model_stats hook (see 04-engine-ml.md)
     hooks/usage/<YYYY-MM-DD>      # per-day usage counts, usage hook
+    tune/state                    # fine-tuning watermark: per session, next seq not yet used (ADR 0016)
+    tune/<kind>/result            # tuned snapshot waiting for the engine to install; removed once installed
     stats/<kind>                  # legacy per-model stats; migrated once, then unused
     settings/model                # {"model":"linear_action"}, chosen in the menu
     settings/models               # {"online_training":{"gru_action":false}}, menu toggles
