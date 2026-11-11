@@ -47,13 +47,14 @@ final class Overlay {
         present(width: size.width, tint: manual ? .systemOrange : .systemBlue, caret: caret)
     }
 
-    /// Shows a short text badge (e.g. the model name) at `caret`, blue.
-    func showText(_ text: String, caret: NSRect) {
+    /// Shows a short text badge (e.g. the model name) at `caret`, blue, or
+    /// orange for a manual action (a caret flip).
+    func showText(_ text: String, caret: NSRect, manual: Bool = false) {
         label.attributedStringValue = NSAttributedString(string: text)
         label.stringValue = text
         label.font = .boldSystemFont(ofSize: 12)
         let width = max(size.width, ceil(label.intrinsicContentSize.width) + 16)
-        present(width: width, tint: .systemBlue, caret: caret)
+        present(width: width, tint: manual ? .systemOrange : .systemBlue, caret: caret)
     }
 
     private func present(width: CGFloat, tint: NSColor, caret: NSRect) {

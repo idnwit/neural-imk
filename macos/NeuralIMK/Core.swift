@@ -116,6 +116,19 @@ final class Core {
     /// activation) so per-day usage stays on the right date.
     func noteWallClock() { nimk_note_wall_clock(handle) }
 
+    /// Caret-flip strategies of the focused app (`NIMK_RETRO_*` bits).
+    var retroPolicy: UInt8 { nimk_retro_policy(handle) }
+
+    /// Caret flip of `word` right after a hotkey press that changed no
+    /// marked text (ADR 0015): the replacement and its mode code, or nil.
+    func retroFlip(_ word: String, timestamp: Double) -> (text: String, mode: UInt8)? {
+        var mode = UInt8(NIMK_MODE_UNCHANGED)
+        let text = word.withCString { nimk_retro_flip(handle, $0, timestamp, &mode) }
+            .map { String(cString: $0) }
+        drainDiagnostics()
+        return text.map { ($0, mode) }
+    }
+
     /// Current mode code (`NIMK_MODE_EN` / `NIMK_MODE_VI`).
     var mode: UInt8 { nimk_mode(handle) }
 

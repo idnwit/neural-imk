@@ -103,4 +103,73 @@ check(Quarantine.has(qFile.path), false)
 check(Quarantine.strip(qRoot), [])
 try? FileManager.default.removeItem(at: qRoot)
 
+// Caret flip: word at the caret (UTF-16, Vietnamese letters).
+func word(_ marked: String) -> String? {
+    // `|` marks the caret.
+    let ns = marked as NSString
+    let caret = ns.range(of: "|").location
+    let text = ns.replacingOccurrences(of: "|", with: "") as NSString
+    return CaretFlip.wordRange(in: text, caret: caret).map { text.substring(with: $0) }
+}
+check(word("chạy té|t lại"), "tét")          // inside
+check(word("chạy tét| lại"), "tét")          // right after
+check(word("chạy tét, |lại"), "lại")         // a word at the caret wins
+check(word("chạy tét, | lại"), "tét")        // after ", "
+check(word("tét    |x"), "x")
+check(word("tét    | x"), nil)               // gap too long
+check(word("a tiếng|"), "tiếng")
+check(word("|"), nil)
+
+// Line tracker
+var line = TerminalLine()
+line.insert("tét ")
+check(line.word()?.text, nil)                  // word touches the unknown left edge
+line.insert("lại ")
+line.key(keycode: TerminalLine.kLeft, modifiers: 0, chars: nil)
+check(line.word()?.text, "lại")                // known on both sides
+line.key(keycode: TerminalLine.kReturn, modifiers: 0, chars: "\r")
+line.insert("fix tét ")
+check(line.word()?.text, "tét")
+check(line.plan(replacing: line.word()!.range, with: "test"),
+      ["\u{1b}[D", "\u{7f}", "\u{7f}", "\u{7f}", "test", "\u{1b}[C"])
+line.replace(line.word()!.range, with: "test")
+check(String(line.chars), "fix test ")
+check(line.caret, 9)
+for _ in 0..<7 { line.key(keycode: TerminalLine.kLeft, modifiers: 0, chars: nil) }
+check(line.caret, 2)
+check(line.word()?.text, "fix")
+check(line.plan(replacing: line.word()!.range, with: "fĩ"),
+      ["\u{1b}[C", "\u{7f}", "\u{7f}", "\u{7f}", "fĩ"])
+line.key(keycode: TerminalLine.kBackspace, modifiers: 0, chars: "\u{7f}")
+check(String(line.chars), "fx test ")
+line.key(keycode: 0, modifiers: 0, chars: "i")
+check(String(line.chars), "fix test ")
+line.key(keycode: TerminalLine.kLeft, modifiers: TerminalLine.option, chars: nil)
+check(line.valid, false)
+check(line.word()?.text, nil)
+line.insert("abc")                             // ignored while invalid
+line.key(keycode: TerminalLine.kReturn, modifiers: 0, chars: "\r")
+check(line.valid, true)
+line.insert("x")
+line.key(keycode: TerminalLine.kUp, modifiers: 0, chars: nil)
+check(line.valid, false)
+var edge = TerminalLine()
+edge.key(keycode: TerminalLine.kLeft, modifiers: 0, chars: nil)
+check(edge.valid, false)                       // past the unknown edge
+
+// Fake terminal (simulator): replays a caret-flip plan.
+var term = FakeTerminal()
+check(term.receive("fix tét "), "fix tét ")
+var mirror = TerminalLine()
+mirror.key(keycode: TerminalLine.kReturn, modifiers: 0, chars: "\r")
+mirror.insert("fix tét ")
+let w = mirror.word()!
+let trace = mirror.plan(replacing: w.range, with: "test").map { term.receive($0) }.joined()
+check(trace, "←⌫⌫⌫test→")
+check(String(term.line), "fix test ")
+check(term.caret, 9)
+check(term.receive("\r"), "⏎")
+check(term.history, ["fix test "])
+check(term.receive("\u{1b}[Z"), "�")
+
 print("app ok")
