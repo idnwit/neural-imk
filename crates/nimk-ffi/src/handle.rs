@@ -23,6 +23,7 @@ pub struct NimkCore {
     diag_buf: Option<CString>,
     policy_buf: Option<CString>,
     summary_buf: Option<CString>,
+    retro_buf: Option<CString>,
 }
 
 impl NimkCore {
@@ -47,6 +48,7 @@ impl NimkCore {
             diag_buf: None,
             policy_buf: None,
             summary_buf: None,
+            retro_buf: None,
         }
     }
 
@@ -94,6 +96,25 @@ impl NimkCore {
         self.summary_buf
             .as_deref()
             .map_or(ptr::null(), CStr::as_ptr)
+    }
+}
+
+impl NimkCore {
+    /// Caret flip of `observed` (ADR 0015): the replacement text, null when
+    /// there is nothing to flip; `to` receives its mode code. Valid until
+    /// the next call of this method.
+    pub(crate) fn retro_flip(
+        &mut self,
+        observed: &str,
+        timestamp: f64,
+        to: &mut u8,
+    ) -> *const c_char {
+        let flip = self.engine.retro_flip(observed, timestamp);
+        *to = flip.as_ref().map_or(crate::abi::NIMK_MODE_UNCHANGED, |f| {
+            crate::abi::mode_code(f.to)
+        });
+        self.retro_buf = flip.map(|f| to_cstring(f.replacement));
+        self.retro_buf.as_deref().map_or(ptr::null(), CStr::as_ptr)
     }
 }
 

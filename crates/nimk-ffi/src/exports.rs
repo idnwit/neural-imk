@@ -10,8 +10,9 @@ use std::ptr;
 
 use crate::abi::{
     NIMK_CHECKPOINT_BUNDLED, NIMK_CHECKPOINT_NONE, NIMK_CHECKPOINT_USER, NIMK_MODE_EN,
-    NIMK_MODEL_LINEAR, NimkCtx, NimkKey, NimkModelStats, NimkOut, ctx_from_c, key_from_c,
-    mode_code, model_code, model_from_code, read_cstr,
+    NIMK_MODE_UNCHANGED, NIMK_MODEL_LINEAR, NIMK_RETRO_TERMINAL, NIMK_RETRO_TEXT, NimkCtx, NimkKey,
+    NimkModelStats, NimkOut, ctx_from_c, key_from_c, mode_code, model_code, model_from_code,
+    read_cstr,
 };
 use nimk_engine::CheckpointSource;
 
@@ -524,6 +525,66 @@ pub unsafe extern "C" fn nimk_note_wall_clock(core: *mut NimkCore) {
     }
 }
 
+/// Caret-flip strategies the focused app allows: `NIMK_RETRO_TEXT` and/or
+/// `NIMK_RETRO_TERMINAL` bits (0 for a null core).
+///
+/// # Safety
+/// `core` must be null or live from `nimk_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_retro_policy(core: *const NimkCore) -> u8 {
+    // SAFETY: null or live per contract; only shared access is needed.
+    let Some(core) = (unsafe { core.as_ref() }) else {
+        return 0;
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        let p = core.engine.retro_policy();
+        (if p.text { NIMK_RETRO_TEXT } else { 0 })
+            | (if p.terminal { NIMK_RETRO_TERMINAL } else { 0 })
+    }))
+    .map_or(0, |bits| bits)
+}
+
+/// Caret flip (ADR 0015): call right after a hotkey press whose output
+/// changed no marked text, with `observed`, the word the host found at the
+/// caret. Returns the replacement (valid until the next `nimk_retro_flip`
+/// call on `core`) and writes its mode to `to`; null (and
+/// `NIMK_MODE_UNCHANGED`) when there is nothing to flip, in which case the
+/// press's mode switch stands.
+///
+/// # Safety
+/// `core`: null or live from `nimk_new`. `observed`: null or a C string.
+/// `to`: null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimk_retro_flip(
+    core: *mut NimkCore,
+    observed: *const c_char,
+    timestamp: f64,
+    to: *mut u8,
+) -> *const c_char {
+    let mut lang = NIMK_MODE_UNCHANGED;
+    // SAFETY: null or live and exclusively used per contract.
+    let result = match (unsafe { core.as_mut() }, unsafe { read_cstr(observed) }) {
+        (Some(core), Some(word)) => {
+            match catch_unwind(AssertUnwindSafe(|| {
+                core.retro_flip(&word, timestamp, &mut lang)
+            })) {
+                Ok(p) => p,
+                Err(payload) => {
+                    record_panic(core, "nimk_retro_flip", &*payload);
+                    lang = NIMK_MODE_UNCHANGED;
+                    ptr::null()
+                }
+            }
+        }
+        _ => ptr::null(),
+    };
+    // SAFETY: null or writable per contract.
+    if let Some(to) = unsafe { to.as_mut() } {
+        *to = lang;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{CStr, CString};
@@ -601,6 +662,11 @@ mod tests {
             assert_eq!(nimk_model(ptr::null()), NIMK_MODEL_LINEAR);
             assert_eq!(nimk_checkpoint_source(ptr::null(), 0), NIMK_CHECKPOINT_NONE);
             assert!(!nimk_reset_model(ptr::null_mut(), 0.0, ptr::null_mut()));
+            assert_eq!(nimk_retro_policy(ptr::null()), 0);
+            let mut to = 0;
+            assert!(nimk_retro_flip(ptr::null_mut(), c"x".as_ptr(), 0.0, &mut to).is_null());
+            assert_eq!(to, NIMK_MODE_UNCHANGED);
+            assert!(nimk_retro_flip(ptr::null_mut(), ptr::null(), 0.0, ptr::null_mut()).is_null());
             assert!(!nimk_shutdown(ptr::null_mut()));
             nimk_free(ptr::null_mut());
         }

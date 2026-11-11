@@ -200,6 +200,10 @@ pub enum SwitchScope {
     AfterCommit,
     /// After focus, before any word was typed.
     BeforeTyping,
+    /// A caret flip: an earlier word, already in the app, switched in place
+    /// (ADR 0015). It undoes the sticky-mode switch of the hotkey press
+    /// logged just before it.
+    Retro,
 }
 
 /// What ended a word.

@@ -1,6 +1,6 @@
 # GUI
 
-> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `macos/NeuralIMK/{Overlay,InputController,StatsText}.swift`, `crates/nimk-engine/src/engine.rs`
+> **Status:** draft · **Updated:** 2026-11-11 · **Code:** `macos/NeuralIMK/{Overlay,InputController,StatsText}.swift`, `crates/nimk-engine/src/engine.rs`
 
 The app has three UI surfaces, all in the Swift shim because they are short, plain AppKit.
 Rust only says when to show and why (`EngineOutput::overlay`, `EngineOutput::mode`); Swift draws.
@@ -62,6 +62,18 @@ Some labels are Vietnamese in the app; their English meaning is given in parenth
 
 Choosing a model calls `nimk_set_model`, applies `NimkOut` (committing the word being typed), updates the status item, and shows an overlay with the model name.
 Models are described in [linear](models/linear.md) and [gru](models/gru.md). Stats hold counters only, never typed text ([05](05-storage-and-log.md)).
+
+## Caret-flip simulator
+
+The companion app's section **Thử sửa từ** (Cmd+5) is a test bench for the caret flip ([ADR 0015](adr/0015-caret-flip.md)). Both panes are real clients of the installed IME; the app never calls the engine.
+
+| Pane | Client | IME strategy |
+| --- | --- | --- |
+| Editor | Plain `NSTextView` | Text client: reads before the caret, replaces a range |
+| Terminal | `TerminalView`, an `NSTextInputClient` that reports no selection and no text and interprets DEL and `ESC [ C` / `ESC [ D` (`FakeTerminal`) | Terminal line; enabled by the `companion` category's `retro_flip_terminal = true` |
+
+Under the terminal, a trace shows what it received per flip, e.g. `←⌫⌫⌫test→`.
+The caret flip shows an orange badge `→ EN test` at the caret.
 
 ## Companion app notifications
 

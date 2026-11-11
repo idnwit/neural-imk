@@ -28,8 +28,9 @@ use nimk_types::{Action, EditAction, Example, LabelSource, Lang, Observation, Ta
 /// Cap on pending items (only reached when implicit labels are disabled).
 pub(crate) const MAX_PENDING: usize = 256;
 
-/// Implicitly finalized items whose steps are kept for late corrections.
-const DONE_KEPT: usize = 4;
+/// Finalized items whose steps are kept for late corrections (a caret flip,
+/// ADR 0015, may reach a word several sentences back).
+const DONE_KEPT: usize = 32;
 
 /// One model call of a word: what it saw and the edit that was applied.
 #[derive(Debug, Clone, PartialEq)]
@@ -235,8 +236,9 @@ impl Labeler {
     }
 
     /// Like [`Labeler::finalize`], but when `target` was already finalized
-    /// implicitly (and is still cached) the correction overrides it: a new
-    /// label is built from the cached steps. `None` if unknown.
+    /// (and is still cached) a label that changes its ground truth overrides
+    /// it: a new label is built from the cached steps. `None` if unknown or
+    /// if `label` is already the ground truth.
     pub(crate) fn refinalize(
         &mut self,
         target: Target,
@@ -249,6 +251,10 @@ impl Labeler {
         }
         let idx = self.done.iter().position(|(t, ..)| *t == target)?;
         let (_, mode, steps, prev) = self.done.get(idx)?.clone();
+        if prev == label {
+            // Already the ground truth: nothing to amend.
+            return None;
+        }
         if let Some(entry) = self.done.get_mut(idx) {
             entry.3 = label;
         }

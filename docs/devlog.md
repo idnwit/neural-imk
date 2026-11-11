@@ -1,9 +1,10 @@
 # Devlog
 
-> **Working log** · **Updated:** 2026-11-09 · Decisions, findings and open items; newest first. Obsolete entries are dropped.
+> **Working log** · **Updated:** 2026-11-11 · Decisions, findings and open items; newest first. Obsolete entries are dropped.
 
 | Date | Type | Note |
 | --- | --- | --- |
+| 2026-11-11 | finding | Caret-flip spike: VS Code and Zed allow reading before the caret and range replacement; Chromium reads only in-bounds ranges; terminals expose no text but pass DEL and arrow bytes ([09](09-app-compat.md#text-access-for-caret-flip)); design in [ADR 0015](adr/0015-caret-flip.md), then implemented with a simulator page in the companion app |
 | 2026-11-09 | decision | Shadow training and per-model stats: every loaded model learns from the same labels, with `models.<kind>.online_training` and `stats/<kind>` ([ADR 0013](adr/0013-shadow-training-and-model-stats.md)) |
 | 2026-11-09 | decision | Unified 4-state machine Idle/Composing/Pending/Raw ([ADR 0012](adr/0012-unified-boundary-commit.md)); edits come from keys, the model only picks the rendering; TOML config ([11](11-config.md)); idle commit timer in Swift |
 | 2026-11-09 | done | Generator follows the ADR 0012 machine (`nimk-synth/src/track.rs`); both models retrained on the realistic profile (render: GRU 0.981, Linear 0.977) |

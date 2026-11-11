@@ -78,7 +78,7 @@ for arch in $ARCHS; do
     -module-name NeuralIMK \
     -import-objc-header "$SRC/NeuralIMK-Bridging.h" \
     -Xcc -I -Xcc "$ROOT/target" \
-    "$SRC"/*.swift macos/Shared/CorrectionHint.swift \
+    "$SRC"/*.swift macos/Shared/CorrectionHint.swift macos/Shared/CaretFlip.swift \
     "$LIB" \
     -framework Cocoa -framework InputMethodKit -framework CoreGraphics \
     -o "$OUT"
