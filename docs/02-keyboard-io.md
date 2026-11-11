@@ -172,9 +172,10 @@ Each press writes a `manual_switch` record with `overlay = Some(Overlay::Manual)
 | Pending word | `after_commit` | Flip the pending word in marked text; pressing again toggles back | At the real commit: `correction` weight 1.0 for the final rendering; if not flipped, the usual implicit label |
 | No pending word, a word was committed since focus | `after_commit` | Sticky mode only | None |
 | `Raw` | `after_commit` (no `word_id`) | Sticky mode only | None |
-| No word committed since focus | `before_typing` | Sticky mode (prior) | Focus prior was wrong, `correction` weight 1.0 |
+| No word committed since focus | `before_typing` | Sticky mode (prior) | Focus prior was wrong, `correction` weight 1.0, written at the next event |
+| Any of the three rows above, and Swift finds a word at the caret | `retro` (after the row's own record) | The word at the caret switches in place; the sticky mode is restored | That word = new rendering, `correction` weight 1.0; no focus-prior label |
 
-Only the pending word can be fixed. Text already inserted into the app is never touched. A proposal to fix an earlier word at the caret is in [ADR 0015](adr/0015-caret-flip.md) (not implemented).
+With no pending word, the shim first tries a caret flip ([ADR 0015](adr/0015-caret-flip.md)): it finds the word at the caret, asks `nimk_retro_flip` for the other rendering and edits the app. Only if that finds nothing does the press stay a plain sticky-mode switch.
 
 ```text
  typed:   h a s <space>     model picks Commit with EN: marked text "has "  (nothing inserted)

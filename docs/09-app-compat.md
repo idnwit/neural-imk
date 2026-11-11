@@ -40,7 +40,7 @@ Seen on 2026-11-09 with WezTerm. Its `config.keys` mapped `Shift+Enter` to `Send
 
 ## Text access for caret flip
 
-Measured on 2026-11-09..11 with a throwaway probe (branch `spike/caret-flip`) for the proposed caret flip ([ADR 0015](adr/0015-caret-flip.md)). Editors give the IME the text before the caret and accept a range replacement; terminals give nothing, but pass control bytes through.
+Measured on 2026-11-09..11 with a throwaway probe (branch `spike/caret-flip`) for the caret flip ([ADR 0015](adr/0015-caret-flip.md)). Editors give the IME the text before the caret and accept a range replacement; terminals give nothing, but pass control bytes through.
 
 The probe ran on a double Shift with no marked text. It read the text around the caret through `IMKTextInput`, then replaced the word there with its upper-case form.
 

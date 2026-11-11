@@ -57,6 +57,8 @@ Test `every_field_is_in_default_toml` checks that every `EngineConfig` field is 
 | `command_triggers` | string array | each exactly 1 char, not letter, digit or space | `["/", "@", "!"]` | yes | Characters that move `Idle` to `Raw` |
 | `command_end_chars` | string | | `" "` | yes | Characters that end `Raw` (they still reach the app) |
 | `command_end_keycodes` | int array | each 0 to 127 | Return, keypad Enter, Tab, Escape, Home/End/PageUp/PageDown, arrows, forward Delete | yes | Keys that end `Raw` (chords also end it) |
+| `retro_flip` | bool | | true | yes | Caret flip in apps that expose their text: the hotkey with no pending word switches the word at the caret ([ADR 0015](adr/0015-caret-flip.md)) |
+| `retro_flip_terminal` | bool | | false (true for `terminal` and `companion`) | yes | Caret flip in apps that expose no text, through the line tracker and control bytes |
 
 ### Per-model options (`[models.<kind>]`)
 
@@ -71,7 +73,7 @@ The menu toggle is saved in the blob `settings/models` and overrides these value
 ## Per-app overrides
 
 `[[app_category]]` has `name`, `bundle_ids` (an entry ending in `*` matches by prefix) and a `[app_category.params]` table.
-The first matching category wins. `params` may override only the "Live" keys above: `switch_margin`, `idle_commit_secs`, `double_shift`, `double_shift_secs`, `shift_tap_secs`, `ctrl_space`, `extra_letters`, `extra_boundaries`, `commit_keycodes`, `command_triggers`, `command_end_chars`, `command_end_keycodes`.
+The first matching category wins. `params` may override only the "Live" keys above: `switch_margin`, `idle_commit_secs`, `double_shift`, `double_shift_secs`, `shift_tap_secs`, `ctrl_space`, `extra_letters`, `extra_boundaries`, `commit_keycodes`, `command_triggers`, `command_end_chars`, `command_end_keycodes`, `retro_flip`, `retro_flip_terminal`.
 A bad key in `params` is dropped on its own (`app_category.<name>.params.<key>`); the rest of the category stays.
 
 | Category | `bundle_ids` | `idle_commit_secs` |

@@ -23,7 +23,7 @@
 | [12-metrics.md](12-metrics.md) | Ground truth and every online/offline accuracy metric | `crates/nimk-types/src/truth.rs`, `crates/nimk-engine/src/trainer/stats.rs` |
 | [models/](models/) | One doc per model: [Linear](models/linear.md), [GRU](models/gru.md) (architecture, training, checkpoints, results) | `crates/nimk-policy` |
 | [research/](research/) | Historical research notes behind decisions | - |
-| [adr/](adr/) | Architecture decision records, latest: [0015 Caret flip](adr/0015-caret-flip.md) (proposed) | - |
+| [adr/](adr/) | Architecture decision records, latest: [0015 Caret flip](adr/0015-caret-flip.md) | - |
 | [devlog.md](devlog.md) | Short dated log, newest first | - |
 
 ## Writing standard

@@ -1,6 +1,6 @@
 # 0015. Caret flip: fix an earlier word in place
 
-> **Status:** proposed · **Date:** 2026-11-11 · **Extends:** [0011](0011-pending-word-commit.md), [0014](0014-transform-hook-pipeline.md) · **Evidence:** [09, text access for caret flip](../09-app-compat.md#text-access-for-caret-flip)
+> **Status:** accepted · **Date:** 2026-11-11 · **Code:** `crates/nimk-engine/src/engine/retro.rs`, `macos/Shared/CaretFlip.swift`, `macos/NeuralIMK/CaretFlipper.swift` · **Extends:** [0011](0011-pending-word-commit.md), [0014](0014-transform-hook-pipeline.md) · **Evidence:** [09, text access for caret flip](../09-app-compat.md#text-access-for-caret-flip)
 
 ## Context
 
@@ -40,9 +40,9 @@ Swift finds the word and performs the edit. The engine decides the replacement a
 
 | Strategy | When | Find the word | Replace it |
 | --- | --- | --- | --- |
-| Text client | `selectedRange().location != NSNotFound` | Read `string(from:actualRange:)` for windows that end at the caret (40, 20, 10, 5 UTF-16 units). A non-empty selection is the target. Otherwise the letter run containing the caret, or ending at most 3 non-letters before it | `insertText(newWord + gap, replacementRange: wordStart..<caret)`, where `gap` is the text between the word and the caret. The insertion ends at the caret, so the caret stays put |
-| Terminal line | `selectedRange` is `NotFound` and the app category is `terminal` | The line tracker below | One `insertText` of `ESC [ C` x (word end - caret) if the caret is inside the word, `DEL` x word length, the new word, then `ESC [ D` x the same count |
-| None | Any other client | - | Today's behaviour: the hotkey only switches the sticky mode |
+| Text client | `selectedRange().location != NSNotFound` and `retro_flip` | Read `string(from:actualRange:)` for windows that end at the caret (40, 20, 10, 5 UTF-16 units) and that start at it (20 down to 1). A selection made only of letters is the target. Otherwise the letter run containing the caret, or ending at most 3 non-letters before it | Caret after the word: `insertText(newWord + gap, replacementRange: wordStart..<caret)`, where `gap` is the text between the word and the caret, so the caret stays put. Caret inside the word: replace the word; the caret ends after it |
+| Terminal line | `selectedRange` is `NotFound` and `retro_flip_terminal` (on for the `terminal` and `companion` categories) | The line tracker below | `ESC [ C` x (word end - caret) if the caret is inside the word, or `ESC [ D` x gap if after it; `DEL` x word length; the new word; `ESC [ C` x gap. Each unit is its own `insertText`, 12 ms apart, so programs that tell typing from pasting by chunk size see keystrokes |
+| None | Any other client | - | The hotkey only switches the sticky mode |
 
 ### Line tracker
 
@@ -50,22 +50,27 @@ A pure Swift type mirrors the terminal's input line from the keys the IME alread
 
 | Event | Effect |
 | --- | --- |
-| Text the IME inserts, printable keys passed through | Insert at the caret |
-| Backspace | Delete before the caret |
+| Text the IME inserts, printable keys passed through (raw mode included) | Insert at the caret |
+| Backspace, forward Delete | Delete before or at the caret |
 | Left, Right | Move one character |
-| Opt+Left, Opt+Right | Move one whitespace-delimited word |
-| Cmd+Left, Cmd+Right, Home, End, Ctrl+A, Ctrl+E | Line start or end |
-| Return, Up, Down, Tab, Esc, focus change, mouse click, other Ctrl or Cmd chords, raw mode | Invalidate until the next line boundary |
+| Cmd+Left, Cmd+Right, Home, End, Ctrl+A, Ctrl+E | Line start or end, if the whole line is known |
+| Return, keypad Enter | Start a new, fully known line |
+| Up, Down, Tab, Esc, PageUp, PageDown, mouse click (`commitComposition`), Option/Ctrl/Cmd chords (word moves, kills, paste) | Invalidate until the next Return |
+| Focus change (`activateServer`) | Start a window with unknown edges |
 
+The tracker knows either a whole line (since a Return) or a window around the caret with unknown text on both sides. In a window, moving or deleting past its edge invalidates the line, and a word touching an edge is refused because it may continue outside.
 A flip on an invalid line does nothing new. Vim normal mode, shell history and completion menus all invalidate the line, so they stay safe.
 
 ### Engine
 
-- New module `history`: per focus id, a ring of the last 200 committed words `{word_id, raw, vi, en, committed}`. It is filled at `WordCommit` and is not on the per-key path.
-- `Engine::retro_flip(observed, timestamp) -> Option<RetroFlip>` first restores the sticky mode the preceding hotkey press changed. It then looks up the most recent word in the focused field whose committed rendering equals `observed`.
-- Found: the replacement is the other rendering. The engine logs `manual_switch { scope: retro }` and a `correction` label, weight 1.0. The label goes through `Labeler::refinalize` while the word is cached (statistics amend the earlier record), else as a new label.
+- Module `engine/retro.rs`: a ring of the last 200 committed words `{word_id, bundle_id, raw, vi, lang}`, filled at `WordCommit`, not on the per-key path. Words are matched per app, not per field: Chromium and Electron change the field id on every click.
+- A hotkey press that found no word records `UndoSwitch { prev mode, held-back focus label }`. The next event of any kind settles it (writes the focus-prior label); until then a caret flip may undo it.
+- `Engine::retro_flip(observed, timestamp) -> Option<RetroFlip>` works only while that undo is open. It looks up the most recent word in the focused app whose rendering in the app equals `observed`, restores the sticky mode, and updates the remembered rendering, so a second flip toggles back.
+- Found: the replacement is the other rendering. The engine logs `manual_switch { scope: retro }` and a `correction` label, weight 1.0, through `Labeler::refinalize`. The labeler now keeps the steps of its last 32 finalized words (was 4); an older word gets the label record with nothing to train on. A label equal to the current ground truth is ignored.
 - Not found: a word with Vietnamese letters becomes its Telex raw (`nimk_telex::encode`). A plain ASCII word becomes its Telex rendering when that is a valid syllable. No label is written.
-- FFI: `nimk_retro_flip(core, observed, timestamp, out_text) -> u8`, returning the target language or `NIMK_MODE_UNCHANGED`.
+- `None`: the press's plain mode switch stands.
+- FFI: `nimk_retro_flip(core, observed, timestamp, *to) -> const char*` (null when there is nothing to flip) and `nimk_retro_policy(core) -> u8` (`NIMK_RETRO_TEXT | NIMK_RETRO_TERMINAL`).
+- Replay: a `manual_switch { scope: retro }` record calls `Engine::replay_retro` (undo the press); its label is injected as usual, and `inject_label` uses `refinalize` so a correction after an implicit label is kept.
 
 ```rust
 pub struct RetroFlip {
@@ -79,9 +84,10 @@ pub struct RetroFlip {
 
 | Item | Value |
 | --- | --- |
-| Event | `SwitchScope::Retro` (`retro`), additive; `SCHEMA_VERSION` stays 1; replay treats it like `after_commit` with a word id |
-| Config | `retro_flip = true` (text clients), `retro_flip_terminal = true` (terminal line); both overridable per `[[app_category]]` |
-| Overlay | `-> viet` style badge with the new rendering, orange (manual) |
+| Event | `SwitchScope::Retro` (`retro`), additive; `SCHEMA_VERSION` stays 1 |
+| Config | `retro_flip = true` (text clients); `retro_flip_terminal = false`, true in the `terminal` and `companion` categories; both overridable per `[[app_category]]` |
+| Overlay | Orange badge `→ EN test` with the new rendering; the status item shows the restored mode |
+| Simulator | Companion app section **Thử sửa từ**: an editor and a terminal-like client ([06](../06-gui.md#caret-flip-simulator)) |
 
 ## Consequences
 
@@ -96,7 +102,6 @@ pub struct RetroFlip {
 
 | Area | Test |
 | --- | --- |
-| History and `retro_flip` | Per-field lookup, most recent match, label via refinalize without double counting, late label, fallback without label, `retro` record |
-| Word finding | Caret inside the word, after trailing spaces, selection, punctuation, UTF-16 with Vietnamese letters |
-| Line tracker | Every event row above, invalidation, and the keystroke plan |
+| History and `retro_flip` (`crates/nimk-engine/tests/retro.rs`) | Flip and flip back with labels, most recent match, only right after a word-less press, fallback without label, other app not matched, nothing to flip keeps the switch, focus label dropped, replay undo, policy per category |
+| Word finding, line tracker, keystroke plan (`macos/tests/app`) | Caret inside the word, after a gap, gap too long, Vietnamese letters; tracker edges, invalidation, Return; the plan replayed through `FakeTerminal` |
 | Manual | VS Code, Cursor, Zed, Edge, TextEdit, RustRover; Claude Code and Codex in WezTerm, iTerm and Terminal.app; vim insert vs normal mode |
