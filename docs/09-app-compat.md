@@ -1,6 +1,6 @@
 # App compatibility: marked text
 
-> **Status:** draft · **Updated:** 2026-11-09 · **Code:** `macos/NeuralIMK/InputController.swift`, `crates/nimk-engine/src/engine/flow.rs`
+> **Status:** draft · **Updated:** 2026-11-11 · **Code:** `macos/NeuralIMK/InputController.swift`, `crates/nimk-engine/src/engine/flow.rs`
 
 A double Shift tap flips the pending word in place, so it needs no `replacementRange` ([ADR 0011](adr/0011-pending-word-commit.md)).
 The IME depends on only two app behaviors: `setMarkedText` and plain `insertText`.
@@ -37,6 +37,22 @@ Shift+Return --> WezTerm: matches config.keys?
 ```
 
 Seen on 2026-11-09 with WezTerm. Its `config.keys` mapped `Shift+Enter` to `SendString '\x1b[13;2u'`, a binding often added for Claude Code and Codex. The real log had 0 Shift+Return keys from WezTerm. The fix was to delete the binding and keep `config.enable_kitty_keyboard = true`. WezTerm then sends `\x1b[13;2u` itself to apps that enable the kitty protocol, after the IME has committed the word. With that change, the real log shows Shift+Return in WezTerm committing the word (`boundary: "return"`).
+
+## Text access for caret flip
+
+Measured on 2026-11-09..11 with a throwaway probe (branch `spike/caret-flip`) for the proposed caret flip ([ADR 0015](adr/0015-caret-flip.md)). Editors give the IME the text before the caret and accept a range replacement; terminals give nothing, but pass control bytes through.
+
+The probe ran on a double Shift with no marked text. It read the text around the caret through `IMKTextInput`, then replaced the word there with its upper-case form.
+
+| Client | `selectedRange` | Read text before the caret | Replace with `insertText(_:replacementRange:)` | Note |
+| --- | --- | --- | --- | --- |
+| VS Code (Electron) | Yes | Yes | Works; read-back matched; caret kept | Cursor shares the stack (not measured) |
+| Zed | Yes | Yes | Works; read-back matched | The caret moves to the end of the replaced word |
+| Orca, Edge (Chromium) | Yes | Only for ranges that do not run past the end of the text; `length()` reports 0 | Not exercised | Same engine as VS Code |
+| WezTerm with Claude Code | `NotFound` | No | Not possible | Inserted DEL erased a character, `ESC [ D` moved left, then `.` was inserted |
+| TextEdit, RustRover, iTerm, Terminal.app, Codex.app | Not measured | | | |
+
+Accessibility API and synthesized keys were not measured; the probe ran without the Accessibility permission.
 
 ## Manual test plan
 

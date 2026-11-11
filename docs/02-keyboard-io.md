@@ -174,7 +174,7 @@ Each press writes a `manual_switch` record with `overlay = Some(Overlay::Manual)
 | `Raw` | `after_commit` (no `word_id`) | Sticky mode only | None |
 | No word committed since focus | `before_typing` | Sticky mode (prior) | Focus prior was wrong, `correction` weight 1.0 |
 
-Only the pending word can be fixed. Text already inserted into the app is never touched.
+Only the pending word can be fixed. Text already inserted into the app is never touched. A proposal to fix an earlier word at the caret is in [ADR 0015](adr/0015-caret-flip.md) (not implemented).
 
 ```text
  typed:   h a s <space>     model picks Commit with EN: marked text "has "  (nothing inserted)
