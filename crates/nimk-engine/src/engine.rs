@@ -13,7 +13,7 @@ mod model;
 mod retro;
 mod switch;
 
-pub use model::CheckpointSource;
+pub use model::{CheckpointSource, tuned_key};
 pub use retro::{RetroFlip, RetroPolicy};
 
 use std::collections::{HashMap, VecDeque};

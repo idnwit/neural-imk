@@ -4,14 +4,16 @@
 use std::io;
 use std::sync::Arc;
 
-use nimk_engine::{Engine, EngineConfig, EngineError, SessionInfo, Threading};
-use nimk_policy::{ModelKind, build_action};
-use nimk_storage::{BlobStore, EventSink, EventSource, MemStorage, Storage};
+use nimk_engine::{Engine, EngineConfig, EngineError, SessionInfo};
+use nimk_policy::build_action;
+use nimk_storage::{MemStorage, Storage};
 use nimk_types::{Action, EditAction, Event, Lang, Record, Target};
 
 use crate::eval_report::{Decided, EvalReport};
 use crate::log::{APP_VERSION, synthetic_context};
 use crate::{Script, ScriptWord};
+pub(crate) use nimk_tune::check_diagnostics;
+use nimk_tune::{ModelOnly, TeachOptions, snapshot_key, teach_config, teach_script};
 
 /// Engine session id used while pre-training (its events are discarded).
 const PRETRAIN_SESSION: &str = "nimk-synth-pretrain";
@@ -54,41 +56,6 @@ pub struct PretrainReport {
     pub train_keys: u64,
     /// Evaluation of the saved model on the held-out scripts.
     pub eval: EvalReport,
-}
-
-/// Storage view that keeps the model snapshot (blobs) but discards events,
-/// so pre-training never mixes synthetic records into a real event log.
-struct ModelOnly(Arc<dyn Storage>);
-
-struct DiscardSink;
-
-impl EventSink for DiscardSink {
-    fn append(&mut self, _record: &[u8]) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Storage for ModelOnly {
-    fn event_sink(&self, _session: &str) -> io::Result<Box<dyn EventSink>> {
-        Ok(Box::new(DiscardSink))
-    }
-
-    fn event_source(&self) -> io::Result<Box<dyn EventSource + '_>> {
-        self.0.event_source()
-    }
-
-    fn blobs(&self) -> &dyn BlobStore {
-        self.0.blobs()
-    }
-}
-
-/// Snapshot blob key the engine uses for `kind`.
-fn snapshot_key(kind: ModelKind) -> String {
-    format!("model/{}/latest", kind.name())
 }
 
 fn invalid_data(msg: String) -> io::Error {
@@ -181,35 +148,24 @@ pub fn pretrain(
     })
 }
 
-/// Teacher-forces one script; returns the number of keys.
-fn teach_script(engine: &mut Engine, field_id: u64, script: &Script) -> io::Result<u64> {
-    if script.keys.len() != script.targets.len() {
-        return Err(invalid_data(format!(
-            "{}: {} keys but {} targets",
-            script.session,
-            script.keys.len(),
-            script.targets.len()
-        )));
-    }
-    let t0 = script.keys.first().map_or(0.0, |k| k.timestamp);
-    engine.on_context(&synthetic_context(&script.bundle_id, field_id, t0));
-    for (key, target) in script.keys.iter().zip(&script.targets) {
-        engine.teach(key, *target, 1.0, 1.0);
-    }
-    check_diagnostics(engine, &script.session)?;
-    Ok(script.keys.len() as u64)
-}
-
-pub(crate) fn check_diagnostics(engine: &mut Engine, session: &str) -> io::Result<()> {
-    let diagnostics = engine.take_diagnostics();
-    if diagnostics.is_empty() {
-        Ok(())
-    } else {
-        Err(invalid_data(format!(
-            "{session}: engine diagnostics: {}",
-            diagnostics.join("; ")
-        )))
-    }
+/// Continues training the snapshot already in `storage` on `scripts`; see
+/// [`nimk_tune::finetune`]. Takes [`PretrainOptions`] (`eval_frac` is
+/// ignored) so benchmarks can run pre-training and fine-tuning with one set
+/// of options.
+///
+/// # Errors
+/// As [`nimk_tune::finetune`].
+pub fn finetune(
+    scripts: &[Script],
+    cfg: EngineConfig,
+    opts: PretrainOptions,
+    storage: Arc<dyn Storage>,
+) -> io::Result<u64> {
+    let teach = TeachOptions {
+        epochs: opts.epochs,
+        batch: opts.batch,
+    };
+    nimk_tune::finetune(scripts, cfg, teach, storage)
 }
 
 /// The text the user intends for `word` (committed in its target language).
@@ -235,14 +191,7 @@ fn expected(word: &ScriptWord) -> Expected {
 
 /// Engine settings used for both training and evaluation.
 pub(crate) fn pretrain_config(cfg: EngineConfig, opts: PretrainOptions) -> EngineConfig {
-    EngineConfig {
-        hotkeys: false,
-        threading: Threading::Inline,
-        snapshot_every_secs: f64::MAX,
-        teach_batch: opts.batch.max(1),
-        replay_every: 0,
-        ..cfg
-    }
+    teach_config(cfg, opts.batch)
 }
 
 /// Evaluates the snapshot that [`pretrain`] saved in `storage` on arbitrary

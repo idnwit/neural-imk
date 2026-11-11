@@ -19,6 +19,7 @@
 mod abi;
 mod exports;
 mod handle;
+mod tune;
 
 pub use abi::{
     NIMK_KIND_FLAGS_CHANGED, NIMK_KIND_KEY_DOWN, NIMK_MODE_EN, NIMK_MODE_UNCHANGED, NIMK_MODE_VI,
@@ -31,3 +32,7 @@ pub use exports::{
     nimk_set_config, nimk_shutdown, nimk_take_diagnostics,
 };
 pub use handle::NimkCore;
+pub use tune::{
+    NIMK_TUNE_BAD_ARGS, NIMK_TUNE_FAILED, NIMK_TUNE_OK, NIMK_TUNE_TOO_LITTLE, NimkTunePending,
+    NimkTuneReport, nimk_tune_install, nimk_tune_pending, nimk_tune_prepare, nimk_tune_run,
+};

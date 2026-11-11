@@ -24,6 +24,7 @@
 | [models/](models/) | One doc per model: [Linear](models/linear.md), [GRU](models/gru.md) (architecture, training, checkpoints, results) | `crates/nimk-policy` |
 | [research/](research/) | Historical research notes behind decisions | - |
 | [adr/](adr/) | Architecture decision records, latest: [0015 Caret flip](adr/0015-caret-flip.md) | - |
+| [adr/](adr/) | Architecture decision records, latest: [0016 On-demand fine-tuning](adr/0016-on-demand-fine-tuning.md) | - |
 | [devlog.md](devlog.md) | Short dated log, newest first | - |
 
 ## Writing standard

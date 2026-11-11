@@ -23,6 +23,8 @@ swift-test:
 	target/swift-test/idlecommit
 	swiftc macos/NeuralIMK/StatsText.swift macos/tests/statstext/main.swift -o target/swift-test/statstext
 	target/swift-test/statstext
+	swiftc macos/NeuralIMK/StatsText.swift macos/NeuralIMK/TuneText.swift macos/tests/tunetext/main.swift -o target/swift-test/tunetext
+	target/swift-test/tunetext
 	swiftc macos/Shared/*.swift macos/tests/app/main.swift -o target/swift-test/app
 	target/swift-test/app
 

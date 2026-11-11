@@ -4,10 +4,11 @@ use std::io;
 
 use nimk_engine::EngineConfig;
 use nimk_storage::{EventSink, Storage};
-use nimk_types::{AppContext, Event, KeyEvent, LabelSource, Record, SCHEMA_VERSION, Target};
+use nimk_types::{Event, KeyEvent, LabelSource, Record, SCHEMA_VERSION, Target};
 
 use crate::Script;
 use crate::track::{Class, Step, Tracker, classify};
+pub(crate) use nimk_tune::synthetic_context;
 
 /// `policy_id` written in synthetic `SessionStart` records.
 const SYNTHETIC_POLICY_ID: &str = "synthetic";
@@ -62,16 +63,6 @@ pub(crate) fn walk(keys: &[KeyEvent]) -> impl Iterator<Item = WalkedKey<'_>> {
             },
         }
     })
-}
-
-/// Synthetic app context for script number `field_id`.
-pub(crate) fn synthetic_context(bundle_id: &str, field_id: u64, timestamp: f64) -> AppContext {
-    AppContext {
-        bundle_id: bundle_id.to_owned(),
-        field_id,
-        caret: None,
-        timestamp,
-    }
 }
 
 /// Serializes records of one session with contiguous `seq`.

@@ -14,6 +14,8 @@ nimk-telex.workspace = true
 nimk-storage.workspace = true
 nimk-policy.workspace = true
 nimk-engine.workspace = true
+nimk-tune.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

@@ -238,3 +238,58 @@ fn reset_without_any_default_starts_fresh() {
     let d = e.take_diagnostics();
     assert!(d.iter().all(|m| m.starts_with("reset ")), "{d:?}");
 }
+
+#[test]
+fn checkpoint_saves_what_was_learned_without_stopping_the_engine() {
+    let storage = MemStorage::new();
+    let mut e = engine(&storage, Threading::Inline);
+    let mut t = 1.0;
+    train(&mut e, &mut t);
+    assert!(blob(&storage, LIN).is_none(), "nothing saved before");
+    e.checkpoint_models(t + 1.0);
+    let saved = blob(&storage, LIN).expect("checkpoint written");
+    assert!(!saved.is_empty());
+    assert!(e.take_diagnostics().is_empty());
+    // Still serving, and still learning afterwards.
+    assert_eq!(e.model_kind(), ModelKind::LinearAction);
+    e.on_context(&ctx("com.apple.TextEdit", 2, t + 2.0));
+    type_str(&mut e, "tieengs ", &mut (t + 3.0));
+    e.shutdown().unwrap();
+}
+
+#[test]
+fn install_tuned_replaces_the_checkpoint_and_consumes_the_blob() {
+    let storage = MemStorage::new();
+    // A snapshot from another engine stands for the tuned result.
+    let other = MemStorage::new();
+    let mut o = engine(&other, Threading::Inline);
+    let mut t = 1.0;
+    train(&mut o, &mut t);
+    o.shutdown().unwrap();
+    let tuned = blob(&other, LIN).unwrap();
+
+    let mut e = engine(&storage, Threading::Inline);
+    let mut t = 1.0;
+    train(&mut e, &mut t);
+    // No result yet: nothing changes.
+    let (done, _) = e.install_tuned(t + 1.0);
+    assert!(!done);
+    assert!(blob(&storage, LIN).is_none());
+
+    let key = nimk_engine::tuned_key(ModelKind::LinearAction);
+    assert_eq!(key, "tune/linear_action/result");
+    storage.blobs().put(&key, &tuned).unwrap();
+    let (done, _) = e.install_tuned(t + 2.0);
+    assert!(done);
+    assert_eq!(blob(&storage, LIN).unwrap(), tuned);
+    assert!(blob(&storage, &key).is_none(), "result consumed");
+    assert!(
+        e.take_diagnostics()
+            .iter()
+            .any(|d| d.contains("tuned snapshot installed"))
+    );
+    assert_eq!(e.model_kind(), ModelKind::LinearAction);
+    e.shutdown().unwrap();
+    // The engine's own save at shutdown must not undo the install.
+    assert_eq!(blob(&storage, LIN).unwrap(), tuned);
+}

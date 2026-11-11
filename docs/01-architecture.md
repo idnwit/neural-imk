@@ -104,9 +104,10 @@ A layer may skip the one below it (`nimk-synth` uses `nimk-policy` directly) but
 | `nimk-hook` | lib | `Hook`, `HookCx`; built-in hooks `event_log`, `model_stats`, `usage`; depends on `types` and `storage` only ([ADR 0014](adr/0014-transform-hook-pipeline.md)) |
 | `nimk-policy` | lib | `ImeModel`, `ImeLearner`, `ModelKind`, `LinearAction`, `GruAction` (backend `burn`); see [linear](models/linear.md), [gru](models/gru.md) |
 | `nimk-engine` | lib | `Engine`: composer, hotkey, labeler, trainer, hookbus |
+| `nimk-tune` | lib | `Script`, the typing state machine mirror, `scripts_from_log`, teacher forcing (`finetune`) and the on-demand run (`tune`, `tune_pending`); sits between `engine` and `ffi`/`synth` ([ADR 0016](adr/0016-on-demand-fine-tuning.md)) |
 | `nimk-ffi` | staticlib | C ABI for Swift; the only crate with `extern "C"` and `unsafe` |
 | `nimk-replay` | bin + lib | Replays a log through a model and reports metrics ([05](05-storage-and-log.md)) |
-| `nimk-synth` | lib + bin | Synthetic typing data and pretraining ([ADR 0006](adr/0006-synthetic-pretraining.md)) |
+| `nimk-synth` | lib + bin | Synthetic typing data, pretraining and benchmarks ([ADR 0006](adr/0006-synthetic-pretraining.md)); the `nimk-synth tune` / `logeval` commands drive `nimk-tune` from the shell |
 | `macos/NeuralIMK` | Swift | IMK shim, overlay, status item ([06](06-gui.md), [09](09-app-compat.md)) |
 
 `arch-lint.toml` enforces the layering in `make check`; see [08](08-coding-standard.md#contract-arch-lint).

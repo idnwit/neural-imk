@@ -192,6 +192,58 @@ final class Core {
         return handle == nil ? CoreOutput() : CoreOutput(out)
     }
 
+    // MARK: Fine-tuning on the user's own log
+
+    /// New data since the last fine-tuning run. Reads the whole log and
+    /// touches no core state, so call it off the main thread.
+    func tunePending() -> NimkTunePending? {
+        var p = NimkTunePending()
+        let ok = dataDir.path.withCString { dir -> Bool in
+            if let models = bundledModelsDir?.path {
+                return models.withCString { nimk_tune_pending(dir, $0, &p) }
+            }
+            return nimk_tune_pending(dir, nil, &p)
+        }
+        return ok ? p : nil
+    }
+
+    /// Saves what the models learned so the run reads current weights; the
+    /// output commits any word being composed. Main thread.
+    func tunePrepare(timestamp: Double) -> CoreOutput {
+        var out = NimkOut()
+        let ok = nimk_tune_prepare(handle, timestamp, &out)
+        drainDiagnostics()
+        if !ok { log("tune: prepare rejected") }
+        return handle == nil ? CoreOutput() : CoreOutput(out)
+    }
+
+    /// Fine-tunes model `kind` on the new data. Blocks for seconds to
+    /// minutes and touches no core state: call it off the main thread, after
+    /// `tunePrepare`, never twice at once. Returns a `NIMK_TUNE_*` code.
+    func tuneRun(kind: UInt8) -> (code: UInt8, report: NimkTuneReport) {
+        var report = NimkTuneReport()
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let code = dataDir.path.withCString { dir -> UInt8 in
+            if let models = bundledModelsDir?.path {
+                return models.withCString {
+                    nimk_tune_run(dir, $0, kind, TuneText.minNewWords, nowMs, &report)
+                }
+            }
+            return nimk_tune_run(dir, nil, kind, TuneText.minNewWords, nowMs, &report)
+        }
+        return (code, report)
+    }
+
+    /// Loads the result of `tuneRun` into the active model; the output
+    /// commits any word being composed. Main thread.
+    func tuneInstall(timestamp: Double) -> (installed: Bool, output: CoreOutput) {
+        var out = NimkOut()
+        let ok = nimk_tune_install(handle, timestamp, &out)
+        drainDiagnostics()
+        log(ok ? "tune: tuned model installed" : "tune: nothing to install")
+        return (ok, handle == nil ? CoreOutput() : CoreOutput(out))
+    }
+
     var policyId: String? {
         nimk_policy_id(handle).map { String(cString: $0) }
     }

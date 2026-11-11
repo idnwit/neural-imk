@@ -32,7 +32,7 @@ pub use config::{
 };
 pub use engine::{
     CheckpointSource, Engine, EngineError, EngineOutput, Overlay, RetroFlip, RetroPolicy,
-    SessionInfo,
+    SessionInfo, tuned_key,
 };
 pub use nimk_policy::ModelKind;
 pub use nimk_types::{AppContext, KeyEvent, LabelSource, Lang, Target};

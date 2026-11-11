@@ -2,7 +2,8 @@
 # Architecture contract for NeuralIMK. See docs/01-architecture.md.
 #
 # Layers (top may use bottom, never the reverse):
-#   ffi, replay, synth  ->  engine  ->  telex | policy | hook  ->  types
+#   ffi, replay, synth  ->  tune  ->  engine  ->  telex | policy | hook  ->  types
+#   (replay uses engine directly; tune is the teaching / fine-tuning layer)
 #                                 \->  storage (true leaf, no nimk deps)
 #                                 hook -> storage
 #
@@ -41,6 +42,10 @@ paths = ["crates/nimk-engine/src/**"]
 [[scopes]]
 name = "hook"
 paths = ["crates/nimk-hook/src/**"]
+
+[[scopes]]
+name = "tune"
+paths = ["crates/nimk-tune/src/**"]
 
 [[scopes]]
 name = "ffi"
@@ -97,38 +102,38 @@ exclude = ["crates/nimk-ffi/src/**"]
 [[restrict-use]]
 name = "types-is-bottom"
 scope = "types"
-deny = ["nimk_storage::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_synth::**", "nimk_replay::**"]
+deny = ["nimk_storage::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**"]
 message = "nimk-types is the bottom layer and must not depend on other nimk crates."
 
 [[restrict-use]]
 name = "leaf-storage"
 scope = "storage"
-deny = ["nimk_types::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_synth::**", "nimk_replay::**"]
+deny = ["nimk_types::**", "nimk_telex::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**"]
 message = "nimk-storage is a leaf: bytes only, no nimk crates (keeps EncryptedStorage a pure decorator)."
 
 [[restrict-use]]
 name = "leaf-telex"
 scope = "telex"
-deny = ["nimk_storage::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_synth::**", "nimk_replay::**"]
+deny = ["nimk_storage::**", "nimk_policy::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**"]
 message = "nimk-telex may only depend on nimk-types."
 
 [[restrict-use]]
 name = "leaf-policy"
 scope = "policy"
-deny = ["nimk_storage::**", "nimk_telex::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**", "std::thread::**"]
+deny = ["nimk_storage::**", "nimk_telex::**", "nimk_engine::**", "nimk_ffi::**", "nimk_hook::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**", "std::thread::**"]
 message = "nimk-policy maps Observation to action scores; no storage, Telex, engine, files or threads."
 
 [[restrict-use]]
 name = "leaf-hook"
 scope = "hook"
-deny = ["nimk_engine::**", "nimk_ffi::**", "nimk_policy::**", "nimk_telex::**", "nimk_synth::**", "nimk_replay::**",
+deny = ["nimk_engine::**", "nimk_ffi::**", "nimk_policy::**", "nimk_telex::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**",
         "std::fs::**", "std::net::**", "std::thread::**", "std::time::**", "std::env::**"]
 message = "Hooks observe Records; I/O only through the handles given (HookCx, EventSink); the host owns threads."
 
 [[restrict-use]]
 name = "engine-not-up"
 scope = "engine"
-deny = ["nimk_ffi::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
+deny = ["nimk_ffi::**", "nimk_tune::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
 message = "nimk-engine must not depend on the FFI layer or touch files directly (use Storage)."
 
 [[restrict-use]]
@@ -136,6 +141,12 @@ name = "ffi-thin"
 scope = "ffi"
 deny = ["nimk_policy::**", "nimk_telex::**", "nimk_hook::**", "nimk_synth::**", "nimk_replay::**", "std::fs::**"]
 message = "nimk-ffi only adapts nimk-engine (+ builds the layered storage) to C; no policy, Telex or file logic."
+
+[[restrict-use]]
+name = "tune-not-up"
+scope = "tune"
+deny = ["nimk_ffi::**", "nimk_synth::**", "nimk_replay::**", "nimk_hook::**", "std::fs::**"]
+message = "nimk-tune drives nimk-engine and Storage only; the layers above it (ffi, synth, replay) are not its business."
 
 [[restrict-use]]
 name = "replay-not-ffi"

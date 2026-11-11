@@ -48,7 +48,7 @@ fn record_panic(core: &mut NimkCore, what: &str, payload: &(dyn Any + Send)) {
 /// # Safety
 /// `core` must be null or a live pointer from `nimk_new`; `out` must be null
 /// or valid for writing one `NimkOut`.
-unsafe fn answer(
+pub(crate) unsafe fn answer(
     core: *mut NimkCore,
     out: *mut NimkOut,
     what: &str,
