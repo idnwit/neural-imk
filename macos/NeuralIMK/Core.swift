@@ -80,7 +80,7 @@ final class Core {
         }
         log(handle == nil
             ? "nimk_new failed: engine unavailable, passing every key through"
-            : "started \(version), data dir \(dataDir.path)")
+            : "started \(Core.buildInfo), data dir \(dataDir.path)")
         drainDiagnostics()
         _ = reloadConfig()
     }
@@ -123,6 +123,18 @@ final class Core {
     var model: UInt8 { nimk_model(handle) }
 
     /// Display name of a model code.
+    /// "0.1.0 (34) · a1b2c3d · 2026-11-09T17:05": version, build number,
+    /// commit and local build time stamped by
+    /// scripts/build-app.sh, shown in the input menu.
+    static var buildInfo: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let commit = info?["NIMKGitCommit"] as? String ?? "?"
+        let time = info?["NIMKBuildTime"] as? String ?? "?"
+        return "\(version) (\(build)) · \(commit) · \(time)"
+    }
+
     static func modelName(_ kind: UInt8) -> String {
         kind == UInt8(NIMK_MODEL_GRU) ? "GRU" : "Linear (nhanh)"
     }

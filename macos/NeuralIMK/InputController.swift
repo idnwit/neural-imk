@@ -116,6 +116,9 @@ class InputController: IMKInputController {
         let policyItem = NSMenuItem(title: "Policy: \(policy)", action: nil, keyEquivalent: "")
         policyItem.isEnabled = false
         menu.addItem(policyItem)
+        let buildItem = NSMenuItem(title: "Bản build: \(Core.buildInfo)", action: nil, keyEquivalent: "")
+        buildItem.isEnabled = false
+        menu.addItem(buildItem)
         // Model items sit at the top level: IMK does not reliably deliver
         // actions of submenu items (unverified), so none are nested.
         menu.addItem(.separator())
