@@ -49,6 +49,7 @@ Some labels are Vietnamese in the app; their English meaning is given in parenth
 | --- | --- |
 | `Mode: Tiếng Việt (VI)` (Vietnamese) / `English (EN)` | `nimk_mode` |
 | `Policy: <id>`, e.g. `gru_action@v1` | `nimk_policy_id` |
+| `Bản build: 0.1.0 (34) · a1b2c3d · 2026-11-11T10:05` | "Build": version, build number, commit (`+dirty` for uncommitted changes) and local build time, stamped into `Info.plist` (`NIMKGitCommit`, `NIMKBuildTime`) by `scripts/build-app.sh` |
 | `Model: <name> ✓ — sửa 1,2% (500 từ gần nhất) · 2,0% tổng (3 450 từ)` | One line per model, at top level (IMK may not deliver submenu actions). `✓` marks the active model (`nimk_model`). "sửa ... (500 từ gần nhất)" means "corrected 1.2% of the last 500 words"; "tổng" means total. Counters come from `nimk_model_stats` and are rebuilt each time the menu opens; text is in `StatsText.swift` |
 | Role tag on non-active models | `(chạy ngầm)` = running in the background (shadow training on); `(đóng băng)` = frozen (training off) |
 | `(chưa pre-train)` suffix | "not pretrained": no checkpoint exists (`nimk_checkpoint_source` is none) |
