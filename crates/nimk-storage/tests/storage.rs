@@ -241,3 +241,32 @@ fn delete_removes_blob_and_reports_it() {
         );
     });
 }
+
+#[test]
+fn read_from_an_offset_returns_only_the_records_after_it() {
+    for_each_backend(|s| {
+        let mut sink = s.event_sink("sess1").unwrap();
+        for r in [&br#"{"seq":0}"#[..], b"", br#"{"seq":2}"#] {
+            sink.append(r).unwrap();
+        }
+        sink.flush().unwrap();
+        let id = segments(s).remove(0);
+        let source = s.event_source().unwrap();
+        let from = |offset: u64| -> Vec<Vec<u8>> {
+            source
+                .read_segment_from(&id, offset)
+                .unwrap()
+                .collect::<io::Result<_>>()
+                .unwrap()
+        };
+        // Each record is its length plus the newline.
+        assert_eq!(from(0), read_all(s, &id));
+        assert_eq!(from(10), vec![Vec::new(), br#"{"seq":2}"#.to_vec()]);
+        assert_eq!(from(11), vec![br#"{"seq":2}"#.to_vec()]);
+        assert!(from(21).is_empty());
+        // What is appended later is all a reader at the old end sees.
+        sink.append(br#"{"seq":3}"#).unwrap();
+        sink.flush().unwrap();
+        assert_eq!(from(21), vec![br#"{"seq":3}"#.to_vec()]);
+    });
+}

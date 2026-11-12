@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -89,8 +89,15 @@ impl EventSource for FsEventSource {
     }
 
     fn read_segment(&self, id: &SegmentId) -> io::Result<RecordIter<'_>> {
+        self.read_segment_from(id, 0)
+    }
+
+    fn read_segment_from(&self, id: &SegmentId, offset: u64) -> io::Result<RecordIter<'_>> {
         check_segment_id(&id.0)?;
-        let file = File::open(self.dir.join(format!("{}.{SEGMENT_EXT}", id.0)))?;
+        let mut file = File::open(self.dir.join(format!("{}.{SEGMENT_EXT}", id.0)))?;
+        if offset > 0 {
+            file.seek(SeekFrom::Start(offset))?;
+        }
         Ok(Box::new(LineIter {
             reader: BufReader::new(file),
             done: false,
@@ -295,5 +302,29 @@ mod tests {
         .collect::<io::Result<_>>()
         .unwrap();
         assert_eq!(lines, vec![b"a".to_vec(), Vec::new(), b"b".to_vec()]);
+    }
+
+    #[test]
+    fn offset_stops_before_an_unfinished_line_and_resumes_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events");
+        fs::create_dir_all(&events).unwrap();
+        let path = events.join("2026-11-12_a.jsonl");
+        let source = FsEventSource { dir: events };
+        let id = SegmentId("2026-11-12_a".to_owned());
+        let read_from = |offset: u64| -> Vec<Vec<u8>> {
+            source
+                .read_segment_from(&id, offset)
+                .unwrap()
+                .collect::<io::Result<_>>()
+                .unwrap()
+        };
+
+        fs::write(&path, "one\ntw").unwrap();
+        assert_eq!(read_from(0), vec![b"one".to_vec()]);
+        // A reader that stopped after "one" (4 bytes) sees "two" once it is done.
+        assert!(read_from(4).is_empty());
+        fs::write(&path, "one\ntwo\n").unwrap();
+        assert_eq!(read_from(4), vec![b"two".to_vec()]);
     }
 }
