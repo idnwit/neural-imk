@@ -18,7 +18,6 @@ use std::sync::Arc;
 use nimk_engine::EngineConfig;
 use nimk_policy::ModelKind;
 use nimk_storage::{MemStorage, Storage};
-use nimk_types::SCHEMA_VERSION;
 use serde::{Deserialize, Serialize};
 
 use crate::teach::{TeachOptions, finetune};
@@ -38,25 +37,25 @@ fn snapshot_key(kind: ModelKind) -> String {
 }
 
 /// Version written to the state blob.
-const STATE_VERSION: u32 = 1;
+pub(crate) const STATE_VERSION: u32 = 1;
 
 /// What the last runs consumed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct TuneState {
+pub(crate) struct TuneState {
     #[serde(default)]
-    version: u32,
+    pub(crate) version: u32,
     /// Per session, the next `seq` that is still new.
     #[serde(default)]
-    sessions: BTreeMap<String, u64>,
+    pub(crate) sessions: BTreeMap<String, u64>,
     /// Wall clock of the last run, ms since the epoch (0 = never).
     #[serde(default)]
-    last_unix_ms: u64,
+    pub(crate) last_unix_ms: u64,
     /// Runs so far.
     #[serde(default)]
-    runs: u32,
+    pub(crate) runs: u32,
 }
 
-fn read_state(storage: &dyn Storage) -> io::Result<TuneState> {
+pub(crate) fn read_state(storage: &dyn Storage) -> io::Result<TuneState> {
     Ok(match storage.blobs().get(STATE_KEY)? {
         // An unreadable state reads as "never tuned": everything is new.
         Some(bytes) => match serde_json::from_slice(&bytes) {
@@ -68,77 +67,6 @@ fn read_state(storage: &dyn Storage) -> io::Result<TuneState> {
         },
         None => TuneState::default(),
     })
-}
-
-/// How much data is waiting for the next run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TunePending {
-    /// Words committed since the last run.
-    pub new_words: u64,
-    /// Hotkey corrections since the last run.
-    pub new_corrections: u64,
-    /// Words in the whole log.
-    pub total_words: u64,
-    /// Wall clock of the last run, ms since the epoch; `None` = never run.
-    pub last_unix_ms: Option<u64>,
-    /// Runs so far.
-    pub runs: u32,
-}
-
-/// The few fields of a log line that counting needs.
-#[derive(Deserialize)]
-struct Head {
-    v: u32,
-    session: String,
-    seq: u64,
-    #[serde(rename = "type")]
-    ty: String,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    target: Option<TargetHead>,
-}
-
-/// `target` of a label line.
-#[derive(Deserialize)]
-struct TargetHead {
-    kind: String,
-}
-
-/// Counts the words and corrections after the watermark.
-///
-/// # Errors
-/// An I/O error from reading the log or the state blob.
-pub fn pending(storage: &dyn Storage) -> io::Result<TunePending> {
-    let state = read_state(storage)?;
-    let source = storage.event_source()?;
-    let mut out = TunePending {
-        last_unix_ms: (state.last_unix_ms > 0).then_some(state.last_unix_ms),
-        runs: state.runs,
-        ..TunePending::default()
-    };
-    for seg in source.segments()? {
-        for line in source.read_segment(&seg)? {
-            let Ok(h) = serde_json::from_slice::<Head>(&line?) else {
-                continue;
-            };
-            if h.v != SCHEMA_VERSION {
-                continue;
-            }
-            let new = h.seq >= state.sessions.get(&h.session).map_or(0, |&n| n);
-            // A word counts once it has its final label (written some words
-            // after the commit): every log has those, synthetic ones too.
-            let word_label = h.ty == "label" && h.target.is_some_and(|t| t.kind == "word");
-            if word_label {
-                out.total_words += 1;
-                if new {
-                    out.new_words += 1;
-                    out.new_corrections += u64::from(h.source.as_deref() == Some("correction"));
-                }
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// Knobs of a run.

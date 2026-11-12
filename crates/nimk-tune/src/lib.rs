@@ -13,18 +13,20 @@
 #![forbid(unsafe_code)]
 
 mod from_log;
+mod pending;
 mod script;
 mod teach;
 pub mod track;
 mod tune;
 
 pub use from_log::{LogScripts, ScriptMeta, scripts_from_log};
+pub use pending::{TunePending, pending as tune_pending};
 pub use script::{Script, ScriptWord};
 pub use teach::{
     ModelOnly, TeachOptions, check_diagnostics, finetune, snapshot_key, synthetic_context,
     teach_config, teach_script,
 };
 pub use tune::{
-    STATE_KEY as TUNE_STATE_KEY, TuneOptions, TuneOutput, TunePending, TuneReport,
-    pending as tune_pending, result_key as tune_result_key, tune,
+    STATE_KEY as TUNE_STATE_KEY, TuneOptions, TuneOutput, TuneReport,
+    result_key as tune_result_key, tune,
 };

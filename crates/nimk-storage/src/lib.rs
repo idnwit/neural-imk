@@ -55,6 +55,27 @@ pub trait EventSource {
     /// # Errors
     /// Returns an I/O error if the segment cannot be opened.
     fn read_segment(&self, id: &SegmentId) -> io::Result<RecordIter<'_>>;
+
+    /// Like [`EventSource::read_segment`], from byte `offset`, which must be
+    /// the end of a record (`0`, or the sum of `len + 1` over the records
+    /// already read): a reader that remembers where it stopped reads only what
+    /// was appended since. The default skips the first records; a source over
+    /// real files should seek instead.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the segment cannot be opened.
+    fn read_segment_from(&self, id: &SegmentId, offset: u64) -> io::Result<RecordIter<'_>> {
+        let mut skipped = 0u64;
+        let mut records = self.read_segment(id)?;
+        while skipped < offset {
+            match records.next() {
+                Some(Ok(r)) => skipped += r.len() as u64 + 1,
+                Some(Err(e)) => return Err(e),
+                None => break,
+            }
+        }
+        Ok(Box::new(records))
+    }
 }
 
 /// Which layer a blob is served from (see [`LayeredStorage`]).

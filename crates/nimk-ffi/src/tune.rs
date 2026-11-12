@@ -77,9 +77,12 @@ unsafe fn storage_at(
     Some(open_storage(Some(&dir), models.as_deref(), &mut diags))
 }
 
-/// Counts the data since the last fine-tuning run. Reads the whole log (a
-/// second or so for a large one): call it off the main thread. Returns
-/// `false` (and leaves `out` untouched) on null arguments or a read error.
+/// Counts the data since the last fine-tuning run. Incremental: it reads only
+/// what the log gained since the previous count (kept in the blob
+/// `tune/pending-index`), so a call is cheap; the first one, and the first
+/// after a run, read the whole log (a fraction of a second at 100 MB), so
+/// still call it off the main thread. Returns `false` (and leaves `out`
+/// untouched) on null arguments or a read error.
 ///
 /// # Safety
 /// `data_dir`/`models_dir`: null or NUL-terminated, valid for the call

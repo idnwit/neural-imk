@@ -4019,6 +4019,7 @@ dependencies = [
  "nimk-types",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
